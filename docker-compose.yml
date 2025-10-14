@@ -47,6 +47,40 @@ services:
       DATABASE_PASSWORD: P4assw@rd
       DATABASE_NAME: SystemaOllantay
 
+  persona_service:
+    build:
+      context: ./backend/persona_service
+      dockerfile: Dockerfile
+    container_name: persona_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+
+  prestamo_service:
+    build:
+      context: ./backend/prestamo_service
+      dockerfile: Dockerfile
+    container_name: prestamo_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+
   frontend:
     image: node:18-alpine
     container_name: ollantay_frontend

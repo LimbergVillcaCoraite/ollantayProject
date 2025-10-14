@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List
 import os
 import mysql.connector
 
@@ -29,7 +31,16 @@ def get_db_connection():
     )
 
 
-@app.get('/types')
+class TipoIn(BaseModel):
+    tipo: str = Field(..., title="Tipo de persona", max_length=100)
+
+
+class TipoOut(BaseModel):
+    id: int
+    tipo: str
+
+
+@app.get('/types', response_model=List[TipoOut])
 def list_types():
     try:
         conn = get_db_connection()
@@ -38,7 +49,122 @@ def list_types():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return {'data': rows}
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/types/{id}', response_model=TipoOut)
+def get_type(id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT idtipoPers AS id, tipoPersona AS tipo FROM tipo_personaO WHERE idtipoPers = %s', (id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail='Tipo no encontrado')
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/types', response_model=TipoOut, status_code=201)
+def create_type(payload: TipoIn):
+    # Validate payload (Pydantic already ensures max_length)
+    tipo = payload.tipo.strip()
+    if not tipo:
+        raise HTTPException(status_code=400, detail='El campo tipo no puede estar vacío')
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        # Check duplicate
+        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE tipoPersona = %s', (tipo,))
+        exists = cursor.fetchone()
+        if exists:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Tipo ya existe')
+
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO tipo_personaO (tipoPersona) VALUES (%s)', (tipo,))
+        conn.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return {'id': new_id, 'tipo': tipo}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/types/{id}', response_model=TipoOut)
+def update_type(id: int, payload: TipoIn):
+    tipo = payload.tipo.strip()
+    if not tipo:
+        raise HTTPException(status_code=400, detail='El campo tipo no puede estar vacío')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        # Check duplicate (exclude current id)
+        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE tipoPersona = %s AND idtipoPers <> %s', (tipo, id))
+        exists = cursor.fetchone()
+        if exists:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Tipo ya existe')
+
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tipo_personaO SET tipoPersona = %s WHERE idtipoPers = %s', (tipo, id))
+        conn.commit()
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail='Tipo no encontrado')
+        cursor.close()
+        conn.close()
+        return {'id': id, 'tipo': tipo}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.get('/health')
+def health():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1')
+        cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return {'status': 'ok', 'db': 'connected'}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f'db error: {e}')
+
+
+@app.delete('/types/{id}', status_code=204)
+def delete_type(id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM tipo_personaO WHERE idtipoPers = %s', (id,))
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+        if affected == 0:
+            raise HTTPException(status_code=404, detail='Tipo no encontrado')
+        return None
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
