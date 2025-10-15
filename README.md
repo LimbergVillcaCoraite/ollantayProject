@@ -62,7 +62,7 @@ docker compose down -v
 - Host: `mysql8032` (desde contenedores) / `localhost` (desde host)
 
 ## 🔧 Desarrollo
-
+   
 ### Variables de entorno
 
 El backend utiliza estas variables:
@@ -99,7 +99,7 @@ netstat -ano | findstr :3306
 - Verificar que el contenedor MySQL esté ejecutándose
 - Comprobar las credenciales en docker-compose.yml
 
-**Limpiar caché de Docker:**
+**Limpiar caché de Docker desde consola:**
 ```bash
 docker system prune -a
 ```
