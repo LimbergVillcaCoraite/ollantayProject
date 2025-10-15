@@ -56,7 +56,6 @@ export default function Login({API_PERSONA = 'http://localhost:8002', onLogin, d
 
         <div className="flex items-center justify-between mt-2 text-sm">
           <button type="button" onClick={()=> setShowRegister(s => !s)} className="text-blue-600 hover:underline">{showRegister ? 'Cancelar' : 'Crear cuenta'}</button>
-          <a className="text-gray-400 text-xs">Versión: v{version}</a>
         </div>
 
         {showRegister && (
