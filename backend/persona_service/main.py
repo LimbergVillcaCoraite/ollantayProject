@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 import os
 import mysql.connector
 
@@ -46,12 +46,16 @@ class PersonaOut(PersonaIn):
 
 
 @app.get('/persons', response_model=List[PersonaOut])
-def list_persons():
+def list_persons(tipo: Optional[int] = None):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O')
-        rows = cursor.fetchall()
+        if tipo is None:
+            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O')
+            rows = cursor.fetchall()
+        else:
+            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O WHERE id_tipoPersona = %s', (tipo,))
+            rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return rows

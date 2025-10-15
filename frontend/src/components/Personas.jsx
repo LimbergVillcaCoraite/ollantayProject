@@ -1,4 +1,5 @@
 import React, {useState, useEffect} from 'react'
+import { useToast } from '../ToastContext'
 
 export default function Personas({API, API_TYPES}){
   const [persons, setPersons] = useState([])
@@ -64,6 +65,7 @@ export default function Personas({API, API_TYPES}){
       setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})
       setEditingId(null)
       loadPersons()
+      toast.push(editingId ? 'Persona actualizada' : 'Persona creada','success')
     }catch(err){ setError(err.message) }
     finally{ setSubmitting(false) }
   }
@@ -79,6 +81,7 @@ export default function Personas({API, API_TYPES}){
     try{
       const res = await fetch(`${API}/persons/${id}`, {method:'DELETE'})
       if(res.status !== 204){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
+      toast.push('Persona eliminada','success')
       loadPersons()
     }catch(err){ setError(err.message) }
   }
@@ -92,18 +95,41 @@ export default function Personas({API, API_TYPES}){
   return (
     <div>
       <h2 className="text-xl font-semibold mb-2">Personas</h2>
-      <div className="mb-4 bg-white p-4 rounded shadow">
-        <form onSubmit={submit} className="grid grid-cols-1 gap-2">
-          <input className="p-2 border" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
-          <div className="grid grid-cols-2 gap-2">
-            <input className="p-2 border" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
-            <input className="p-2 border" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
+  <div className="mb-4 bg-panel p-4 rounded shadow text-panel">
+        <form onSubmit={submit} className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-4">
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">Nombres</label>
+            <input className="p-2 border w-full" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input className="p-2 border" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
-            <input className="p-2 border" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">Tipo</label>
+            <select value={form.id_tipoPersona} onChange={e=>setForm({...form, id_tipoPersona: e.target.value})} className="p-2 border w-full" disabled={loadingTypes}>
+              <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
+              {types.map((t, idx) => (
+                <option key={t.id_tipoPersona ?? `tipo-${idx}`} value={t.id_tipoPersona ?? ''}>{t.nombre_tipoPersona ?? (`Tipo ${t.id_tipoPersona ?? idx}`)}</option>
+              ))}
+            </select>
           </div>
-          <input className="p-2 border" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">Apellido paterno</label>
+            <input className="p-2 border w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">Apellido materno</label>
+            <input className="p-2 border w-full" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">Teléfono</label>
+            <input className="p-2 border w-full" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-700 mb-1">CI</label>
+            <input className="p-2 border w-full" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm text-gray-700 mb-1">Dirección</label>
+            <input className="p-2 border w-full" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
+          </div>
 
           {/* Tipo select populated from types service */}
           <div>
@@ -119,17 +145,14 @@ export default function Personas({API, API_TYPES}){
                 <option key={t.id_tipoPersona ?? `tipo-${idx}`} value={t.id_tipoPersona ?? ''}>{t.nombre_tipoPersona ?? (`Tipo ${t.id_tipoPersona ?? idx}`)}</option>
               ))}
             </select>
-          </div>
-
-          <div>
-            <button disabled={submitting} className="bg-blue-600 text-white px-3 py-1 rounded">{submitting? 'Procesando...' : (editingId? 'Actualizar' : 'Crear')}</button>
-            {editingId && <button type="button" onClick={()=>{setEditingId(null); setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})}} className="ml-2 px-3 py-1 border rounded">Cancelar</button>}
+            <button disabled={submitting} className="btn btn-primary">{submitting? 'Procesando...' : (editingId? 'Actualizar' : 'Crear')}</button>
+            {editingId && <button type="button" onClick={()=>{setEditingId(null); setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})}} className="ml-2 btn btn-secondary">Cancelar</button>}
           </div>
           {error && <p className="text-red-600">{error}</p>}
         </form>
       </div>
 
-      <div className="bg-white rounded shadow">
+  <div className="bg-panel rounded shadow text-panel">
         <table className="w-full divide-y">
           <thead className="bg-gray-50">
             <tr>
@@ -156,8 +179,14 @@ export default function Personas({API, API_TYPES}){
                 <td className="px-4 py-2">{p.direccion_persona}</td>
                 <td className="px-4 py-2">{getTypeName(p.id_tipoPersona)}</td>
                 <td className="px-4 py-2">
-                  <button onClick={()=>edit(p)} className="mr-2 text-sm px-2 py-1 border rounded">Editar</button>
-                  <button onClick={()=>remove(p.id_persona)} className="text-sm px-2 py-1 bg-red-500 text-white rounded">Eliminar</button>
+                  <button onClick={()=>edit(p)} className="mr-2 btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 010 2.828L8.414 14.414 4 16l1.586-4.414L14.586 2.586a2 2 0 012.828 0z"/></svg>
+                    Editar
+                  </button>
+                  <button onClick={()=>remove(p.id_persona)} className="btn btn-danger">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-1 1v1H4a1 1 0 000 2h12a1 1 0 100-2h-4V3a1 1 0 00-1-1H9zM6 7a1 1 0 011 1v7a1 1 0 11-2 0V8a1 1 0 011-1zm6 0a1 1 0 011 1v7a1 1 0 11-2 0V8a1 1 0 011-1z" clipRule="evenodd"/></svg>
+                    Eliminar
+                  </button>
                 </td>
               </tr>
             ))}

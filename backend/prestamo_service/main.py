@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from datetime import date, datetime
 import os
 import mysql.connector
 
@@ -44,6 +45,11 @@ class PrestamoIn(BaseModel):
 
 class PrestamoOut(PrestamoIn):
     id_prestamo: int
+
+
+class PrestamoEdit(BaseModel):
+    estado_prestamo: Optional[int] = Field(None, ge=0, le=1)
+    fecha_devolucion: Optional[str] = None  # ISO datetime
 
 
 @app.get('/loans', response_model=List[PrestamoOut])
@@ -96,6 +102,14 @@ def get_loan(id: int):
 def create_loan(payload: PrestamoIn):
     # basic validations: chofer must exist, id_persona if provided must exist
     try:
+        # validate fecha_prestamo is not in the future (if provided)
+        if payload.fecha_prestamo:
+            try:
+                fp = date.fromisoformat(payload.fecha_prestamo)
+            except Exception:
+                raise HTTPException(status_code=400, detail='fecha_prestamo must be ISO date YYYY-MM-DD')
+            if fp > date.today():
+                raise HTTPException(status_code=400, detail='fecha_prestamo cannot be in the future')
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         # check chofer exists
@@ -134,7 +148,7 @@ def create_loan(payload: PrestamoIn):
 
 
 @app.put('/loans/{id}', response_model=PrestamoOut)
-def update_loan(id: int, payload: PrestamoIn):
+def update_loan(id: int, payload: PrestamoEdit):
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
@@ -144,26 +158,34 @@ def update_loan(id: int, payload: PrestamoIn):
         if not ex:
             cur.close(); conn.close();
             raise HTTPException(status_code=404, detail='Prestamo no encontrado')
-        # check chofer exists
-        cur.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.chofer,))
-        ch = cur.fetchone()
-        if not ch:
+        # fetch existing full row so we preserve non-editable fields
+        cur.execute('SELECT cantidad_envaseCaja, cantidad_prestamoBotellas, descripcion_envase, fecha_prestamo, id_persona, estado_prestamo, fecha_devolucion, chofer FROM prestamo_O WHERE id_prestamo = %s', (id,))
+        existing = cur.fetchone()
+        if not existing:
             cur.close(); conn.close();
-            raise HTTPException(status_code=400, detail='Chofer no existe')
-        # check id_persona if provided
-        if payload.id_persona is not None:
-            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
-            pas = cur.fetchone()
-            if not pas:
-                cur.close(); conn.close();
-                raise HTTPException(status_code=400, detail='Persona (cliente) no existe')
+            raise HTTPException(status_code=404, detail='Prestamo no encontrado')
+
+        # Only allow edits to estado_prestamo and fecha_devolucion
+        new_estado = payload.estado_prestamo if payload.estado_prestamo is not None else existing.get('estado_prestamo')
+        new_fecha_devolucion = payload.fecha_devolucion if payload.fecha_devolucion is not None else existing.get('fecha_devolucion')
 
         upd = conn.cursor()
         upd.execute('UPDATE prestamo_O SET cantidad_envaseCaja=%s, cantidad_prestamoBotellas=%s, descripcion_envase=%s, fecha_prestamo=%s, id_persona=%s, estado_prestamo=%s, fecha_devolucion=%s, chofer=%s WHERE id_prestamo=%s',
-                    (payload.cantidad_envaseCaja, payload.cantidad_prestamoBotellas, payload.descripcion_envase, payload.fecha_prestamo, payload.id_persona, payload.estado_prestamo, payload.fecha_devolucion, payload.chofer, id))
+                    (existing.get('cantidad_envaseCaja'), existing.get('cantidad_prestamoBotellas'), existing.get('descripcion_envase'), existing.get('fecha_prestamo'), existing.get('id_persona'), new_estado, new_fecha_devolucion, existing.get('chofer'), id))
         conn.commit()
         upd.close(); cur.close(); conn.close()
-        out = {**payload.dict(), 'id_prestamo': id}
+
+        out = {
+            'cantidad_envaseCaja': existing.get('cantidad_envaseCaja'),
+            'cantidad_prestamoBotellas': existing.get('cantidad_prestamoBotellas'),
+            'descripcion_envase': existing.get('descripcion_envase'),
+            'fecha_prestamo': existing.get('fecha_prestamo'),
+            'id_persona': existing.get('id_persona'),
+            'estado_prestamo': new_estado,
+            'fecha_devolucion': new_fecha_devolucion,
+            'chofer': existing.get('chofer'),
+            'id_prestamo': id
+        }
         for f in ('fecha_prestamo', 'fecha_devolucion'):
             if out.get(f) is not None:
                 try:
