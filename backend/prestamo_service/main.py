@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from fastapi import Header
 from datetime import date, datetime
 import os
 import mysql.connector
@@ -98,8 +99,15 @@ def get_loan(id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def get_role(x_user_role: str | None = Header(None)) -> str:
+    return (x_user_role or 'admin').lower()
+
+
 @app.post('/loans', response_model=PrestamoOut, status_code=201)
-def create_loan(payload: PrestamoIn):
+def create_loan(payload: PrestamoIn, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
     # basic validations: chofer must exist, id_persona if provided must exist
     try:
         # validate fecha_prestamo is not in the future (if provided)
@@ -148,7 +156,10 @@ def create_loan(payload: PrestamoIn):
 
 
 @app.put('/loans/{id}', response_model=PrestamoOut)
-def update_loan(id: int, payload: PrestamoEdit):
+def update_loan(id: int, payload: PrestamoEdit, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
@@ -200,7 +211,10 @@ def update_loan(id: int, payload: PrestamoEdit):
 
 
 @app.delete('/loans/{id}', status_code=204)
-def delete_loan(id: int):
+def delete_loan(id: int, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role != 'admin':
+        raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
         cur = conn.cursor()

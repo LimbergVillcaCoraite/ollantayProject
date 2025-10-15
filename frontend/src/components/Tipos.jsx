@@ -1,7 +1,7 @@
 import React from 'react'
 import { useToast } from '../ToastContext'
 
-export default function Tipos({types, loading, error, onEdit, onDelete, onRefresh, API}){
+export default function Tipos({types, loading, error, onEdit, onDelete, onRefresh, API, userRole='admin'}){
   const [showNew, setShowNew] = React.useState(false)
   const [newTipo, setNewTipo] = React.useState('')
   const [saving, setSaving] = React.useState(false)
@@ -15,7 +15,7 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
     setSaving(true)
     try{
       const api = API || (import.meta.env.VITE_API_TYPES || 'http://localhost:8001')
-      const res = await fetch(`${api}/types`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tipo: newTipo})})
+  const res = await fetch(`${api}/types`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify({tipo: newTipo})})
       if(!res.ok) throw new Error('Error creando tipo')
       setNewTipo('')
       setShowNew(false)
@@ -40,7 +40,7 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
     setEditingSaving(true)
     try{
       const api = API || (import.meta.env.VITE_API_TYPES || 'http://localhost:8001')
-      const res = await fetch(`${api}/types/${id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tipo: editingTipo})})
+  const res = await fetch(`${api}/types/${id}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify({tipo: editingTipo})})
       if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || 'Error updating') }
       toast.push('Tipo actualizado','success')
       if(onRefresh) await onRefresh()
@@ -55,13 +55,13 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
       {loading && <p>Cargando tipos...</p>}
       {error && <p className="text-red-600">{error}</p>}
   <div className="bg-panel rounded shadow overflow-x-auto text-panel p-4">
-      <div className="mb-4 flex items-center justify-between">
+  <div className="mb-4 flex items-center justify-between">
         <div>
           <h3 className="font-medium">Listado de Tipos</h3>
           <p className="text-sm text-gray-600">Gestiona los tipos de persona aquí</p>
         </div>
         <div>
-          {!showNew && <button onClick={()=>setShowNew(true)} className="btn btn-primary">Nuevo Tipo</button>}
+          {userRole !== 'viewer' && !showNew && <button onClick={()=>setShowNew(true)} className="btn btn-primary">Nuevo Tipo</button>}
         </div>
       </div>
       {showNew && (
@@ -102,14 +102,14 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
                       </>
                     ) : (
                       <>
-                        <button onClick={()=>startEdit(t)} className="btn btn-primary" title="Editar">
+                        {userRole !== 'viewer' && <button onClick={()=>startEdit(t)} className="btn btn-primary" title="Editar">
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 010 2.828L8.414 14.414 4 16l1.586-4.414L14.586 2.586a2 2 0 012.828 0z"/></svg>
                           Editar
-                        </button>
-                        <button onClick={()=>onDelete(t.id)} className="btn btn-danger" title="Eliminar">
+                        </button>}
+                        {userRole === 'admin' && <button onClick={()=>onDelete(t.id)} className="btn btn-danger" title="Eliminar">
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-1 1v1H4a1 1 0 000 2h12a1 1 0 100-2h-4V3a1 1 0 00-1-1H9zM6 7a1 1 0 011 1v7a1 1 0 11-2 0V8a1 1 0 011-1zm6 0a1 1 0 011 1v7a1 1 0 11-2 0V8a1 1 0 011-1z" clipRule="evenodd"/></svg>
                           Eliminar
-                        </button>
+                        </button>}
                       </>
                     )}
                   </div>

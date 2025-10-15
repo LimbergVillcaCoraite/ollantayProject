@@ -1,8 +1,9 @@
 import React, {useState, useEffect} from 'react'
 import { useToast } from '../ToastContext'
 
-export default function Prestamos({API, API_PERSONAS, API_TYPES}){
+export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin'}){
   const [loans, setLoans] = useState([])
+  const [filteredLoans, setFilteredLoans] = useState([])
   const [loading, setLoading] = useState(true)
   const [persons, setPersons] = useState([])
   const [types, setTypes] = useState([])
@@ -17,11 +18,38 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
   const [editingLoanId, setEditingLoanId] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const isEditing = Boolean(editingLoanId)
+  const [loanSearchQ, setLoanSearchQ] = useState('')
+  const [filterEstado, setFilterEstado] = useState('')
+  const [filterFrom, setFilterFrom] = useState('')
+  const [filterTo, setFilterTo] = useState('')
+
+  React.useEffect(()=>{
+    const t = setTimeout(()=>{
+      const q = (loanSearchQ||'').trim().toLowerCase()
+      const list = loans.filter(l => {
+        // filter by estado
+        if(filterEstado !== ''){
+          if(String(l.estado_prestamo) !== String(filterEstado)) return false
+        }
+        // date range
+        if(filterFrom){ const d = l.fecha_prestamo ? new Date(l.fecha_prestamo) : null; if(!d || d < new Date(filterFrom)) return false }
+        if(filterTo){ const d = l.fecha_prestamo ? new Date(l.fecha_prestamo) : null; if(!d || d > new Date(filterTo)) return false }
+        if(!q) return true
+        // search in client/chofer names and description
+        const clientName = getPersonName(l.id_persona).toLowerCase()
+        const choferName = getPersonName(l.chofer).toLowerCase()
+        const hay = ((l.descripcion_envase||'') + ' ' + clientName + ' ' + choferName).toLowerCase()
+        return hay.includes(q)
+      })
+      setFilteredLoans(list)
+    }, 180)
+    return ()=>clearTimeout(t)
+  }, [loanSearchQ, filterEstado, filterFrom, filterTo, loans])
 
   const loadLoans = async ()=>{
     setLoading(true)
     try{
-      const res = await fetch(`${API}/loans`)
+  const res = await fetch(`${API}/loans`, { headers: { 'X-User-Role': userRole } })
       const data = await res.json()
       // normalize loan objects: ensure keys like id_persona and chofer exist even if backend returned odd keys
       const norm = (item) => {
@@ -53,7 +81,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
   const loadPersons = async ()=>{
     setLoadingPersons(true)
     try{
-      const res = await fetch(`${API_PERSONAS}/persons`)
+  const res = await fetch(`${API_PERSONAS}/persons`, { headers: { 'X-User-Role': userRole } })
       const data = await res.json()
       setPersons(data)
     }catch(err){ /* ignore */ }
@@ -63,7 +91,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
   const loadTypes = async ()=>{
     if(!API_TYPES) return
     try{
-      const res = await fetch(`${API_TYPES}/types`)
+  const res = await fetch(`${API_TYPES}/types`, { headers: { 'X-User-Role': userRole } })
     if(!res.ok) throw new Error('Error fetching tipos')
       const data = await res.json()
       // normalize shape if needed
@@ -89,7 +117,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
       }
       setLoadingPersons(true)
       try{
-        const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`)
+  const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`, { headers: { 'X-User-Role': userRole } })
         if(!res.ok) throw new Error('Error fetching persons by tipo')
         const data = await res.json()
         setPersons(data)
@@ -140,10 +168,10 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
         fecha_devolucion: form.fecha_devolucion || null,
         chofer: Number(form.chofer)
       }
-      const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+  const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
       if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
-      const out = await res.json()
-      showToast('Prestamo creado','success')
+  const out = await res.json()
+  toast.push('Prestamo creado','success')
       // switch to editing mode for the newly created loan: lock fields except date/status
       setCreatedLoan(out)
       setEditingLoanId(out.id_prestamo)
@@ -162,7 +190,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
         estado_prestamo: Number(form.estado_prestamo),
         fecha_devolucion: form.fecha_devolucion || null
       }
-      const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+  const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
   if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
   toast.push('Prestamo actualizado','success')
       // refresh
@@ -179,8 +207,20 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
     <div>
       <h2 className="text-xl font-semibold mb-4">Prestamos</h2>
   <div className="bg-panel p-4 rounded shadow mb-4 text-panel">
-        <form onSubmit={isEditing ? submitUpdate : submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input disabled={isEditing} className="p-2 border" placeholder="Cantidad cajas" value={form.cantidad_envaseCaja} inputMode="numeric" onChange={e=>{
+        <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-2 items-center">
+          <input className="p-2 border" placeholder="Buscar por cliente, chofer, descripción" value={loanSearchQ} onChange={e=>setLoanSearchQ(e.target.value)} />
+          <select className="p-2 border" value={filterEstado} onChange={e=>setFilterEstado(e.target.value)}>
+            <option value="">Todos</option>
+            <option value="0">Activo</option>
+            <option value="1">Devuelto</option>
+          </select>
+          <input type="date" className="p-2 border" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)} />
+          <input type="date" className="p-2 border" value={filterTo} onChange={e=>setFilterTo(e.target.value)} />
+        </div>
+
+  {userRole !== 'viewer' ? (
+  <form onSubmit={isEditing ? submitUpdate : submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <input disabled={isEditing || userRole === 'viewer'} className="p-2 border" placeholder="Cantidad cajas" value={form.cantidad_envaseCaja} inputMode="numeric" onChange={e=>{
             const val = e.target.value
             setForm(prev => ({...prev, cantidad_envaseCaja: val}))
             // auto-calc bottles if user hasn't manually edited bottles
@@ -190,11 +230,11 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
             }
           }} />
           <div>
-            <input disabled={isEditing} className="p-2 border w-full" placeholder="Cantidad botellas" value={form.cantidad_prestamoBotellas} inputMode="numeric" onChange={e=>{ setBottlesEdited(true); setForm({...form, cantidad_prestamoBotellas: e.target.value}) }} />
+            <input disabled={isEditing || userRole === 'viewer'} className="p-2 border w-full" placeholder="Cantidad botellas" value={form.cantidad_prestamoBotellas} inputMode="numeric" onChange={e=>{ setBottlesEdited(true); setForm({...form, cantidad_prestamoBotellas: e.target.value}) }} />
           </div>
           <div className="flex items-center gap-2">
             <label className="text-sm text-gray-600">Botellas por caja</label>
-            <input disabled={isEditing} type="number" min="0" step="1" className="p-2 border w-24" value={multiplier} onChange={e=>{
+            <input disabled={isEditing || userRole === 'viewer'} type="number" min="0" step="1" className="p-2 border w-24" value={multiplier} onChange={e=>{
               const m = Number(e.target.value) || 0
               setMultiplier(m)
               if(!bottlesEdited){
@@ -207,12 +247,12 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
           <input className="p-2 border col-span-1 md:col-span-2" placeholder="Descripción envase" value={form.descripcion_envase} onChange={e=>setForm({...form, descripcion_envase:e.target.value})} />
           <div>
             <label className="block text-sm text-gray-700 mb-1">Fecha de préstamo</label>
-            <input disabled={isEditing} type="date" max={todayISO} className="p-2 border w-full" value={form.fecha_prestamo} onChange={e=>setForm({...form, fecha_prestamo:e.target.value})} />
+            <input disabled={isEditing || userRole === 'viewer'} type="date" max={todayISO} className="p-2 border w-full" value={form.fecha_prestamo} onChange={e=>setForm({...form, fecha_prestamo:e.target.value})} />
           </div>
           <div>
             <label className="block text-sm text-gray-700 mb-1">Filtrar clientes por Tipo</label>
             <div className="relative">
-              <select className="p-2 border w-full" value={selectedFilterTipo} onChange={e=>setSelectedFilterTipo(e.target.value)} disabled={loadingTypes || isEditing}>
+              <select className="p-2 border w-full" value={selectedFilterTipo} onChange={e=>setSelectedFilterTipo(e.target.value)} disabled={loadingTypes || isEditing || userRole === 'viewer'}>
                 <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
                 {types.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
               </select>
@@ -226,7 +266,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
             <div className="relative">
               {/* Build the options: filtered by selectedFilterTipo, but always include the currently selected client so it shows when editing */}
               {loadingPersons && <div className="p-2">Cargando personas...</div>}
-              <select disabled={isEditing || loadingPersons} className="p-2 border w-full" value={form.id_persona} onChange={e=>setForm({...form, id_persona:e.target.value})}>
+              <select disabled={isEditing || loadingPersons || userRole === 'viewer'} className="p-2 border w-full" value={form.id_persona} onChange={e=>setForm({...form, id_persona:e.target.value})}>
                 <option value="">{loadingPersons ? 'Cargando personas...' : (selectedFilterTipo ? 'Seleccionar persona (cliente)' : 'Seleccione un tipo para cargar clientes')}</option>
                 {
                   (()=>{
@@ -252,7 +292,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
           <div>
             <label className="block text-sm text-gray-700 mb-1">Chofer</label>
               <div className="relative">
-              <select className="p-2 border w-full" value={form.chofer} onChange={e=>setForm({...form, chofer:e.target.value})} disabled={loadingPersons || !choferTypeId || isEditing}>
+              <select className="p-2 border w-full" value={form.chofer} onChange={e=>setForm({...form, chofer:e.target.value})} disabled={loadingPersons || !choferTypeId || isEditing || userRole === 'viewer'}>
                 <option value="">{loadingPersons ? 'Cargando choferes...' : (!choferTypeId ? 'No hay tipo chofer detectado' : 'Seleccionar chofer')}</option>
                 {persons.filter(p => String(p.id_tipoPersona) === String(choferTypeId)).map(p => (
                   <option key={`chofer-${p.id_persona}`} value={p.id_persona}>{p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer || ''}</option>
@@ -261,22 +301,25 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
               {loadingPersons && <div className="absolute right-2 top-2 animate-spin">⏳</div>}
             </div>
           </div>
-          <select className="p-2 border" value={form.estado_prestamo} onChange={e=>setForm({...form, estado_prestamo:e.target.value})}>
+          <select className="p-2 border" value={form.estado_prestamo} onChange={e=>setForm({...form, estado_prestamo:e.target.value})} disabled={userRole === 'viewer'}>
             <option value={0}>Activo</option>
             <option value={1}>Devuelto</option>
           </select>
           <input type="datetime-local" className="p-2 border" value={form.fecha_devolucion} onChange={e=>setForm({...form, fecha_devolucion:e.target.value})} />
             <div className="col-span-1 md:col-span-2">
-            <button disabled={submitting || (!isEditing && !form.chofer)} className="btn btn-primary disabled:opacity-50">
+            {userRole !== 'viewer' && <button disabled={submitting || (!isEditing && !form.chofer)} className="btn btn-primary disabled:opacity-50">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M5 3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V8.414A2 2 0 0016.586 7L12 2.414A2 2 0 0010.586 2H5z"/></svg>
               {submitting ? 'Procesando...' : (isEditing ? 'Actualizar Prestamo' : 'Crear Prestamo')}
-            </button>
-            {isEditing && <button type="button" onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''}); setBottlesEdited(false) }} className="ml-2 btn btn-secondary">
+            </button>}
+            {isEditing && userRole !== 'viewer' && <button type="button" onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''}); setBottlesEdited(false) }} className="ml-2 btn btn-secondary">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293A1 1 0 006.293 7.707L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd"/></svg>
               Cancelar
             </button>}
           </div>
         </form>
+        ) : (
+          <div className="p-4 text-sm text-gray-600">Modo visor — sólo visualización. No puede crear ni editar préstamos.</div>
+        )}
       </div>
 
   <div className="bg-panel rounded shadow overflow-x-auto text-panel">
@@ -296,9 +339,9 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td className="p-4" colSpan={6}>Cargando...</td></tr>}
-            {!loading && loans.length === 0 && <tr><td className="p-4" colSpan={6}>No hay prestamos</td></tr>}
-            {loans.map(l => (
+            {loading && <tr><td className="p-4" colSpan={10}>Cargando...</td></tr>}
+            {!loading && filteredLoans.length === 0 && <tr><td className="p-4" colSpan={10}>No hay prestamos</td></tr>}
+            {filteredLoans.map(l => (
               <tr key={l.id_prestamo} className="border-t">
                 <td className="px-4 py-2">{l.id_prestamo}</td>
                 <td className="px-4 py-2">{getPersonName(l.id_persona)}</td>
@@ -310,7 +353,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
                 <td className="px-4 py-2">{l.fecha_devolucion ?? '-'}</td>
                 <td className="px-4 py-2">{l.estado_prestamo ? 'Devuelto' : 'Activo'}</td>
                 <td className="px-4 py-2">
-                  {!isEditing && <button onClick={async ()=>{
+                  {userRole !== 'viewer' && !isEditing && <button onClick={async ()=>{
                     // load loan into form for editing fecha_devolucion and estado
                     setCreatedLoan(l)
                     setEditingLoanId(l.id_prestamo)
@@ -325,7 +368,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
                       } else {
                         // fetch single person as fallback
                         try{
-                          const r = await fetch(`${API_PERSONAS}/persons/${clientId}`)
+                          const r = await fetch(`${API_PERSONAS}/persons/${clientId}`, { headers: { 'X-User-Role': userRole } })
                           if(r.ok){ const data = await r.json(); if(data?.id_tipoPersona) setSelectedFilterTipo(String(data.id_tipoPersona)) }
                         }catch(e){ /* ignore */ }
                       }
@@ -334,7 +377,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES}){
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 010 2.828L8.414 14.414 4 16l1.586-4.414L14.586 2.586a2 2 0 012.828 0z"/></svg>
                     Editar
                   </button>}
-                  {isEditing && editingLoanId === l.id_prestamo && (
+                  {userRole !== 'viewer' && isEditing && editingLoanId === l.id_prestamo && (
                     <button onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''}); setBottlesEdited(false) }} className="btn btn-secondary">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293A1 1 0 006.293 7.707L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd"/></svg>
                       Cancelar

@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List
+from fastapi import Header
 import os
 import mysql.connector
 
@@ -72,8 +73,15 @@ def get_type(id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def get_role(x_user_role: str | None = Header(None)) -> str:
+    return (x_user_role or 'admin').lower()
+
+
 @app.post('/types', response_model=TipoOut, status_code=201)
-def create_type(payload: TipoIn):
+def create_type(payload: TipoIn, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
     # Validate payload (Pydantic already ensures max_length)
     tipo = payload.tipo.strip()
     if not tipo:
@@ -104,7 +112,10 @@ def create_type(payload: TipoIn):
 
 
 @app.put('/types/{id}', response_model=TipoOut)
-def update_type(id: int, payload: TipoIn):
+def update_type(id: int, payload: TipoIn, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
     tipo = payload.tipo.strip()
     if not tipo:
         raise HTTPException(status_code=400, detail='El campo tipo no puede estar vacío')
@@ -151,7 +162,10 @@ def health():
 
 
 @app.delete('/types/{id}', status_code=204)
-def delete_type(id: int):
+def delete_type(id: int, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role != 'admin':
+        raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
