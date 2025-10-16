@@ -59,6 +59,17 @@ class PersonaOut(PersonaIn):
     id_persona: int
 
 
+class EmpresaIn(BaseModel):
+    nombre_empresa: str = Field(..., max_length=100)
+    direccion_empresa: str = Field(..., max_length=100)
+    estado_empresa: int = Field(1)
+    id_persona: int
+
+
+class EmpresaOut(EmpresaIn):
+    id_empresa: int
+
+
 class LoginIn(BaseModel):
     username: str
     password: str | None = None
@@ -167,6 +178,161 @@ def list_persons(tipo: Optional[int] = None):
         cursor.close()
         conn.close()
         return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/empresas')
+def list_empresas(q: Optional[str] = None, id_persona: Optional[int] = None, offset: Optional[int] = 0, limit: Optional[int] = 100):
+    return list_empresas_paginated(q=q, id_persona=id_persona, offset=offset, limit=limit)
+
+
+def list_empresas_paginated(q: Optional[str] = None, id_persona: Optional[int] = None, offset: int = 0, limit: int = 100):
+    # validate pagination bounds
+    try:
+        offset = int(offset)
+        limit = int(limit)
+    except Exception:
+        raise HTTPException(status_code=400, detail='offset and limit must be integers')
+    if offset < 0 or limit <= 0 or limit > 500:
+        raise HTTPException(status_code=400, detail='invalid pagination parameters')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        params = []
+        where_clauses = []
+        if q:
+            like = f"%{q}%"
+            where_clauses.append('(nombre_empresa LIKE %s OR direccion_empresa LIKE %s)')
+            params.extend([like, like])
+        if id_persona:
+            where_clauses.append('id_persona = %s')
+            params.append(id_persona)
+        where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+        sql = f'SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa, id_persona FROM empresa_O{where_sql} ORDER BY id_empresa DESC LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+        # count total for the same filter
+        count_sql = f'SELECT COUNT(1) as total FROM empresa_O{where_sql}'
+        cursor.execute(count_sql, tuple(params[:-2]))
+        cnt = cursor.fetchone()
+        total = cnt['total'] if cnt else 0
+        cursor.close()
+        conn.close()
+        return {'items': rows, 'total': total, 'offset': offset, 'limit': limit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/empresas/{id}', response_model=EmpresaOut)
+def get_empresa(id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa, id_persona FROM empresa_O WHERE id_empresa = %s', (id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail='Empresa no encontrada')
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/empresas', response_model=EmpresaOut, status_code=201)
+def create_empresa(payload: EmpresaIn, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    # validation
+    nombre = payload.nombre_empresa.strip()
+    direccion = payload.direccion_empresa.strip()
+    if not nombre or not direccion:
+        raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        # check persona exists
+        cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
+        persona = cursor.fetchone()
+        if not persona:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Persona no existe')
+        cur2 = conn.cursor()
+        cur2.execute('INSERT INTO empresa_O (nombre_empresa, direccion_empresa, estado_empresa, id_persona) VALUES (%s,%s,%s,%s)', (nombre, direccion, int(bool(payload.estado_empresa)), payload.id_persona))
+        conn.commit()
+        new_id = cur2.lastrowid
+        cur2.close()
+        cursor.close()
+        conn.close()
+        return {**payload.dict(), 'id_empresa': new_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/empresas/{id}', response_model=EmpresaOut)
+def update_empresa(id: int, payload: EmpresaIn, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    nombre = payload.nombre_empresa.strip()
+    direccion = payload.direccion_empresa.strip()
+    if not nombre or not direccion:
+        raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT id_empresa FROM empresa_O WHERE id_empresa = %s', (id,))
+        exists = cursor.fetchone()
+        if not exists:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail='Empresa no encontrada')
+        # check persona exists
+        cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
+        persona = cursor.fetchone()
+        if not persona:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Persona no existe')
+        cur2 = conn.cursor()
+        cur2.execute('UPDATE empresa_O SET nombre_empresa=%s, direccion_empresa=%s, estado_empresa=%s, id_persona=%s WHERE id_empresa=%s', (nombre, direccion, int(bool(payload.estado_empresa)), payload.id_persona, id))
+        conn.commit()
+        cur2.close()
+        cursor.close()
+        conn.close()
+        return {**payload.dict(), 'id_empresa': id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete('/empresas/{id}', status_code=204)
+def delete_empresa(id: int, x_user_role: str | None = Header(None)):
+    role = get_role(x_user_role)
+    if role != 'admin':
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM empresa_O WHERE id_empresa = %s', (id,))
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+        if affected == 0:
+            raise HTTPException(status_code=404, detail='Empresa no encontrada')
+        return None
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

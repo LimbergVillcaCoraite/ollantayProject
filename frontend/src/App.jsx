@@ -2,6 +2,7 @@ import React, {useState, useEffect} from 'react'
 import Tipos from './components/Tipos'
 import Personas from './components/Personas'
 import Prestamos from './components/Prestamos'
+import Empresas from './components/Empresas'
 import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
@@ -156,9 +157,10 @@ export default function App(){
             </div>
           </div>
 
-  <nav className="mt-4 flex items-center gap-2">
+    <nav className="mt-4 flex items-center gap-2">
     <button onClick={()=>setView('tipos')} className={`btn ${view==='tipos' ? 'btn-primary' : 'btn-secondary'}`}>Tipos</button>
             <button onClick={()=>setView('personas')} className={`btn ${view==='personas' ? 'btn-primary' : 'btn-secondary'}`}>Personas</button>
+            <button onClick={()=>setView('empresas')} className={`btn ${view==='empresas' ? 'btn-primary' : 'btn-secondary'}`}>Empresas</button>
             <button onClick={()=>setView('prestamos')} className={`btn ${view==='prestamos' ? 'btn-primary' : 'btn-secondary'}`}>Prestamos</button>
             <div className="ml-auto text-sm text-gray-500">{loggedUser?.username ? `Usuario: ${loggedUser.username}` : `Rol: ${userRole}`}</div>
           </nav>
@@ -167,6 +169,7 @@ export default function App(){
         <main>
           {view === 'tipos' && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} />}
           {view === 'personas' && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} />}
+          {view === 'empresas' && <Empresas API={API_PERSONS} userRole={userRole} />}
           {view === 'prestamos' && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} />}
         </main>
 
