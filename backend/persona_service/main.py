@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter
+from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -24,6 +24,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=os.getenv('ALLOW_ORIGIN_REGEX', r'https?://.*'),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,6 +124,34 @@ class RolePermissionsIn(BaseModel):
     perm_ids: List[int]
 
 
+def ensure_schema():
+    """Ensure optional columns required by the service exist."""
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # Check if profile_photo column exists in user_O
+        cur.execute("""
+            SELECT COUNT(1) AS cnt
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'user_O' AND COLUMN_NAME = 'profile_photo'
+        """, (os.getenv('DATABASE_NAME', 'SystemaOllantay'),))
+        row = cur.fetchone()
+        if not row or row.get('cnt', 0) == 0:
+            cur2 = conn.cursor()
+            # Use LONGTEXT to store data URLs or image paths
+            cur2.execute('ALTER TABLE user_O ADD COLUMN profile_photo LONGTEXT NULL')
+            conn.commit()
+            cur2.close()
+        cur.close(); conn.close()
+    except Exception:
+        # Non-fatal on startup; logs can be added if necessary
+        pass
+
+
+@app.on_event('startup')
+def _startup():
+    ensure_schema()
+
+
 def create_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
@@ -162,7 +191,7 @@ def login(payload: LoginIn):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT u.id_user, u.username, u.password_hash, u.id_persona, r.name AS role_name FROM user_O u JOIN role_O r ON u.id_role = r.idrole WHERE u.username = %s', (payload.username,))
+        cursor.execute('SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo, r.name AS role_name FROM user_O u JOIN role_O r ON u.id_role = r.idrole WHERE u.username = %s', (payload.username,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
@@ -175,7 +204,7 @@ def login(payload: LoginIn):
         # create JWT and set as httpOnly cookie; include permissions in response for immediate UI gating
         token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
         perms = get_permissions_for_role(row['role_name'])
-        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms})
+        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': row.get('profile_photo')})
         # set cookie for session
         resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
         return resp
@@ -458,7 +487,17 @@ def auth_me(request: Request):
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         # fetch permissions for this role
         perms = get_permissions_for_role(payload.get('role'))
-        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'permissions': perms}
+        # fetch profile photo from DB
+        profile_photo = None
+        try:
+            conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+            cur.execute('SELECT profile_photo FROM user_O WHERE id_user = %s', (payload.get('sub'),))
+            r = cur.fetchone()
+            profile_photo = (r or {}).get('profile_photo')
+            cur.close(); conn.close()
+        except Exception:
+            profile_photo = None
+        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'permissions': perms, 'profilePhoto': profile_photo}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail='Token expired')
     except Exception:
@@ -469,6 +508,60 @@ def auth_logout():
     resp = JSONResponse(content={'ok': True})
     resp.delete_cookie('ollantay_token', path='/')
     return resp
+
+
+class PhotoIn(BaseModel):
+    photo: str  # Can be a data URL or a path
+
+
+@app.post('/users/me/photo')
+async def upload_my_photo(request: Request, x_user_role: Optional[str] = Header(None)):
+    """Accepts either JSON {photo: dataURL} or multipart form field 'file'. Stores in DB and returns updated value."""
+    # authenticate via cookie
+    token = request.cookies.get('ollantay_token')
+    if not token:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        user_id = payload.get('sub')
+        if not user_id:
+            raise HTTPException(status_code=401, detail='Invalid token')
+        content_type = request.headers.get('content-type','')
+        photo_data: Optional[str] = None
+        if 'application/json' in content_type:
+            body = await request.json()
+            photo_data = body.get('photo')
+        else:
+            try:
+                form = await request.form()
+                file = form.get('file')
+                if file and hasattr(file, 'read'):
+                    content = await file.read()
+                    # Store as data URL with a best-effort MIME from filename
+                    filename = getattr(file, 'filename', 'upload')
+                    ext = (filename.rsplit('.', 1)[-1] if '.' in filename else 'png').lower()
+                    mime = 'image/jpeg' if ext in ('jpg','jpeg') else ('image/png' if ext=='png' else 'image/*')
+                    import base64
+                    b64 = base64.b64encode(content).decode('ascii')
+                    photo_data = f'data:{mime};base64,{b64}'
+            except Exception:
+                photo_data = None
+        if not photo_data:
+            raise HTTPException(status_code=400, detail='No photo provided')
+        # persist
+        try:
+            conn = get_db_connection(); cur = conn.cursor()
+            cur.execute('UPDATE user_O SET profile_photo=%s WHERE id_user=%s', (photo_data, user_id))
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {'ok': True, 'profilePhoto': photo_data}
+    except HTTPException:
+        raise
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail='Token expired')
+    except Exception:
+        raise HTTPException(status_code=401, detail='Invalid token')
 
 
 @app.post('/persons', response_model=PersonaOut, status_code=201)

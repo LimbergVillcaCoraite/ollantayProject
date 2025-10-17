@@ -6,6 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY postcss.config.cjs ./
 COPY tailwind.config.cjs ./
+COPY vite.config.js ./
 COPY index.html ./
 
 # Instalar dependencias

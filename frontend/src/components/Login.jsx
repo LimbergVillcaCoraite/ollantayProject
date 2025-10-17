@@ -1,5 +1,4 @@
 import React, {useState} from 'react'
-import { version } from '../../package.json'
 import DarkToggle from './DarkToggle'
 
 export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS || 'http://localhost:8002'), onLogin, dark, setDark}){
@@ -36,13 +35,16 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
 
   return (
     <form onSubmit={submit} className="w-full">
-      <div className="flex items-center justify-center mb-4">
-        <div className="w-16 h-16 mx-auto bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl">SO</div>
+      <div className="flex flex-col items-center justify-center mb-4 gap-2">
+        <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl">
+          SO
+        </div>
         <div className="top-toggle">
           <DarkToggle dark={dark} setDark={setDark} size='5'/>
         </div>
       </div>
       <div className="space-y-4">
+        <div className="text-center text-xs text-gray-400 dark:text-gray-500 mb-2">Versión: v{window.__OLLANTAY_VERSION__ || '2.0.0'}</div>
         <div>
           <label htmlFor="login-username" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Usuario</label>
           <input id="login-username" aria-label="Usuario" required value={username} onChange={e=>setUsername(e.target.value)} className="mt-1 block w-full p-3 border rounded shadow-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300" />
@@ -80,8 +82,6 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
         <div className="flex items-center justify-between gap-4">
           <button type="submit" disabled={loading} className="w-full btn btn-primary">{loading ? 'Iniciando...' : 'Iniciar sesión'}</button>
         </div>
-
-  <div className="text-xs text-gray-400 dark:text-gray-400 text-center">Versión: <span className="font-mono">v{version}</span></div>
       </div>
     </form>
   )

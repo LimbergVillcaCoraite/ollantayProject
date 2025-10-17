@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
-// Generate version based on current date/time: YYYY.MM.DD.HHmm
+// If APP_VERSION is set, use it (e.g., 2.0.0). Else, generate timestamp version.
 const now = new Date();
-const version = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}.${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+const version = process.env.APP_VERSION || `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}.${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
 // Write to version.json
 const versionFile = path.join(__dirname, 'public', 'version.json');

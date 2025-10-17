@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Open firewall ports 3000,8001-8003",
+			"type": "shell",
+			"command": "PowerShell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"New-NetFirewallRule -DisplayName 'Ollantay Web (3000)' -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow; New-NetFirewallRule -DisplayName 'Ollantay API (8001-8003)' -Direction Inbound -LocalPort 8001-8003 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow"
+			]
+		}
+	]
+}

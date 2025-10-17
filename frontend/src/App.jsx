@@ -11,16 +11,25 @@ import Login from './components/Login'
 export default function App(){
   const [view, setView] = useState('tipos')
   const [appVersion, setAppVersion] = useState('loading...')
-  const API_TYPES = import.meta.env.VITE_API_TYPES || 'http://localhost:8001'
-  const API_PERSONS = import.meta.env.VITE_API_PERSONS || 'http://localhost:8002'
-  const API_PRESTAMOS = import.meta.env.VITE_API_PRESTAMOS || 'http://localhost:8003'
+  const host = (typeof window !== 'undefined' && window.location?.hostname) ? window.location.hostname : 'localhost'
+  const proto = (typeof window !== 'undefined' && window.location?.protocol) ? window.location.protocol : 'http:'
+  const API_TYPES = import.meta.env.VITE_API_TYPES || `${proto}//${host}/api/tipos`
+  const API_PERSONS = import.meta.env.VITE_API_PERSONS || `${proto}//${host}/api/personas`
+  const API_PRESTAMOS = import.meta.env.VITE_API_PRESTAMOS || `${proto}//${host}/api/prestamos`
   const [dark, setDark] = useState(() => localStorage.getItem('ollantay-dark') === '1')
   const [userRole, setUserRole] = useState('')
   const [loggedUser, setLoggedUser] = useState(null)
+  const [profilePhoto, setProfilePhoto] = useState(() => {
+    try {
+      return localStorage.getItem('ollantay-profile-photo') || ''
+    } catch {
+      return ''
+    }
+  })
   const perms = loggedUser?.permissions || []
   const has = (resource, action) => perms.includes(`${resource}:${action}`)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
-  const [navOpen, setNavOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   
   // Load version automatically
   useEffect(() => {
@@ -54,6 +63,10 @@ export default function App(){
         const data = await res.json()
         setLoggedUser(data)
         setUserRole(data.role)
+        if(data?.profilePhoto){
+          setProfilePhoto(data.profilePhoto)
+          try{ localStorage.setItem('ollantay-profile-photo', data.profilePhoto) }catch(e){}
+        }
       }catch(e){ /* ignore */ }
     }
     restore()
@@ -146,122 +159,157 @@ export default function App(){
   return (
     <ToastProvider>
     <div className={`min-h-screen ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
-      <div className="max-w-6xl mx-auto p-4">
-        <header className="mb-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-600 text-white rounded flex items-center justify-center font-bold">SO</div>
-              <div>
-                <h1 className="text-2xl font-bold">Sistema Ollantay</h1>
-                <p className="text-sm text-gray-600">Gestión de préstamos y personas</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 relative">
-                {/* Botón menú hamburguesa estilo GitHub */}
-                <button
-                  onClick={()=>setNavOpen(o=>!o)}
-                  className={`relative z-30 inline-flex items-center justify-center w-10 h-10 rounded-full border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 shadow transition hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-400 ${navOpen ? 'ring-2 ring-blue-400' : ''}`}
-                  aria-expanded={navOpen}
-                  aria-controls="main-nav"
-                  aria-label="Abrir menú"
-                  title="Menú"
-                >
-                  <span className="sr-only">Abrir menú</span>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 text-gray-700 dark:text-gray-200">
-                    <line x1="3" y1="6" x2="21" y2="6" />
-                    <line x1="3" y1="12" x2="21" y2="12" />
-                    <line x1="3" y1="18" x2="21" y2="18" />
-                  </svg>
-                </button>
-              {has('roles','manage') ? (
-                // Solo administradores con permiso de roles pueden ver este selector rápido
-                <RoleSelector role={userRole} onChange={setUserRole} />
+      {/* Header con hamburguesa */}
+      <header className={`fixed top-0 left-0 right-0 z-50 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
+        <div className="flex items-center justify-between px-4 py-3">
+          <button 
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="md:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            aria-label="Menu"
+          >
+            <svg className="w-6 h-6 text-gray-700 dark:text-gray-200" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              {sidebarOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/>
               ) : (
-                <div className="text-sm text-gray-600">Rol: {userRole}</div>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16"/>
               )}
-              <button
-                onClick={()=>{ setShowLogoutConfirm(true) }}
-                className="btn btn-secondary p-2"
-                aria-label="Salir"
-                title="Salir"
-              >
-                <LogoutIcon />
-              </button>
-              <button
-                onClick={()=> updateDark(!dark)}
-                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-gray-200 dark:bg-gray-700"
-                role="switch"
-                aria-checked={dark}
-                aria-label="Toggle dark mode"
-              >
-                <span className={`w-6 h-6 flex items-center justify-center rounded-full transition-transform ${dark ? 'translate-x-0' : 'translate-x-0'}`}>
-                  {dark ? (
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zM15.657 4.343a1 1 0 010 1.414l-.707.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM18 9a1 1 0 110 2h-1a1 1 0 110-2h1zM15.657 15.657a1 1 0 01-1.414 0l-.707-.707a1 1 0 011.414-1.414l.707.707a1 1 0 010 1.414zM10 16a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM4.343 15.657a1 1 0 010-1.414l.707-.707a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414 0zM3 9a1 1 0 110 2H2a1 1 0 110-2h1zM4.343 4.343a1 1 0 011.414 0l.707.707A1 1 0 015.05 6.464L4.343 5.757a1 1 0 010-1.414z"/></svg>
-                  ) : (
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 116.707 2.707a7 7 0 0010.586 10.586z"/></svg>
-                  )}
-                </span>
-                <span className="sr-only">Modo oscuro</span>
-              </button>
+            </svg>
+          </button>
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:block">
+              <h1 className="text-lg font-bold text-gray-900 dark:text-white">Sistema Ollantay</h1>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Gestión de préstamos</p>
             </div>
           </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => updateDark(!dark)}
+              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              aria-label="Toggle dark mode"
+            >
+              {dark ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zM15.657 4.343a1 1 0 010 1.414l-.707.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM18 9a1 1 0 110 2h-1a1 1 0 110-2h1zM15.657 15.657a1 1 0 01-1.414 0l-.707-.707a1 1 0 011.414-1.414l.707.707a1 1 0 010 1.414zM10 16a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM4.343 15.657a1 1 0 010-1.414l.707-.707a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414 0zM3 9a1 1 0 110 2H2a1 1 0 110-2h1zM4.343 4.343a1 1 0 011.414 0l.707.707A1 1 0 015.05 6.464L4.343 5.757a1 1 0 010-1.414z"/></svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 116.707 2.707a7 7 0 0010.586 10.586z"/></svg>
+              )}
+            </button>
+            <button
+              onClick={() => setShowLogoutConfirm(true)}
+              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-700 dark:text-gray-200"
+              aria-label="Salir"
+            >
+              <LogoutIcon />
+            </button>
+          </div>
+        </div>
+      </header>
 
-      {/* Menú hamburguesa tipo GitHub: menú flotante, íconos, cierre al hacer clic fuera */}
-      {navOpen && (
-        <div
-          className="fixed inset-0 z-20" 
-          onClick={()=>setNavOpen(false)}
-          aria-hidden="true"
-          style={{background:'rgba(0,0,0,0.05)'}}
+      {/* Overlay para cerrar sidebar en móvil */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
         />
       )}
-      <nav
-        id="main-nav"
-        className={`absolute right-0 top-14 z-30 w-64 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl py-2 transition-all duration-200 ${navOpen ? 'block animate-fade-in' : 'hidden'}`}
-        style={{minWidth:'220px'}}
-        onClick={e=>e.stopPropagation()}
-      >
-        {has('tipos','view') && (
-          <button onClick={()=>{ setView('tipos'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='tipos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
-            Tipos
-          </button>
-        )}
-        {has('personas','view') && (
-          <button onClick={()=>{ setView('personas'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
-            Personas
-          </button>
-        )}
-        {has('empresas','view') && (
-          <button onClick={()=>{ setView('empresas'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
-            Empresas
-          </button>
-        )}
-        {has('prestamos','view') && (
-          <button onClick={()=>{ setView('prestamos'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
-            Prestamos
-          </button>
-        )}
-        {has('roles','manage') && (
-          <>
-            <button onClick={()=>{ setView('usuarios'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
-              Usuarios
-            </button>
-            <button onClick={()=>{ setView('admin'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='admin' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
-              Roles & Permisos
-            </button>
-          </>
-        )}
-        <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 mt-2">{loggedUser?.username ? `Usuario: ${loggedUser.username}` : `Rol: ${userRole}`}</div>
-      </nav>
-        </header>
 
-        <main>
+      <div className="flex pt-16">
+        {/* Sidebar */}
+        <aside className={`fixed md:static z-40 left-0 top-16 h-[calc(100vh-4rem)] w-64 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-r shadow-lg flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+          <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+            {has('tipos','view') && (
+              <button onClick={()=>{setView('tipos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='tipos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
+                Tipos
+              </button>
+            )}
+            {has('personas','view') && (
+              <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
+                Personas
+              </button>
+            )}
+            {has('empresas','view') && (
+              <button onClick={()=>{setView('empresas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
+                Empresas
+              </button>
+            )}
+            {has('prestamos','view') && (
+              <button onClick={()=>{setView('prestamos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
+                Prestamos
+              </button>
+            )}
+            {has('roles','manage') && (
+              <>
+                <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
+                  Usuarios
+                </button>
+                <button onClick={()=>{setView('admin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='admin' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+                  Roles & Permisos
+                </button>
+              </>
+            )}
+          </nav>
+          
+          {/* User info y acciones en el sidebar */}
+          <div className={`mt-auto px-3 py-4 border-t ${dark ? 'border-gray-700' : 'border-gray-200'} space-y-3`}>
+            <div className="flex items-center gap-3 px-2">
+              {profilePhoto ? (
+                <img src={profilePhoto} alt="Foto de perfil" className="w-8 h-8 rounded-full object-cover border-2 border-blue-500" />
+              ) : (
+                <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
+                  {loggedUser?.nombres?.[0] || loggedUser?.username?.[0] || 'U'}
+                </div>
+              )}
+              <div>
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Usuario activo</p>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{loggedUser?.username || userRole}</p>
+              </div>
+            </div>
+            <label htmlFor="profile-photo-upload" className="block px-2 cursor-pointer text-xs text-blue-600 dark:text-blue-400 hover:underline mt-2">
+              📷 Cambiar foto de perfil
+            </label>
+            <input id="profile-photo-upload" type="file" accept="image/*" className="hidden" onChange={async e => {
+              const file = e.target.files?.[0]
+              if(!file) return
+              // Convert to data URL and upload to backend
+              const toDataURL = (f) => new Promise((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(reader.result)
+                reader.onerror = reject
+                reader.readAsDataURL(f)
+              })
+              try{
+                const dataUrl = await toDataURL(file)
+                const res = await fetch(`${API_PERSONS}/users/me/photo`, {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ photo: dataUrl })
+                })
+                if(!res.ok){
+                  const j = await res.json().catch(async ()=> ({raw: await res.text()}))
+                  throw new Error(j?.detail || j?.raw || `Status ${res.status}`)
+                }
+                const j = await res.json()
+                const p = j?.profilePhoto || dataUrl
+                setProfilePhoto(p)
+                try{ localStorage.setItem('ollantay-profile-photo', p) }catch(e){}
+                // Optionally update loggedUser cache
+                setLoggedUser(u => (u ? { ...u, profilePhoto: p } : u))
+              }catch(err){
+                console.error('Error al subir foto:', err)
+                alert('No se pudo actualizar la foto de perfil: ' + (err?.message || 'Error desconocido'))
+              }
+            }} />
+          </div>
+        </aside>
+
+        {/* Main content */}
+        <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
           {view === 'tipos' && has('tipos','view') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} />}
@@ -286,14 +334,38 @@ export default function App(){
             </div>
           )}
         </main>
-
-        <footer className="mt-8 py-4 text-center text-sm text-gray-500">
-          © {new Date().getFullYear()} Sistema Ollantay — desarrollado con ❤️
-          <div className="mt-1 text-xs text-gray-400">Versión: v{appVersion}</div>
-        </footer>
       </div>
+
+      {/* Footer mejorado */}
+      <footer className={`${dark ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-600'} border-t py-6 mt-8`}>
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="text-center md:text-left">
+              <p className="text-sm font-medium">
+                © {new Date().getFullYear()} Sistema Ollantay
+              </p>
+              <p className="text-xs mt-1">
+                Desarrollado con ❤️ para la gestión eficiente de préstamos
+              </p>
+            </div>
+            <div className="flex items-center gap-6 text-xs">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 11H9v-2h2v2zm0-4H9V5h2v4z"/>
+                </svg>
+                <span>Versión: <span className="font-mono font-semibold">v{window.__OLLANTAY_VERSION__ || appVersion}</span></span>
+              </div>
+              <div className="hidden sm:block">
+                <span className="px-2 py-1 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded-full text-xs font-medium">
+                  Sistema Activo
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
-      <LogoutConfirm open={showLogoutConfirm} onCancel={handleLogoutCancel} onConfirm={handleLogoutConfirm} />
+      <LogoutConfirm open={showLogoutConfirm} onCancel={handleLogoutConfirm} onConfirm={handleLogoutConfirm} />
     </ToastProvider>
   )
 }
