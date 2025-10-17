@@ -1,17 +1,21 @@
-import React, {useState, useEffect} from 'react'
+import React, {useState, useEffect, useMemo} from 'react'
 import { useToast } from '../ToastContext'
 
-export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin'}){
+export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin', loggedUser=null, permissions=[]}){
+  const has = (res, act) => permissions.includes(`${res}:${act}`)
   const [loans, setLoans] = useState([])
   const [filteredLoans, setFilteredLoans] = useState([])
   const [loading, setLoading] = useState(true)
+  // persons: current list used for cliente select (may be filtered by tipo)
   const [persons, setPersons] = useState([])
+  // allPersons: full list used to derive chofer options regardless of cliente filter
+  const [allPersons, setAllPersons] = useState([])
   const [types, setTypes] = useState([])
   const [choferTypeId, setChoferTypeId] = useState(null)
   const [selectedFilterTipo, setSelectedFilterTipo] = useState('')
   const [loadingPersons, setLoadingPersons] = useState(true)
   const [loadingTypes, setLoadingTypes] = useState(true)
-  const [form, setForm] = useState({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''})
+  const [form, setForm] = useState({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:'', idTipocaja:'', idProducto:''})
   const [multiplier, setMultiplier] = useState(1)
   const [bottlesEdited, setBottlesEdited] = useState(false)
   const [createdLoan, setCreatedLoan] = useState(null)
@@ -22,6 +26,14 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const [filterEstado, setFilterEstado] = useState('')
   const [filterFrom, setFilterFrom] = useState('')
   const [filterTo, setFilterTo] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [tipocajas, setTipocajas] = useState([])
+  const [productos, setProductos] = useState([])
+  const [loadingTipocajas, setLoadingTipocajas] = useState(true)
+  const [loadingProductos, setLoadingProductos] = useState(true)
+  const [showAdminSummary, setShowAdminSummary] = useState(false)
+  const [adminQ, setAdminQ] = useState('')
+  const [expandedClient, setExpandedClient] = useState(null)
 
   React.useEffect(()=>{
     const t = setTimeout(()=>{
@@ -49,7 +61,10 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadLoans = async ()=>{
     setLoading(true)
     try{
-  const res = await fetch(`${API}/loans`, { headers: { 'X-User-Role': userRole } })
+      // If user role is 'cliente', filter by their id_persona
+      const isCliente = userRole === 'cliente' && loggedUser?.id_persona
+      const url = isCliente ? `${API}/loans?id_persona=${loggedUser.id_persona}` : `${API}/loans`
+  const res = await fetch(url, { headers: { 'X-User-Role': userRole } })
       const data = await res.json()
       // normalize loan objects: ensure keys like id_persona and chofer exist even if backend returned odd keys
       const norm = (item) => {
@@ -81,9 +96,10 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadPersons = async ()=>{
     setLoadingPersons(true)
     try{
-  const res = await fetch(`${API_PERSONAS}/persons`, { headers: { 'X-User-Role': userRole } })
+      const res = await fetch(`${API_PERSONAS}/persons`, { headers: { 'X-User-Role': userRole } })
       const data = await res.json()
-      setPersons(data)
+      setAllPersons(Array.isArray(data) ? data : [])
+      setPersons(Array.isArray(data) ? data : [])
     }catch(err){ /* ignore */ }
     finally{ setLoadingPersons(false) }
   }
@@ -104,39 +120,107 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
     finally{ setLoadingTypes(false) }
   }
 
+  const loadTipocajas = async ()=>{
+    if(!API) return
+    try{
+      const res = await fetch(`${API}/tipocajas`, { headers: { 'X-User-Role': userRole } })
+      if(!res.ok) throw new Error('Error fetching tipocajas')
+      const data = await res.json()
+      setTipocajas(Array.isArray(data) ? data : [])
+    }catch(err){ console.error(err); toast.push('Error cargando tipos de caja','error') }
+    finally{ setLoadingTipocajas(false) }
+  }
+
+  const loadProductos = async ()=>{
+    if(!API) return
+    try{
+      const res = await fetch(`${API}/productos`, { headers: { 'X-User-Role': userRole } })
+      if(!res.ok) throw new Error('Error fetching productos')
+      const data = await res.json()
+      setProductos(Array.isArray(data) ? data : [])
+    }catch(err){ console.error(err); toast.push('Error cargando productos','error') }
+    finally{ setLoadingProductos(false) }
+  }
+
   const toast = useToast()
 
-  useEffect(()=>{ loadLoans(); loadPersons(); loadTypes() }, [])
+  useEffect(()=>{ loadLoans(); loadPersons(); loadTypes(); loadTipocajas(); loadProductos() }, [])
+
+  // Auto-set multiplier from tipo de caja selection (madera=40, plástico=12)
+  useEffect(()=>{
+    if(!form.idTipocaja) return
+    const tc = tipocajas.find(t => String(t.idTipocaja) === String(form.idTipocaja))
+    if(!tc) return
+    const name = (tc.nombretipo_caja || '').toLowerCase()
+    let auto = multiplier
+    if(name.includes('madera')) auto = 40
+    else if(name.includes('plast')) auto = 12
+    else return // keep current if no match
+    // apply only if user no edit on bottles, or always update multiplier
+    setMultiplier(auto)
+    if(!bottlesEdited){
+      const nCajas = Number(form.cantidad_envaseCaja) || 0
+      setForm(prev => ({...prev, cantidad_prestamoBotellas: String(nCajas * auto)}))
+    }
+  }, [form.idTipocaja, tipocajas])
 
   // when selectedFilterTipo changes, fetch persons filtered by tipo from server
   useEffect(()=>{
     const loadByTipo = async ()=>{
       if(!selectedFilterTipo){
-        // if no filter, we keep full list (already loaded)
+        // restore full list for client selection, but do not affect chofer options
+        setPersons(allPersons)
         return
       }
       setLoadingPersons(true)
       try{
-  const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`, { headers: { 'X-User-Role': userRole } })
+        const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`, { headers: { 'X-User-Role': userRole } })
         if(!res.ok) throw new Error('Error fetching persons by tipo')
         const data = await res.json()
-        setPersons(data)
+        setPersons(Array.isArray(data) ? data : [])
       }catch(err){ console.error(err) }
       finally{ setLoadingPersons(false) }
     }
     loadByTipo()
-  }, [selectedFilterTipo])
+  }, [selectedFilterTipo, allPersons])
 
   // helper: today's date in YYYY-MM-DD for max attribute
   const todayISO = new Date().toISOString().slice(0,10)
 
   const getPersonName = (id) => {
     if(!id && id !== 0) return '-'
-    const p = persons.find(p => String(p.id_persona) === String(id))
+    const p = (allPersons.length ? allPersons : persons).find(p => String(p.id_persona) === String(id))
     if(!p) return String(id)
     const names = [p.nombres_persona, p.apellido_paternoPersona, p.apellido_maternoPer].filter(Boolean).join(' ')
     return names || String(id)
   }
+
+  // Admin summary grouping (active loans per client)
+  const adminGroups = useMemo(()=>{
+    const active = loans.filter(l => Number(l.estado_prestamo) === 0)
+    const map = new Map()
+    for(const l of active){
+      const key = String(l.id_persona)
+      if(!map.has(key)) map.set(key, { id_persona: l.id_persona, cajas:0, botellas:0, productos:new Map(), items:[] })
+      const g = map.get(key)
+      g.cajas += Number(l.cantidad_envaseCaja)||0
+      g.botellas += Number(l.cantidad_prestamoBotellas)||0
+      const prod = l.nombreProducto || '-'
+      g.productos.set(prod, (g.productos.get(prod)||0) + (Number(l.cantidad_prestamoBotellas)||0))
+      g.items.push(l)
+    }
+    let arr = Array.from(map.values()).map(g=>({
+      ...g,
+      cliente: getPersonName(g.id_persona),
+      productosArr: Array.from(g.productos.entries()).map(([nombre, bot])=>({nombre, bot}))
+    }))
+    if(adminQ){
+      const q = adminQ.toLowerCase()
+      arr = arr.filter(x => x.cliente.toLowerCase().includes(q))
+    }
+    arr.sort((a,b)=> b.botellas - a.botellas)
+    return arr
+  }, [loans, adminQ, allPersons, persons])
 
   const submit = async (e)=>{
     e.preventDefault()
@@ -156,6 +240,8 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
       today.setHours(0,0,0,0)
   if(fp > today){ toast.push('La fecha de prestamo no puede ser mayor a la fecha actual','error'); return }
     }
+    // validate idTipocaja is required
+    if(!form.idTipocaja){ toast.push('El campo tipo de caja es requerido','error'); return }
     setSubmitting(true)
     try{
       const payload = {
@@ -166,7 +252,9 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
         id_persona: form.id_persona ? Number(form.id_persona) : null,
         estado_prestamo: Number(form.estado_prestamo),
         fecha_devolucion: form.fecha_devolucion || null,
-        chofer: Number(form.chofer)
+        chofer: Number(form.chofer),
+        idTipocaja: Number(form.idTipocaja),
+        idProducto: form.idProducto ? Number(form.idProducto) : null
       }
   const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
       if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
@@ -185,10 +273,27 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   if(!editingLoanId){ toast.push('No hay préstamo seleccionado para actualizar','error'); return }
     setSubmitting(true)
     try{
-      // Only send editable fields (estado_prestamo and fecha_devolucion)
-      const payload = {
-        estado_prestamo: Number(form.estado_prestamo),
-        fecha_devolucion: form.fecha_devolucion || null
+      let payload
+      if (userRole === 'admin') {
+        // Admin can edit all fields
+        payload = {
+          cantidad_envaseCaja: form.cantidad_envaseCaja ? Number(form.cantidad_envaseCaja) : null,
+          cantidad_prestamoBotellas: form.cantidad_prestamoBotellas ? Number(form.cantidad_prestamoBotellas) : null,
+          descripcion_envase: form.descripcion_envase || null,
+          fecha_prestamo: form.fecha_prestamo || null,
+          id_persona: form.id_persona ? Number(form.id_persona) : null,
+          estado_prestamo: Number(form.estado_prestamo),
+          fecha_devolucion: form.fecha_devolucion || null,
+          chofer: Number(form.chofer),
+          idTipocaja: Number(form.idTipocaja),
+          idProducto: form.idProducto ? Number(form.idProducto) : null
+        }
+      } else {
+        // Editor: only editable fields (estado_prestamo and fecha_devolucion)
+        payload = {
+          estado_prestamo: Number(form.estado_prestamo),
+          fecha_devolucion: form.fecha_devolucion || null
+        }
       }
   const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
   if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
@@ -196,31 +301,191 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
       // refresh
       setCreatedLoan(null)
       setEditingLoanId(null)
-      setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''})
+      setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:'', idTipocaja:'', idProducto:''})
       setBottlesEdited(false)
       loadLoans()
     }catch(err){ toast.push(err.message || 'Error','error') }
     finally{ setSubmitting(false) }
   }
 
+  const startEditLoan = (loan) => {
+    setEditingLoanId(loan.id_prestamo)
+    setForm({
+      cantidad_envaseCaja: loan.cantidad_envaseCaja,
+      cantidad_prestamoBotellas: loan.cantidad_prestamoBotellas,
+      descripcion_envase: loan.descripcion_envase,
+      fecha_prestamo: loan.fecha_prestamo,
+      id_persona: loan.id_persona,
+      estado_prestamo: loan.estado_prestamo,
+      fecha_devolucion: loan.fecha_devolucion,
+      chofer: loan.chofer,
+      idTipocaja: loan.idTipocaja || '',
+      idProducto: loan.idProducto || ''
+    })
+  }
+
+  const deleteLoan = async (id) => {
+    if(!confirm('¿Eliminar préstamo?')) return
+    try {
+      const res = await fetch(`${API}/loans/${id}`, { method: 'DELETE', credentials: 'include' })
+      if(res.status !== 204) throw new Error('No se pudo eliminar')
+      loadLoans()
+    } catch (err) {
+      toast.push('Error eliminando préstamo','error')
+    }
+  }
+
   return (
     <div>
       <h2 className="text-xl font-semibold mb-4">Prestamos</h2>
+      
+      {/* Resumen para clientes */}
+      {userRole === 'cliente' && (
+        <div className="bg-blue-50 dark:bg-gray-800 p-4 rounded-lg shadow mb-4 border-2 border-blue-200 dark:border-blue-800">
+          <h3 className="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">Resumen de Préstamos Pendientes</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white dark:bg-gray-700 p-3 rounded shadow">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Total Cajas Prestadas</div>
+              <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                {filteredLoans.filter(l => l.estado_prestamo === 0).reduce((sum, l) => sum + (l.cantidad_envaseCaja || 0), 0)}
+              </div>
+            </div>
+            <div className="bg-white dark:bg-gray-700 p-3 rounded shadow">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Total Botellas Prestadas</div>
+              <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+                {filteredLoans.filter(l => l.estado_prestamo === 0).reduce((sum, l) => sum + (l.cantidad_prestamoBotellas || 0), 0)}
+              </div>
+            </div>
+            <div className="bg-white dark:bg-gray-700 p-3 rounded shadow">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Productos Activos</div>
+              <div className="text-sm mt-1">
+                {[...new Set(filteredLoans.filter(l => l.estado_prestamo === 0 && l.nombreProducto).map(l => l.nombreProducto))].join(', ') || 'Ninguno'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Panel admin: Resumen por cliente (diseño mejorado) */}
+      {has('roles','manage') && (
+        <div className="bg-gradient-to-br from-yellow-100 via-white to-yellow-200 dark:from-gray-900 dark:via-gray-800 dark:to-yellow-900 p-6 rounded-2xl shadow-xl mb-8 border border-yellow-300 dark:border-yellow-700">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-2xl font-bold text-yellow-900 dark:text-yellow-200 tracking-tight">Resumen de Deudas por Cliente</h3>
+            <button onClick={()=>setShowAdminSummary(s=>!s)} className={`px-4 py-2 rounded-lg font-semibold shadow transition-colors ${showAdminSummary ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-yellow-900'}`}>
+              {showAdminSummary ? 'Ocultar' : 'Ver resumen'}
+            </button>
+          </div>
+          {showAdminSummary && (
+            <div className="transition-all duration-300">
+              <div className="mb-6 flex flex-col md:flex-row items-center gap-4">
+                <input className="p-3 border border-yellow-300 dark:border-yellow-700 rounded-lg flex-1 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow focus:ring-2 focus:ring-yellow-400" placeholder="Buscar cliente..." value={adminQ} onChange={e=>setAdminQ(e.target.value)} />
+                <div className="text-sm text-gray-700 dark:text-gray-300">Clientes: <span className="font-bold">{adminGroups.length}</span></div>
+              </div>
+              <div className="grid gap-6">
+                {adminGroups.length === 0 && (
+                  <div className="p-6 text-center text-lg text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-900 rounded-xl shadow">No hay deudas activas</div>
+                )}
+                {adminGroups.map(g => (
+                  <div key={`g-${g.id_persona}`} className="bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6 border border-yellow-200 dark:border-yellow-700 transition hover:scale-[1.01]">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-yellow-400 dark:bg-yellow-700 flex items-center justify-center text-xl font-bold text-white shadow">{g.cliente[0]}</div>
+                        <div>
+                          <div className="text-lg font-semibold text-yellow-900 dark:text-yellow-200">{g.cliente}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">ID: {g.id_persona}</div>
+                        </div>
+                      </div>
+                      <div className="flex gap-6 md:gap-10">
+                        <div className="text-center">
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Cajas activas</div>
+                          <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-300">{g.cajas}</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Botellas activas</div>
+                          <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-300">{g.botellas}</div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Productos</div>
+                        <div className="flex flex-wrap gap-2">
+                          {g.productosArr.map(p => (
+                            <span key={`${g.id_persona}-${p.nombre}`} className="px-2 py-1 rounded bg-yellow-100 dark:bg-yellow-800 text-yellow-900 dark:text-yellow-200 text-xs font-medium shadow">{p.nombre}: <span className="font-bold">{p.bot}</span></span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end">
+                        <button onClick={()=> setExpandedClient(c=> c===g.id_persona ? null : g.id_persona)} className={`btn btn-secondary text-xs px-3 py-1.5 ${expandedClient===g.id_persona ? 'bg-yellow-200 dark:bg-yellow-900' : ''}`}>{expandedClient===g.id_persona ? 'Ocultar detalle' : 'Ver detalle'}</button>
+                      </div>
+                    </div>
+                    {expandedClient===g.id_persona && (
+                      <div className="mt-4 bg-yellow-50 dark:bg-gray-800 rounded-xl p-4 border border-yellow-200 dark:border-yellow-700 shadow-inner animate-fade-in">
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs rounded-lg">
+                            <thead>
+                              <tr className="text-gray-700 dark:text-gray-300">
+                                <th className="px-2 py-1 text-left">ID</th>
+                                <th className="px-2 py-1 text-left">Fecha</th>
+                                <th className="px-2 py-1 text-left">Tipo Caja</th>
+                                <th className="px-2 py-1 text-left">Producto</th>
+                                <th className="px-2 py-1 text-right">Cajas</th>
+                                <th className="px-2 py-1 text-right">Botellas</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.items.map(it => (
+                                <tr key={`gi-${it.id_prestamo}`} className="hover:bg-yellow-100 dark:hover:bg-yellow-900/40 transition-colors">
+                                  <td className="px-2 py-1">{it.id_prestamo}</td>
+                                  <td className="px-2 py-1">{it.fecha_prestamo}</td>
+                                  <td className="px-2 py-1">{it.nombretipo_caja || '-'}</td>
+                                  <td className="px-2 py-1">{it.nombreProducto || '-'}</td>
+                                  <td className="px-2 py-1 text-right">{it.cantidad_envaseCaja}</td>
+                                  <td className="px-2 py-1 text-right">{it.cantidad_prestamoBotellas}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
   <div className="bg-panel p-4 rounded shadow mb-4 text-panel">
         <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-2 items-center">
           <input className="p-2 border" placeholder="Buscar por cliente, chofer, descripción" value={loanSearchQ} onChange={e=>setLoanSearchQ(e.target.value)} />
           <select className="p-2 border" value={filterEstado} onChange={e=>setFilterEstado(e.target.value)}>
             <option value="">Todos</option>
-            <option value="0">Activo</option>
-            <option value="1">Devuelto</option>
+            <option value="0">Devuelto</option>
+            <option value="1">Activo</option>
           </select>
           <input type="date" className="p-2 border" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)} />
           <input type="date" className="p-2 border" value={filterTo} onChange={e=>setFilterTo(e.target.value)} />
         </div>
 
-  {userRole !== 'viewer' ? (
-  <form onSubmit={isEditing ? submitUpdate : submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input disabled={isEditing || userRole === 'viewer'} className="p-2 border" placeholder="Cantidad cajas" value={form.cantidad_envaseCaja} inputMode="numeric" onChange={e=>{
+  {/* Toggle button for create form - need permisos prestamos:create */}
+  {has('prestamos','create') && !isEditing && (
+          <button
+            onClick={() => setShowCreate(!showCreate)}
+            className={`mb-4 px-4 py-2 rounded font-semibold transition-colors ${
+              showCreate ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'
+            }`}
+          >
+            {showCreate ? '− Cancelar' : '+ Nuevo Prestamo'}
+          </button>
+        )}
+
+  {has('prestamos','create') && (showCreate || isEditing) ? (
+              <div className="mb-4 p-4 border-2 border-blue-200 dark:border-blue-800 rounded-lg bg-blue-50 dark:bg-gray-800 shadow-md transition-all">
+                <h3 className="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">
+                  {isEditing ? 'Editar Prestamo' : 'Crear Nuevo Prestamo'}
+                </h3>
+                <form onSubmit={isEditing ? submitUpdate : submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} className="p-2 border" placeholder="Cantidad cajas" value={form.cantidad_envaseCaja} inputMode="numeric" onChange={e=>{
             const val = e.target.value
             setForm(prev => ({...prev, cantidad_envaseCaja: val}))
             // auto-calc bottles if user hasn't manually edited bottles
@@ -230,11 +495,11 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
             }
           }} />
           <div>
-            <input disabled={isEditing || userRole === 'viewer'} className="p-2 border w-full" placeholder="Cantidad botellas" value={form.cantidad_prestamoBotellas} inputMode="numeric" onChange={e=>{ setBottlesEdited(true); setForm({...form, cantidad_prestamoBotellas: e.target.value}) }} />
+            <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} className="p-2 border w-full" placeholder="Cantidad botellas" value={form.cantidad_prestamoBotellas} inputMode="numeric" onChange={e=>{ setBottlesEdited(true); setForm({...form, cantidad_prestamoBotellas: e.target.value}) }} />
           </div>
           <div className="flex items-center gap-2">
             <label className="text-sm text-gray-600">Botellas por caja</label>
-            <input disabled={isEditing || userRole === 'viewer'} type="number" min="0" step="1" className="p-2 border w-24" value={multiplier} onChange={e=>{
+            <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} type="number" min="0" step="1" className="p-2 border w-24" value={multiplier} onChange={e=>{
               const m = Number(e.target.value) || 0
               setMultiplier(m)
               if(!bottlesEdited){
@@ -242,12 +507,37 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
                 setForm(prev => ({...prev, cantidad_prestamoBotellas: String(nCajas * m)}))
               }
             }} />
-            <button disabled={isEditing} type="button" className="ml-2 px-2 py-1 border rounded text-sm" onClick={()=>{ setMultiplier(1); if(!bottlesEdited){ const nCajas = Number(form.cantidad_envaseCaja)||0; setForm(prev=>({...prev, cantidad_prestamoBotellas: String(nCajas*1)})) } }}>Reset</button>
+            <button disabled={(isEditing && !has('prestamos','update'))} type="button" className="ml-2 px-2 py-1 border rounded text-sm" onClick={()=>{ setMultiplier(1); if(!bottlesEdited){ const nCajas = Number(form.cantidad_envaseCaja)||0; setForm(prev=>({...prev, cantidad_prestamoBotellas: String(nCajas*1)})) } }}>Reset</button>
           </div>
-          <input className="p-2 border col-span-1 md:col-span-2" placeholder="Descripción envase" value={form.descripcion_envase} onChange={e=>setForm({...form, descripcion_envase:e.target.value})} />
+          <input disabled={(isEditing && !has('prestamos','update'))} className="p-2 border col-span-1 md:grid-cols-2" placeholder="Descripción envase" value={form.descripcion_envase} onChange={e=>setForm({...form, descripcion_envase:e.target.value})} />
+          
+          {/* Tipo de caja dropdown (required) */}
+          <div>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo de Caja <span className="text-red-500">*</span></label>
+            <div className="relative">
+              <select disabled={(isEditing && !has('prestamos','update')) || loadingTipocajas} className="p-2 border w-full" value={form.idTipocaja} onChange={e=>setForm({...form, idTipocaja:e.target.value})} required>
+                <option value="">{loadingTipocajas ? 'Cargando tipos de caja...' : 'Seleccionar tipo de caja'}</option>
+                {tipocajas.map(tc => <option key={tc.idTipocaja} value={tc.idTipocaja}>{tc.nombretipo_caja}</option>)}
+              </select>
+              {loadingTipocajas && <div className="absolute right-2 top-2 animate-spin">⏳</div>}
+            </div>
+          </div>
+
+          {/* Producto dropdown (optional) */}
+          <div>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Producto</label>
+            <div className="relative">
+              <select disabled={(isEditing && !has('prestamos','update')) || loadingProductos} className="p-2 border w-full" value={form.idProducto} onChange={e=>setForm({...form, idProducto:e.target.value})}>
+                <option value="">{loadingProductos ? 'Cargando productos...' : 'Seleccionar producto (opcional)'}</option>
+                {productos.map(p => <option key={p.idProducto} value={p.idProducto}>{p.nombreProducto}</option>)}
+              </select>
+              {loadingProductos && <div className="absolute right-2 top-2 animate-spin">⏳</div>}
+            </div>
+          </div>
+
           <div>
             <label className="block text-sm text-gray-700 mb-1">Fecha de préstamo</label>
-            <input disabled={isEditing || userRole === 'viewer'} type="date" max={todayISO} className="p-2 border w-full" value={form.fecha_prestamo} onChange={e=>setForm({...form, fecha_prestamo:e.target.value})} />
+            <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} type="date" max={todayISO} className="p-2 border w-full" value={form.fecha_prestamo} onChange={e=>setForm({...form, fecha_prestamo:e.target.value})} />
           </div>
           <div>
             <label className="block text-sm text-gray-700 mb-1">Filtrar clientes por Tipo</label>
@@ -266,7 +556,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
             <div className="relative">
               {/* Build the options: filtered by selectedFilterTipo, but always include the currently selected client so it shows when editing */}
               {loadingPersons && <div className="p-2">Cargando personas...</div>}
-              <select disabled={isEditing || loadingPersons || userRole === 'viewer'} className="p-2 border w-full" value={form.id_persona} onChange={e=>setForm({...form, id_persona:e.target.value})}>
+              <select disabled={(isEditing && userRole !== 'admin') || loadingPersons || userRole === 'viewer'} className="p-2 border w-full" value={form.id_persona} onChange={e=>setForm({...form, id_persona:e.target.value})}>
                 <option value="">{loadingPersons ? 'Cargando personas...' : (selectedFilterTipo ? 'Seleccionar persona (cliente)' : 'Seleccione un tipo para cargar clientes')}</option>
                 {
                   (()=>{
@@ -292,96 +582,79 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
           <div>
             <label className="block text-sm text-gray-700 mb-1">Chofer</label>
               <div className="relative">
-              <select className="p-2 border w-full" value={form.chofer} onChange={e=>setForm({...form, chofer:e.target.value})} disabled={loadingPersons || !choferTypeId || isEditing || userRole === 'viewer'}>
+              <select className="p-2 border w-full" value={form.chofer} onChange={e=>setForm({...form, chofer:e.target.value})} disabled={loadingPersons || !choferTypeId || (isEditing && !has('prestamos','update'))}>
                 <option value="">{loadingPersons ? 'Cargando choferes...' : (!choferTypeId ? 'No hay tipo chofer detectado' : 'Seleccionar chofer')}</option>
-                {persons.filter(p => String(p.id_tipoPersona) === String(choferTypeId)).map(p => (
+                {(allPersons.length ? allPersons : persons).filter(p => String(p.id_tipoPersona) === String(choferTypeId)).map(p => (
                   <option key={`chofer-${p.id_persona}`} value={p.id_persona}>{p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer || ''}</option>
                 ))}
               </select>
               {loadingPersons && <div className="absolute right-2 top-2 animate-spin">⏳</div>}
             </div>
           </div>
-          <select className="p-2 border" value={form.estado_prestamo} onChange={e=>setForm({...form, estado_prestamo:e.target.value})} disabled={userRole === 'viewer'}>
+          <select className="p-2 border" value={form.estado_prestamo} onChange={e=>setForm({...form, estado_prestamo:e.target.value})} disabled={!has('prestamos','update') && !has('prestamos','create')}>
             <option value={0}>Activo</option>
             <option value={1}>Devuelto</option>
           </select>
           <input type="datetime-local" className="p-2 border" value={form.fecha_devolucion} onChange={e=>setForm({...form, fecha_devolucion:e.target.value})} />
             <div className="col-span-1 md:col-span-2">
-            {userRole !== 'viewer' && <button disabled={submitting || (!isEditing && !form.chofer)} className="btn btn-primary disabled:opacity-50">
+            {(has('prestamos','create') || has('prestamos','update')) && <button disabled={submitting || (!isEditing && !form.chofer)} className="btn btn-primary disabled:opacity-50">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M5 3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V8.414A2 2 0 0016.586 7L12 2.414A2 2 0 0010.586 2H5z"/></svg>
               {submitting ? 'Procesando...' : (isEditing ? 'Actualizar Prestamo' : 'Crear Prestamo')}
             </button>}
-            {isEditing && userRole !== 'viewer' && <button type="button" onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''}); setBottlesEdited(false) }} className="ml-2 btn btn-secondary">
+            {isEditing && (has('prestamos','update')) && <button type="button" onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:'', idTipocaja:'', idProducto:''}); setBottlesEdited(false) }} className="ml-2 btn btn-secondary">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293A1 1 0 006.293 7.707L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd"/></svg>
               Cancelar
             </button>}
           </div>
         </form>
-        ) : (
-          <div className="p-4 text-sm text-gray-600">Modo visor — sólo visualización. No puede crear ni editar préstamos.</div>
-        )}
+              </div>
+        ) : null}
       </div>
 
   <div className="bg-panel rounded shadow overflow-x-auto text-panel">
-        <table className="min-w-full divide-y text-sm">
-          <thead className="bg-gray-50">
+        <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
+          <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
-              <th className="px-4 py-2 text-left">ID</th>
-              <th className="px-4 py-2 text-left">Cliente</th>
-              <th className="px-4 py-2 text-left">Chofer</th>
-              <th className="px-4 py-2 text-left">Cantidad cajas</th>
-              <th className="px-4 py-2 text-left">Botellas</th>
-              <th className="px-4 py-2 text-left">Descripción</th>
-              <th className="px-4 py-2 text-left">Fecha préstamo</th>
-              <th className="px-4 py-2 text-left">Fecha devolución</th>
-              <th className="px-4 py-2 text-left">Estado</th>
-              <th className="px-4 py-2 text-left">Acciones</th>
+              <th className="px-4 py-2">ID</th>
+              <th className="px-4 py-2">Cliente</th>
+              <th className="px-4 py-2">Chofer</th>
+              <th className="px-4 py-2">Tipo Caja</th>
+              <th className="px-4 py-2">Producto</th>
+              <th className="px-4 py-2">Cantidad cajas</th>
+              <th className="px-4 py-2">Botellas</th>
+              <th className="px-4 py-2">Descripción</th>
+              <th className="px-4 py-2">Fecha préstamo</th>
+              <th className="px-4 py-2">Fecha devolución</th>
+              <th className="px-4 py-2">Estado</th>
+              <th className="px-4 py-2">Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td className="p-4" colSpan={10}>Cargando...</td></tr>}
-            {!loading && filteredLoans.length === 0 && <tr><td className="p-4" colSpan={10}>No hay prestamos</td></tr>}
+            {loading && <tr><td className="p-4" colSpan={12}>Cargando...</td></tr>}
+            {!loading && filteredLoans.length === 0 && <tr><td className="p-4" colSpan={12}>No hay prestamos</td></tr>}
             {filteredLoans.map(l => (
-              <tr key={l.id_prestamo} className="border-t">
+              <tr key={l.id_prestamo} className="border-b dark:border-gray-700">
                 <td className="px-4 py-2">{l.id_prestamo}</td>
                 <td className="px-4 py-2">{getPersonName(l.id_persona)}</td>
                 <td className="px-4 py-2">{getPersonName(l.chofer)}</td>
+                <td className="px-4 py-2">{l.nombretipo_caja || '-'}</td>
+                <td className="px-4 py-2">{l.nombreProducto || '-'}</td>
                 <td className="px-4 py-2">{l.cantidad_envaseCaja}</td>
                 <td className="px-4 py-2">{l.cantidad_prestamoBotellas}</td>
                 <td className="px-4 py-2">{l.descripcion_envase}</td>
                 <td className="px-4 py-2">{l.fecha_prestamo}</td>
-                <td className="px-4 py-2">{l.fecha_devolucion ?? '-'}</td>
-                <td className="px-4 py-2">{l.estado_prestamo ? 'Devuelto' : 'Activo'}</td>
+                <td className="px-4 py-2">{l.fecha_devolucion}</td>
                 <td className="px-4 py-2">
-                  {userRole !== 'viewer' && !isEditing && <button onClick={async ()=>{
-                    // load loan into form for editing fecha_devolucion and estado
-                    setCreatedLoan(l)
-                    setEditingLoanId(l.id_prestamo)
-                    setForm(prev => ({...prev, cantidad_envaseCaja: l.cantidad_envaseCaja, cantidad_prestamoBotellas: l.cantidad_prestamoBotellas, descripcion_envase: l.descripcion_envase || '', fecha_prestamo: l.fecha_prestamo || '', id_persona: l.id_persona || '', estado_prestamo: l.estado_prestamo || 0, fecha_devolucion: l.fecha_devolucion || '', chofer: l.chofer || ''}))
-                    setBottlesEdited(true)
-                    // ensure client select is visible by setting selectedFilterTipo from the client's record
-                    const clientId = l.id_persona
-                    if(clientId){
-                      const p = persons.find(pp => String(pp.id_persona) === String(clientId))
-                      if(p && p.id_tipoPersona){
-                        setSelectedFilterTipo(String(p.id_tipoPersona))
-                      } else {
-                        // fetch single person as fallback
-                        try{
-                          const r = await fetch(`${API_PERSONAS}/persons/${clientId}`, { headers: { 'X-User-Role': userRole } })
-                          if(r.ok){ const data = await r.json(); if(data?.id_tipoPersona) setSelectedFilterTipo(String(data.id_tipoPersona)) }
-                        }catch(e){ /* ignore */ }
-                      }
-                    }
-                  }} className="mr-2 btn btn-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 010 2.828L8.414 14.414 4 16l1.586-4.414L14.586 2.586a2 2 0 012.828 0z"/></svg>
-                    Editar
-                  </button>}
-                  {userRole !== 'viewer' && isEditing && editingLoanId === l.id_prestamo && (
-                    <button onClick={()=>{ setEditingLoanId(null); setCreatedLoan(null); setForm({cantidad_envaseCaja:'', cantidad_prestamoBotellas:'', descripcion_envase:'', fecha_prestamo:'', id_persona:'', estado_prestamo:0, fecha_devolucion:'', chofer:''}); setBottlesEdited(false) }} className="btn btn-secondary">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293A1 1 0 006.293 7.707L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd"/></svg>
-                      Cancelar
-                    </button>
+                  <span className={`inline-block px-2 py-1 rounded-full text-xs font-semibold ${l.estado_prestamo === 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{l.estado_prestamo === 0 ? 'Activo' : 'Devuelto'}</span>
+                </td>
+                <td className="px-4 py-2">
+                  {(has('prestamos','update') || has('prestamos','delete')) ? (
+                    <div className="flex gap-2">
+                      {has('prestamos','update') && <button onClick={()=>startEditLoan(l)} className="btn btn-blue"><span className="mr-1">✎</span>Editar</button>}
+                      {has('prestamos','delete') && <button onClick={()=>deleteLoan(l.id_prestamo)} className="btn btn-danger"><span className="mr-1">🗑️</span>Borrar</button>}
+                    </div>
+                  ) : (
+                    <span className="text-gray-500 text-sm">Solo lectura</span>
                   )}
                 </td>
               </tr>

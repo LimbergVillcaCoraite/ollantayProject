@@ -3,20 +3,33 @@ import Tipos from './components/Tipos'
 import Personas from './components/Personas'
 import Prestamos from './components/Prestamos'
 import Empresas from './components/Empresas'
+import Usuarios from './components/Usuarios'
 import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
-import { version } from '../package.json'
 
 export default function App(){
   const [view, setView] = useState('tipos')
+  const [appVersion, setAppVersion] = useState('loading...')
   const API_TYPES = import.meta.env.VITE_API_TYPES || 'http://localhost:8001'
   const API_PERSONS = import.meta.env.VITE_API_PERSONS || 'http://localhost:8002'
   const API_PRESTAMOS = import.meta.env.VITE_API_PRESTAMOS || 'http://localhost:8003'
   const [dark, setDark] = useState(() => localStorage.getItem('ollantay-dark') === '1')
   const [userRole, setUserRole] = useState('')
   const [loggedUser, setLoggedUser] = useState(null)
+  const perms = loggedUser?.permissions || []
+  const has = (resource, action) => perms.includes(`${resource}:${action}`)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
+  
+  // Load version automatically
+  useEffect(() => {
+    fetch('/version.json')
+      .then(res => res.json())
+      .then(data => setAppVersion(data.version))
+      .catch(() => setAppVersion('1.0.0'))
+  }, [])
+  
   const handleLogoutConfirm = ()=>{
     // call backend logout to clear cookie and clear session client-side
     (async ()=>{
@@ -73,7 +86,7 @@ export default function App(){
     setTypesLoading(true)
     setTypesError(null)
     try{
-      const res = await fetch(`${API_TYPES}/types`)
+      const res = await fetch(`${API_TYPES}/types`, { headers: userRole ? { 'X-User-Role': userRole } : {}, credentials: 'include' })
       if(!res.ok) throw new Error(`Server ${res.status}`)
       const data = await res.json()
       setTypes(data)
@@ -81,7 +94,26 @@ export default function App(){
     finally{ setTypesLoading(false) }
   }
 
-  useEffect(()=>{ loadTypes() }, [])
+  useEffect(()=>{ loadTypes() }, [API_TYPES, userRole])
+
+  // Ensure current view is permitted by permissions; if not, route to first allowed
+  useEffect(()=>{
+    const viewsOrder = ['prestamos','personas','empresas','tipos']
+    const allowed = viewsOrder.filter(v => (
+      (v==='prestamos' && has('prestamos','view')) ||
+      (v==='personas' && has('personas','view')) ||
+      (v==='empresas' && has('empresas','view')) ||
+      (v==='tipos' && has('tipos','view'))
+    ))
+    const adminAllowed = has('roles','manage')
+    if((view==='admin' || view==='usuarios') && !adminAllowed){
+      setView(allowed[0] || 'tipos')
+      return
+    }
+    if(!allowed.includes(view)){
+      setView(allowed[0] || (adminAllowed ? 'admin' : 'tipos'))
+    }
+  }, [perms])
 
   // handlers forwarded to Tipos component
   const handleEditTipo = (t)=>{ /* open edit in a modal or implement inline if desired */ }
@@ -124,8 +156,25 @@ export default function App(){
                 <p className="text-sm text-gray-600">Gestión de préstamos y personas</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              {loggedUser?.role === 'admin' ? (
+            <div className="flex items-center gap-3 relative">
+                {/* Botón menú hamburguesa estilo GitHub */}
+                <button
+                  onClick={()=>setNavOpen(o=>!o)}
+                  className={`relative z-30 inline-flex items-center justify-center w-10 h-10 rounded-full border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 shadow transition hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-400 ${navOpen ? 'ring-2 ring-blue-400' : ''}`}
+                  aria-expanded={navOpen}
+                  aria-controls="main-nav"
+                  aria-label="Abrir menú"
+                  title="Menú"
+                >
+                  <span className="sr-only">Abrir menú</span>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 text-gray-700 dark:text-gray-200">
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="3" y1="12" x2="21" y2="12" />
+                    <line x1="3" y1="18" x2="21" y2="18" />
+                  </svg>
+                </button>
+              {has('roles','manage') ? (
+                // Solo administradores con permiso de roles pueden ver este selector rápido
                 <RoleSelector role={userRole} onChange={setUserRole} />
               ) : (
                 <div className="text-sm text-gray-600">Rol: {userRole}</div>
@@ -157,25 +206,90 @@ export default function App(){
             </div>
           </div>
 
-    <nav className="mt-4 flex items-center gap-2">
-    <button onClick={()=>setView('tipos')} className={`btn ${view==='tipos' ? 'btn-primary' : 'btn-secondary'}`}>Tipos</button>
-            <button onClick={()=>setView('personas')} className={`btn ${view==='personas' ? 'btn-primary' : 'btn-secondary'}`}>Personas</button>
-            <button onClick={()=>setView('empresas')} className={`btn ${view==='empresas' ? 'btn-primary' : 'btn-secondary'}`}>Empresas</button>
-            <button onClick={()=>setView('prestamos')} className={`btn ${view==='prestamos' ? 'btn-primary' : 'btn-secondary'}`}>Prestamos</button>
-            <div className="ml-auto text-sm text-gray-500">{loggedUser?.username ? `Usuario: ${loggedUser.username}` : `Rol: ${userRole}`}</div>
-          </nav>
+      {/* Menú hamburguesa tipo GitHub: menú flotante, íconos, cierre al hacer clic fuera */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-20" 
+          onClick={()=>setNavOpen(false)}
+          aria-hidden="true"
+          style={{background:'rgba(0,0,0,0.05)'}}
+        />
+      )}
+      <nav
+        id="main-nav"
+        className={`absolute right-0 top-14 z-30 w-64 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl py-2 transition-all duration-200 ${navOpen ? 'block animate-fade-in' : 'hidden'}`}
+        style={{minWidth:'220px'}}
+        onClick={e=>e.stopPropagation()}
+      >
+        {has('tipos','view') && (
+          <button onClick={()=>{ setView('tipos'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='tipos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
+            Tipos
+          </button>
+        )}
+        {has('personas','view') && (
+          <button onClick={()=>{ setView('personas'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
+            Personas
+          </button>
+        )}
+        {has('empresas','view') && (
+          <button onClick={()=>{ setView('empresas'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
+            Empresas
+          </button>
+        )}
+        {has('prestamos','view') && (
+          <button onClick={()=>{ setView('prestamos'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
+            Prestamos
+          </button>
+        )}
+        {has('roles','manage') && (
+          <>
+            <button onClick={()=>{ setView('usuarios'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
+              Usuarios
+            </button>
+            <button onClick={()=>{ setView('admin'); setNavOpen(false) }} className={`w-full flex items-center gap-3 px-4 py-2 text-left rounded-lg transition-colors ${view==='admin' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'}`}>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+              Roles & Permisos
+            </button>
+          </>
+        )}
+        <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 mt-2">{loggedUser?.username ? `Usuario: ${loggedUser.username}` : `Rol: ${userRole}`}</div>
+      </nav>
         </header>
 
         <main>
-          {view === 'tipos' && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} />}
-          {view === 'personas' && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} />}
-          {view === 'empresas' && <Empresas API={API_PERSONS} userRole={userRole} />}
-          {view === 'prestamos' && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} />}
+          {view === 'tipos' && has('tipos','view') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
+          {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} />}
+          {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} />}
+          {view === 'prestamos' && has('prestamos','view') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
+          {view === 'usuarios' && has('roles','manage') && <Usuarios API={API_PERSONS} userRole={userRole} />}
+          {view === 'admin' && has('roles','manage') && (
+            <div className="space-y-6">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-white">
+                  Roles y Permisos
+                </h2>
+                <p className="text-gray-600 dark:text-gray-300 mb-6">
+                  Gestiona roles y permisos del sistema
+                </p>
+                <RoleSelector 
+                  role={loggedUser?.role} 
+                  onChange={setUserRole} 
+                  API={API_PERSONS}
+                  showAdmin={true}
+                />
+              </div>
+            </div>
+          )}
         </main>
 
         <footer className="mt-8 py-4 text-center text-sm text-gray-500">
           © {new Date().getFullYear()} Sistema Ollantay — desarrollado con ❤️
-          <div className="mt-1 text-xs text-gray-400">Versión: v{version}</div>
+          <div className="mt-1 text-xs text-gray-400">Versión: v{appVersion}</div>
         </footer>
       </div>
     </div>

@@ -1,105 +1,45 @@
-# Sistema Ollantay
+# Ollantay Project - Docker Compose
 
-> Aplicación web full-stack para Ollantay Enterprise
+Este repositorio contiene un backend en FastAPI y un frontend en React. Este `docker-compose.yml` levanta tres servicios:
 
-## 🏗️ Arquitectura
+- `mysql8032` - MySQL 8.0.32
+- `backend` - FastAPI ejecutado con Uvicorn
+- `frontend` - React (modo desarrollo con `npm start` usando Vite)
 
-Este proyecto utiliza una arquitectura de microservicios con:
+## Requisitos
 
-- **Frontend**: React + Vite (Puerto 3000)
-- **Backend**: FastAPI + Uvicorn (Puerto 8000)
-- **Base de datos**: MySQL 8.0.32 (Puerto 3306)
+- Docker y Docker Compose instalados
+- PowerShell en Windows (los comandos de ejemplo están en PowerShell)
 
-## 📋 Requisitos
+## Uso (PowerShell)
 
-- [Docker](https://www.docker.com/get-started) >= 20.10
-- [Docker Compose](https://docs.docker.com/compose/install/) >= 2.0
-- Git
+Para construir y levantar los servicios:
 
-## 🚀 Inicio rápido
-
-1. **Clonar el repositorio**
-   ```bash
-   git clone <repository-url>
-   cd ollantayProject
-   ```
-
-2. **Levantar los servicios**
-   ```bash
-   docker compose up --build
-   ```
-
-3. **Acceder a la aplicación**
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:8000
-   - Documentación API: http://localhost:8000/docs
-
-## 🛠️ Comandos útiles
-
-```bash
-# Ejecutar en segundo plano
-docker compose up -d
-
-# Ver logs
-docker compose logs -f
-
-# Reconstruir servicios
+```powershell
 docker compose up --build
+```
 
-# Detener servicios
+Para ejecutar en background:
+
+```powershell
+docker compose up -d --build
+```
+
+Para detener y remover contenedores:
+
+```powershell
 docker compose down
-
-# Limpiar volúmenes (⚠️ elimina datos de BD)
-docker compose down -v
 ```
 
-## 🗄️ Base de datos
+## Notas
 
-**Credenciales por defecto:**
-- Usuario: `root`
-- Contraseña: `P4assw@rd`
-- Base de datos: `SistemaOllantay`
-- Host: `mysql8032` (desde contenedores) / `localhost` (desde host)
+- La base de datos expone el puerto 3306 ligado a localhost (127.0.0.1) para limitar el acceso externo.
+- El servicio `frontend` asume que en `./frontend` existe una app React. Se incluye una plantilla mínima con Vite.
+- Si el `backend` necesita conectar con la DB, use las variables de entorno: `DATABASE_HOST=mysql8032`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_NAME`.
 
-## 🔧 Desarrollo
-   
-### Variables de entorno
+Nota sobre el frontend y acceso desde el navegador:
 
-El backend utiliza estas variables:
-```
-DATABASE_URL=mysql+pymysql://root:P4assw@rd@mysql8032:3306/SistemaOllantay
-```
-
-### Hot reload
-
-- **Frontend**: Habilitado automáticamente con Vite
-- **Backend**: Configurado con `--reload` en FastAPI
-
-## 📁 Estructura del proyecto
-
-```
-ollantayProject/
-├── backend/          # API FastAPI
-├── frontend/         # Aplicación React
-├── docker-compose.yml
-└── README.md
-```
-
-## 🐛 Solución de problemas
-
-**Puerto ocupado:**
-```bash
-# Verificar puertos en uso
-netstat -ano | findstr :3000
-netstat -ano | findstr :8000
-netstat -ano | findstr :3306
-```
-
-**Problemas de conexión a BD:**
-- Verificar que el contenedor MySQL esté ejecutándose
-- Comprobar las credenciales en docker-compose.yml
-
-**Limpiar caché de Docker desde consola:**
-```bash
-docker system prune -a
-```
+- El servidor de desarrollo Vite, por defecto, escucha en el host local dentro del contenedor y en el puerto 5173. Para que el puerto mapeado en `docker-compose.yml` (3000) funcione y para que el navegador en tu máquina Windows pueda conectarse al contenedor, el servidor debe escuchar en 0.0.0.0 y en el mismo puerto que exponemos.
+- Por eso el script `start` se ajustó a `vite --host 0.0.0.0 --port 3000` y `docker-compose.yml` mapea `3000:3000`. Si prefieres usar el puerto por defecto de Vite (5173), actualiza el mapeo en `docker-compose.yml` a `5173:5173`.
+# ollantayProject
+This's a project for Ollantay enterprice

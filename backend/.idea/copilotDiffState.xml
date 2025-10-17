@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CopilotDiffPersistence">
+    <option name="pendingDiffs">
+      <map>
+        <entry key="$PROJECT_DIR$/../ultirol_backend/database.py">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/../ultirol_backend/database.py" />
+              <option name="updatedContent" value="from sqlalchemy import create_engine&#10;from sqlalchemy.ext.declarative import declarative_base&#10;from sqlalchemy.orm import sessionmaker&#10;import os&#10;&#10;MYSQL_USER = os.getenv('MYSQL_USER', 'root')&#10;MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'password')&#10;MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')&#10;MYSQL_DB = os.getenv('MYSQL_DB', 'ultirol_db')&#10;&#10;SQLALCHEMY_DATABASE_URL = f&quot;mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}&quot;&#10;&#10;engine = create_engine(SQLALCHEMY_DATABASE_URL)&#10;SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)&#10;Base = declarative_base()&#10;" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+        <entry key="$PROJECT_DIR$/../ultirol_backend/main.py">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/../ultirol_backend/main.py" />
+              <option name="originalContent" value="&#10;&#10;" />
+              <option name="updatedContent" value="from fastapi import FastAPI, Depends, HTTPException, status&#10;from pydantic import BaseModel&#10;from typing import List, Optional&#10;from sqlalchemy.orm import Session&#10;from passlib.context import CryptContext&#10;&#10;from .database import SessionLocal, engine&#10;from .models import Base, User, Role, Permission&#10;&#10;app = FastAPI()&#10;&#10;Base.metadata.create_all(bind=engine)&#10;&#10;pwd_context = CryptContext(schemes=[&quot;bcrypt&quot;], deprecated=&quot;auto&quot;)&#10;&#10;def get_db():&#10;    db = SessionLocal()&#10;    try:&#10;        yield db&#10;    finally:&#10;        db.close()&#10;&#10;def get_password_hash(password):&#10;    return pwd_context.hash(password)&#10;&#10;def verify_password(plain_password, hashed_password):&#10;    return pwd_context.verify(plain_password, hashed_password)&#10;&#10;class PermissionBase(BaseModel):&#10;    name: str&#10;&#10;# CRUD endpoints para roles&#10;@app.post(&quot;/roles/&quot;, response_model=Role)&#10;def create_role(role: RoleCreate, db: Session = Depends(get_db)):&#10;    db_role = Role(name=role.name)&#10;    if role.permissions:&#10;        db_role.permissions = db.query(Permission).filter(Permission.id.in_(role.permissions)).all()&#10;    db.add(db_role)&#10;    db.commit()&#10;    db.refresh(db_role)&#10;    return db_role&#10;&#10;@app.get(&quot;/roles/&quot;, response_model=List[Role])&#10;def read_roles(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):&#10;    return db.query(Role).offset(skip).limit(limit).all()&#10;&#10;# CRUD endpoints para permisos&#10;@app.post(&quot;/permissions/&quot;, response_model=Permission)&#10;def create_permission(permission: PermissionCreate, db: Session = Depends(get_db)):&#10;    db_permission = Permission(name=permission.name)&#10;    db.add(db_permission)&#10;    db.commit()&#10;    db.refresh(db_permission)&#10;    return db_permission&#10;&#10;@app.get(&quot;/permissions/&quot;, response_model=List[Permission])&#10;def read_permissions(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):&#10;    return db.query(Permission).offset(skip).limit(limit).all()&#10;&#10;# CRUD endpoints para usuarios&#10;@app.post(&quot;/users/&quot;, response_model=User)&#10;def create_user(user: UserCreate, db: Session = Depends(get_db)):&#10;    hashed_password = get_password_hash(user.password)&#10;    db_user = User(username=user.username, password_hash=hashed_password, role_id=user.role_id)&#10;    db.add(db_user)&#10;    db.commit()&#10;    db.refresh(db_user)&#10;    return db_user&#10;&#10;@app.get(&quot;/users/&quot;, response_model=List[User])&#10;def read_users(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):&#10;    return db.query(User).offset(skip).limit(limit).all()" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+        <entry key="$PROJECT_DIR$/../ultirol_backend/requirements.txt">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/../ultirol_backend/requirements.txt" />
+              <option name="updatedContent" value="fastapi&#10;uvicorn&#10;sqlalchemy&#10;pymysql&#10;python-dotenv&#10;" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>

@@ -1,15 +1,15 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from fastapi import Header, Response
-from pydantic import BaseModel
 import os
 import mysql.connector
 import jwt
 from datetime import datetime, timedelta
 import bcrypt
 from fastapi.responses import JSONResponse
+
+router = APIRouter()
 
 app = FastAPI()
 
@@ -47,39 +47,80 @@ JWT_EXPIRE_MINUTES = int(os.getenv('JWT_EXPIRE_MINUTES', '60'))
 
 class PersonaIn(BaseModel):
     nombres_persona: str = Field(..., max_length=50)
-    apellido_paternoPersona: str | None = Field(None, max_length=30)
-    apellido_maternoPer: str | None = Field(None, max_length=50)
-    telefono_persona: str | None = Field(None, max_length=15)
+    apellido_paternoPersona: Optional[str] = Field(None, max_length=30)
+    apellido_maternoPer: Optional[str] = Field(None, max_length=50)
+    telefono_persona: Optional[str] = Field(None, max_length=15)
     id_tipoPersona: int = Field(...)
     ci_persona: str = Field(..., max_length=10)
     direccion_persona: str = Field(..., max_length=100)
 
 
-class PersonaOut(PersonaIn):
+class PersonaOut(BaseModel):
     id_persona: int
+    nombres_persona: str
+    apellido_paternoPersona: Optional[str] = None
+    apellido_maternoPer: Optional[str] = None
+    telefono_persona: Optional[str] = None
+    id_tipoPersona: int
+    ci_persona: str
+    direccion_persona: str
 
 
 class EmpresaIn(BaseModel):
     nombre_empresa: str = Field(..., max_length=100)
     direccion_empresa: str = Field(..., max_length=100)
-    estado_empresa: int = Field(1)
+    estado_empresa: int = Field(default=1)
     id_persona: int
 
 
-class EmpresaOut(EmpresaIn):
+class EmpresaOut(BaseModel):
     id_empresa: int
+    nombre_empresa: str
+    direccion_empresa: str
+    estado_empresa: int
+    id_persona: int
 
 
 class LoginIn(BaseModel):
     username: str
-    password: str | None = None
+    password: Optional[str] = None
 
 
 class RegisterIn(BaseModel):
     username: str
     password: str
-    nombres_persona: str | None = None
-    ci_persona: str | None = None
+    nombres_persona: Optional[str] = None
+    ci_persona: Optional[str] = None
+
+
+class UserUpdateIn(BaseModel):
+    username: str
+    password: Optional[str] = None
+    id_persona: Optional[int] = None
+    id_role: Optional[int] = None
+
+
+class RolePermissionsIn(BaseModel):
+    perm_ids: List[int] = []
+
+# RBAC models
+class RoleIn(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class RoleOut(BaseModel):
+    idrole: int
+    name: str
+    description: Optional[str] = None
+
+class PermissionOut(BaseModel):
+    id_perm: int
+    resource: str
+    action: str
+    description: Optional[str] = None
+
+class RolePermissionsIn(BaseModel):
+    perm_ids: List[int]
 
 
 def create_token(data: dict, expires_delta: timedelta | None = None):
@@ -93,7 +134,30 @@ def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
-@app.post('/auth/login')
+def get_permissions_for_role(role_name: str) -> list[str]:
+    """Return list like ['module:action'] for a role name."""
+    if not role_name:
+        return []
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role_name,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close();
+            return []
+        cur.execute('SELECT p.resource, p.action FROM role_permission_O rp JOIN permission_O p ON rp.perm_id = p.id_perm WHERE rp.role_id = %s', (r['idrole'],))
+        rows = cur.fetchall() or []
+        cur.close(); conn.close()
+        return [f"{x['resource']}:{x['action']}" for x in rows]
+    except Exception:
+        return []
+
+
+@router.options('/auth/login')
+def options_login():
+    return Response(status_code=204)
+
+@router.post('/auth/login')
 def login(payload: LoginIn):
     try:
         conn = get_db_connection()
@@ -108,19 +172,26 @@ def login(payload: LoginIn):
         if row.get('password_hash'):
             if not payload.password or payload.password != row.get('password_hash'):
                 raise HTTPException(status_code=401, detail='Invalid credentials')
-        # create JWT and set as httpOnly cookie
-        token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name']})
-        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
-        resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', path='/')
+        # create JWT and set as httpOnly cookie; include permissions in response for immediate UI gating
+        token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
+        perms = get_permissions_for_role(row['role_name'])
+        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms})
+        # set cookie for session
+        resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
         return resp
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# mount router endpoints
+app.include_router(router)
+
 
 @app.post('/auth/register', status_code=201)
-def register(payload: RegisterIn):
+def register(payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    # Only admins can create users
+    require_admin(x_user_role, request)
     # basic validation
     if not payload.username or not payload.password:
         raise HTTPException(status_code=400, detail='username and password required')
@@ -134,20 +205,15 @@ def register(payload: RegisterIn):
             conn.close()
             raise HTTPException(status_code=400, detail='username already exists')
 
-        id_persona = None
-        # optionally create persona
-        if payload.nombres_persona and payload.ci_persona:
-            curp = conn.cursor()
-            curp.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona) VALUES (%s,%s,%s,%s,%s,%s,%s)',
-                         (payload.nombres_persona, None, None, None, None, payload.ci_persona, None))
-            conn.commit()
-            id_persona = curp.lastrowid
-            curp.close()
-
-        # find role id for 'viewer' or default to NULL
-        cursor.execute('SELECT idrole FROM role_O WHERE name = %s', ('viewer',))
-        role = cursor.fetchone()
-        id_role = role['idrole'] if role else None
+        # Use provided id_persona and id_role
+        id_persona = payload.id_persona
+        id_role = payload.id_role
+        
+        # If no role specified, default to viewer
+        if not id_role:
+            cursor.execute('SELECT idrole FROM role_O WHERE name = %s', ('viewer',))
+            role = cursor.fetchone()
+            id_role = role['idrole'] if role else None
 
         pw_hash = hash_password(payload.password)
         curu = conn.cursor()
@@ -157,7 +223,7 @@ def register(payload: RegisterIn):
         curu.close()
         cursor.close()
         conn.close()
-        return {'username': payload.username, 'id_user': new_user_id, 'id_persona': id_persona}
+        return {'username': payload.username, 'id_user': new_user_id, 'id_persona': id_persona, 'id_role': id_role}
     except HTTPException:
         raise
     except Exception as e:
@@ -244,8 +310,8 @@ def get_empresa(id: int):
 
 
 @app.post('/empresas', response_model=EmpresaOut, status_code=201)
-def create_empresa(payload: EmpresaIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def create_empresa(payload: EmpresaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
     # validation
@@ -278,8 +344,8 @@ def create_empresa(payload: EmpresaIn, x_user_role: str | None = Header(None)):
 
 
 @app.put('/empresas/{id}', response_model=EmpresaOut)
-def update_empresa(id: int, payload: EmpresaIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
     nombre = payload.nombre_empresa.strip()
@@ -316,8 +382,8 @@ def update_empresa(id: int, payload: EmpresaIn, x_user_role: str | None = Header
 
 
 @app.delete('/empresas/{id}', status_code=204)
-def delete_empresa(id: int, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def delete_empresa(id: int, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role != 'admin':
         raise HTTPException(status_code=403, detail='Permission denied')
     try:
@@ -355,19 +421,32 @@ def get_person(id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def get_role(x_user_role: str | None = Header(None), request: Request | None = None) -> str:
-    # prefer explicit header (for backward compatibility). Otherwise try cookie JWT
+def get_role(x_user_role: Optional[str] = Header(None), request: Request = None) -> str:
+    """Resolve effective role for the request.
+    Priority: X-User-Role header -> JWT cookie -> 'viewer'.
+    """
+    # 1) Prefer explicit header (useful for dev/local and testing tools)
     if x_user_role:
         return x_user_role.lower()
+    # 2) Try cookie-based JWT
     try:
-        if request:
+        if request is not None:
             token = request.cookies.get('ollantay_token')
             if token:
                 payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-                return (payload.get('role') or 'viewer').lower()
+                role = (payload.get('role') or 'viewer').lower()
+                if role:
+                    return role
     except Exception:
-        return 'viewer'
+        pass
+    # 3) Default viewer
     return 'viewer'
+
+def require_admin(x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role != 'admin':
+        raise HTTPException(status_code=403, detail=f'Admin required (role={role})')
+    return role
 
 
 @app.get('/auth/me')
@@ -377,12 +456,13 @@ def auth_me(request: Request):
         raise HTTPException(status_code=401, detail='Not authenticated')
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub')}
+        # fetch permissions for this role
+        perms = get_permissions_for_role(payload.get('role'))
+        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'permissions': perms}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail='Token expired')
     except Exception:
         raise HTTPException(status_code=401, detail='Invalid token')
-
 
 @app.post('/auth/logout')
 def auth_logout():
@@ -392,8 +472,8 @@ def auth_logout():
 
 
 @app.post('/persons', response_model=PersonaOut, status_code=201)
-def create_person(payload: PersonaIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def create_person(payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
     # basic validation
@@ -436,8 +516,8 @@ def create_person(payload: PersonaIn, x_user_role: str | None = Header(None)):
 
 
 @app.put('/persons/{id}', response_model=PersonaOut)
-def update_person(id: int, payload: PersonaIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def update_person(id: int, payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
     nombres = payload.nombres_persona.strip()
@@ -485,8 +565,8 @@ def update_person(id: int, payload: PersonaIn, x_user_role: str | None = Header(
 
 
 @app.delete('/persons/{id}', status_code=204)
-def delete_person(id: int, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
+def delete_person(id: int, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
     if role != 'admin':
         raise HTTPException(status_code=403, detail='Permission denied')
     try:
@@ -518,3 +598,264 @@ def health():
         return {'status': 'ok', 'db': 'connected'}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'db error: {e}')
+
+
+# ========================
+# RBAC: roles & permissions
+# ========================
+
+@app.get('/roles')
+def list_roles(x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idrole, name, description FROM role_O ORDER BY idrole')
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/roles', status_code=201)
+def create_role(payload, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    name = payload.name.strip().lower()
+    if not name:
+        raise HTTPException(status_code=400, detail='name required')
+    if name in ('admin','editor','viewer'):
+        raise HTTPException(status_code=400, detail='Cannot create a built-in role')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idrole FROM role_O WHERE name = %s', (name,))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=400, detail='Role name already exists')
+        ins = conn.cursor()
+        ins.execute('INSERT INTO role_O (name, description) VALUES (%s,%s)', (name, payload.description))
+        conn.commit(); new_id = ins.lastrowid
+        ins.close(); cur.close(); conn.close()
+        return {'idrole': new_id, 'name': name, 'description': payload.description}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/roles/{id}')
+def update_role(id, payload, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    name = payload.get('name', '').strip().lower() if isinstance(payload, dict) else getattr(payload, 'name', '').strip().lower()
+    if not name:
+        raise HTTPException(status_code=400, detail='name required')
+    if name in ('admin','editor','viewer') and id not in (1,2,3):
+        raise HTTPException(status_code=400, detail='Reserved role name')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idrole, name FROM role_O WHERE idrole = %s', (id,))
+        ex = cur.fetchone()
+        if not ex:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Role not found')
+        if ex['name'] in ('admin','editor','viewer') and ex['name'] != name:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Cannot rename built-in role')
+        cur.execute('UPDATE role_O SET name=%s, description=%s WHERE idrole=%s', (name, payload.get('description') if isinstance(payload, dict) else getattr(payload, 'description', None), id))
+        conn.commit(); cur.close(); conn.close()
+        return {'idrole': id, 'name': name, 'description': payload.get('description') if isinstance(payload, dict) else getattr(payload, 'description', None)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if name in ('admin','editor','viewer') and id not in (1,2,3):
+        # do not allow renaming some other id to built-in names
+        raise HTTPException(status_code=400, detail='Reserved role name')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idrole, name FROM role_O WHERE idrole = %s', (id,))
+        ex = cur.fetchone()
+        if not ex:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Role not found')
+        if ex['name'] in ('admin','editor','viewer') and ex['name'] != name:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Cannot rename built-in role')
+        # unique name check
+        cur.execute('SELECT idrole FROM role_O WHERE name = %s AND idrole <> %s', (name, id))
+        if cur.fetchone():
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Role name already exists')
+        up = conn.cursor()
+        up.execute('UPDATE role_O SET name=%s, description=%s WHERE idrole=%s', (name, payload.description, id))
+        conn.commit(); up.close(); cur.close(); conn.close()
+        return {'idrole': id, 'name': name, 'description': payload.description}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete('/roles/{id}', status_code=204)
+def delete_role(id, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT name FROM role_O WHERE idrole = %s', (id,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Role not found')
+        if r['name'] in ('admin','editor','viewer'):
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Cannot delete built-in role')
+        # check assigned users
+        cur.execute('SELECT COUNT(1) AS cnt FROM user_O WHERE id_role = %s', (id,))
+        cnt = cur.fetchone()
+        if cnt and cnt['cnt'] > 0:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Role has assigned users')
+        # delete mapping then role
+        d1 = conn.cursor(); d1.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,)); d1.close()
+        d2 = conn.cursor(); d2.execute('DELETE FROM role_O WHERE idrole = %s', (id,)); conn.commit(); d2.close();
+        cur.close(); conn.close();
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/permissions')
+def list_permissions(x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT id_perm, resource, action, description FROM permission_O ORDER BY resource, action')
+        rows = cur.fetchall(); cur.close(); conn.close();
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/roles/{id}/permissions')
+def get_role_permissions(id, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT perm_id FROM role_permission_O WHERE role_id = %s', (id,))
+        rows = cur.fetchall(); cur.close(); conn.close();
+        return [r['perm_id'] for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/roles/{id}/permissions', status_code=204)
+def set_role_permissions(id, payload: RolePermissionsIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # basic checks
+        cur.execute('SELECT name FROM role_O WHERE idrole = %s', (id,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Role not found')
+        if r['name'] == 'admin':
+            cur.close(); conn.close();
+            raise HTTPException(status_code=400, detail='Cannot modify admin permissions')
+        # replace mapping
+        d = conn.cursor(); d.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,)); d.close()
+        if payload.perm_ids:
+            ins = conn.cursor()
+            values = [(id, pid) for pid in payload.perm_ids]
+            ins.executemany('INSERT INTO role_permission_O (role_id, perm_id) VALUES (%s,%s)', values)
+            ins.close()
+        conn.commit(); cur.close(); conn.close();
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# User management endpoints
+@app.get('/users')
+def list_users(x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT id_user, username, id_persona, id_role FROM user_O ORDER BY id_user')
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/users/{id}')
+def update_user(id: int, payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    if not payload.username:
+        raise HTTPException(status_code=400, detail='username required')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        # check exists
+        cursor.execute('SELECT id_user FROM user_O WHERE id_user = %s', (id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail='User not found')
+        # check username unique (excluding current user)
+        cursor.execute('SELECT id_user FROM user_O WHERE username = %s AND id_user <> %s', (payload.username, id))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='username already exists')
+        
+        # Update fields
+        if payload.password:
+            pw_hash = hash_password(payload.password)
+            cursor.execute('UPDATE user_O SET username=%s, password_hash=%s, id_persona=%s, id_role=%s WHERE id_user=%s',
+                          (payload.username, pw_hash, payload.id_persona, payload.id_role, id))
+        else:
+            # Don't update password if not provided
+            cursor.execute('UPDATE user_O SET username=%s, id_persona=%s, id_role=%s WHERE id_user=%s',
+                          (payload.username, payload.id_persona, payload.id_role, id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {'username': payload.username, 'id_user': id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete('/users/{id}', status_code=204)
+def delete_user(id: int, x_user_role: Optional[str] = Header(None), request: Request = None):
+    require_admin(x_user_role, request)
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM user_O WHERE id_user = %s', (id,))
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+        if affected == 0:
+            raise HTTPException(status_code=404, detail='User not found')
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

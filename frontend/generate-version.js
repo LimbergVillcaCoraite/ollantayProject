@@ -1,0 +1,22 @@
+const fs = require('fs');
+const path = require('path');
+
+// Generate version based on current date/time: YYYY.MM.DD.HHmm
+const now = new Date();
+const version = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}.${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+
+// Write to version.json
+const versionFile = path.join(__dirname, 'public', 'version.json');
+const versionData = {
+  version: version,
+  buildDate: now.toISOString()
+};
+
+// Ensure public directory exists
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(publicDir)) {
+  fs.mkdirSync(publicDir, { recursive: true });
+}
+
+fs.writeFileSync(versionFile, JSON.stringify(versionData, null, 2));
+console.log(`Version generated: ${version}`);

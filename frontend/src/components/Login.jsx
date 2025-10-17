@@ -2,21 +2,21 @@ import React, {useState} from 'react'
 import { version } from '../../package.json'
 import DarkToggle from './DarkToggle'
 
-export default function Login({API_PERSONA = 'http://localhost:8002', onLogin, dark, setDark}){
+export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS || 'http://localhost:8002'), onLogin, dark, setDark}){
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [showRegister, setShowRegister] = useState(false)
-  const [newUserName, setNewUserName] = useState('')
-  const [newPassword, setNewPassword] = useState('')
+
 
   const submit = async (e)=>{
     e.preventDefault()
     setError(null)
     setLoading(true)
     try{
-      const url = `${API_PERSONA.replace(/\/+$/,'')}/auth/login`
+      const base = (API_PERSONA || '').replace(/\/+$/,'')
+      const url = `${base}/auth/login`
       const res = await fetch(url, {method:'POST', credentials: 'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})})
       if(!res.ok){
         // try parse json, otherwise read text for debugging (404 might return HTML)
@@ -26,7 +26,11 @@ export default function Login({API_PERSONA = 'http://localhost:8002', onLogin, d
       }
       const data = await res.json()
       onLogin(data)
-    }catch(err){ setError(err.message) }
+    }catch(err){
+      // Normalize some common network/CORS messages for clarity
+      const msg = (err?.message || '').toLowerCase().includes('failed to fetch') ? 'No se pudo conectar con el servidor (CORS/red). Verifique que el servicio de personas esté activo.' : err.message
+      setError(msg)
+    }
     finally{ setLoading(false) }
   }
 
@@ -45,7 +49,30 @@ export default function Login({API_PERSONA = 'http://localhost:8002', onLogin, d
         </div>
         <div>
           <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Contraseña</label>
-          <input id="login-password" aria-label="Contraseña" type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 block w-full p-3 border rounded shadow-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300" />
+          <div className="relative">
+            <input 
+              id="login-password" 
+              aria-label="Contraseña" 
+              type={showPass ? 'text' : 'password'} 
+              required 
+              value={password} 
+              onChange={e=>setPassword(e.target.value)} 
+              className="mt-1 block w-full p-3 pr-10 border rounded shadow-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300" 
+            />
+            <button 
+              type="button" 
+              onClick={()=>setShowPass(s=>!s)} 
+              aria-label={showPass ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+              title={showPass ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+              className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-600 dark:text-gray-300"
+            >
+              {showPass ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M4.03 3.97a.75.75 0 011.06 0l11 11a.75.75 0 11-1.06 1.06l-1.49-1.49A9.75 9.75 0 0110 16.5c-4.06 0-7.52-2.5-9.17-6.06a1.27 1.27 0 010-1.09A10.77 10.77 0 014.6 5.1L4.03 4.53a.75.75 0 010-1.06zM10 6.5c-.55 0-1.07.12-1.54.33l4.71 4.71c.21-.47.33-.99.33-1.54A3.5 3.5 0 0010 6.5z"/><path d="M13.41 12.62l-1.2-1.2a3.5 3.5 0 01-4.63-4.63L6.38 5.59A9.7 9.7 0 003.05 8.1C4.6 11.24 7.11 13 10 13c1.24 0 2.41-.29 3.41-.79z"/></svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 4.5c4.06 0 7.52 2.5 9.17 6.06.2.43.2.92 0 1.35C17.52 15.47 14.06 18 10 18S2.48 15.47.83 11.91a1.27 1.27 0 010-1.09C2.48 7 5.94 4.5 10 4.5zm0 2A3.5 3.5 0 1010 13a3.5 3.5 0 000-7z"/></svg>
+              )}
+            </button>
+          </div>
         </div>
 
         {error && <div role="alert" className="text-red-600 bg-red-50 dark:bg-red-900/40 p-2 rounded">{error}</div>}
@@ -53,27 +80,6 @@ export default function Login({API_PERSONA = 'http://localhost:8002', onLogin, d
         <div className="flex items-center justify-between gap-4">
           <button type="submit" disabled={loading} className="w-full btn btn-primary">{loading ? 'Iniciando...' : 'Iniciar sesión'}</button>
         </div>
-
-        <div className="flex items-center justify-between mt-2 text-sm">
-          <button type="button" onClick={()=> setShowRegister(s => !s)} className="text-blue-600 hover:underline">{showRegister ? 'Cancelar' : 'Crear cuenta'}</button>
-        </div>
-
-        {showRegister && (
-          <div className="mt-4 p-3 border rounded bg-gray-50 dark:bg-gray-900">
-            <div className="mb-2 text-sm font-medium">Registro rápido</div>
-            <input placeholder="Usuario" value={newUserName} onChange={e=>setNewUserName(e.target.value)} className="w-full p-2 mb-2 border rounded" />
-            <input placeholder="Contraseña" type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} className="w-full p-2 mb-2 border rounded" />
-            <div className="flex justify-end">
-              <button onClick={async ()=>{
-                // simple create user call; backend endpoint expected: /auth/register (not implemented server-side yet)
-                try{
-                  await fetch(`${API_PERSONA}/auth/register`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:newUserName,password:newPassword})})
-                  setShowRegister(false)
-                }catch(e){ console.error(e) }
-              }} className="btn btn-secondary">Crear</button>
-            </div>
-          </div>
-        )}
 
   <div className="text-xs text-gray-400 dark:text-gray-400 text-center">Versión: <span className="font-mono">v{version}</span></div>
       </div>

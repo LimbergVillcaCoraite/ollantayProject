@@ -82,15 +82,12 @@ services:
       DATABASE_NAME: SystemaOllantay
 
   frontend:
-    image: node:18-alpine
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     container_name: ollantay_frontend
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     ports:
       - "3000:3000"
-    command: sh -c "npm install && npm start"
     environment:
       - CHOKIDAR_USEPOLLING=true
     restart: unless-stopped
