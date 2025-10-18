@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -45,6 +46,9 @@ JWT_SECRET = os.getenv('JWT_SECRET', 'dev-secret-change-me')
 JWT_ALG = 'HS256'
 JWT_EXPIRE_MINUTES = int(os.getenv('JWT_EXPIRE_MINUTES', '60'))
 
+# Uploads directory (for persona photos)
+UPLOAD_DIR = os.getenv('UPLOAD_DIR', '/app/uploads')
+
 
 class PersonaIn(BaseModel):
     nombres_persona: str = Field(..., max_length=50)
@@ -65,6 +69,7 @@ class PersonaOut(BaseModel):
     id_tipoPersona: int
     ci_persona: str
     direccion_persona: str
+    fotoPersona: Optional[str] = None
 
 
 class EmpresaIn(BaseModel):
@@ -141,6 +146,18 @@ def ensure_schema():
             cur2.execute('ALTER TABLE user_O ADD COLUMN profile_photo LONGTEXT NULL')
             conn.commit()
             cur2.close()
+        # Ensure persona_O.fotoPersona exists (VARCHAR(255) is enough for a relative path)
+        cur.execute("""
+            SELECT COUNT(1) AS cnt
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'persona_O' AND COLUMN_NAME = 'fotoPersona'
+        """, (os.getenv('DATABASE_NAME', 'SystemaOllantay'),))
+        prow = cur.fetchone()
+        if not prow or prow.get('cnt', 0) == 0:
+            cur3 = conn.cursor()
+            cur3.execute('ALTER TABLE persona_O ADD COLUMN fotoPersona VARCHAR(255) NULL')
+            conn.commit()
+            cur3.close()
         cur.close(); conn.close()
     except Exception:
         # Non-fatal on startup; logs can be added if necessary
@@ -150,6 +167,14 @@ def ensure_schema():
 @app.on_event('startup')
 def _startup():
     ensure_schema()
+    # Ensure uploads directory exists
+    try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+# Serve static uploads under /uploads (proxied as /api/personas/uploads via nginx)
+app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
 
 
 def create_token(data: dict, expires_delta: timedelta | None = None):
@@ -187,7 +212,51 @@ def options_login():
     return Response(status_code=204)
 
 @router.post('/auth/login')
-def login(payload: LoginIn):
+async def login(request: Request):
+    # Detectar tipo de contenido
+    if request.headers.get('content-type', '').startswith('application/json'):
+        body = await request.json()
+        username = body.get('username')
+        password = body.get('password')
+    else:
+        form = await request.form()
+        username = form.get('username')
+        password = form.get('password')
+    if not username or not password:
+        raise HTTPException(status_code=400, detail='Username y password requeridos')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo, r.name AS role_name FROM user_O u JOIN role_O r ON u.id_role = r.idrole WHERE u.username = %s', (username,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=401, detail='Invalid credentials')
+        if row.get('password_hash'):
+            if not password or password != row.get('password_hash'):
+                raise HTTPException(status_code=401, detail='Invalid credentials')
+        token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
+        perms = get_permissions_for_role(row['role_name'])
+        photo_url = None
+        try:
+            if row.get('id_persona'):
+                conn2 = get_db_connection(); cur2 = conn2.cursor(dictionary=True)
+                cur2.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (row.get('id_persona'),))
+                pr = cur2.fetchone()
+                rel = (pr or {}).get('fotoPersona')
+                if rel:
+                    photo_url = '/api/personas' + rel if rel.startswith('/uploads') else rel
+                cur2.close(); conn2.close()
+        except Exception:
+            photo_url = None
+        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': photo_url})
+        resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -204,7 +273,21 @@ def login(payload: LoginIn):
         # create JWT and set as httpOnly cookie; include permissions in response for immediate UI gating
         token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
         perms = get_permissions_for_role(row['role_name'])
-        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': row.get('profile_photo')})
+        # fetch fotoPersona for this user (if linked)
+        photo_url = None
+        try:
+            if row.get('id_persona'):
+                conn2 = get_db_connection(); cur2 = conn2.cursor(dictionary=True)
+                cur2.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (row.get('id_persona'),))
+                pr = cur2.fetchone()
+                rel = (pr or {}).get('fotoPersona')
+                if rel:
+                    # Build public URL under API prefix
+                    photo_url = '/api/personas' + rel if rel.startswith('/uploads') else rel
+                cur2.close(); conn2.close()
+        except Exception:
+            photo_url = None
+        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': photo_url})
         # set cookie for session
         resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
         return resp
@@ -265,13 +348,18 @@ def list_persons(tipo: Optional[int] = None):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         if tipo is None:
-            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O')
+            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona FROM persona_O')
             rows = cursor.fetchall()
         else:
-            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O WHERE id_tipoPersona = %s', (tipo,))
+            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona FROM persona_O WHERE id_tipoPersona = %s', (tipo,))
             rows = cursor.fetchall()
         cursor.close()
         conn.close()
+        # Normalize fotoPersona to public URL via proxy
+        for r in rows or []:
+            fp = r.get('fotoPersona')
+            if isinstance(fp, str) and fp.startswith('/uploads'):
+                r['fotoPersona'] = '/api/personas' + fp
         return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -437,12 +525,15 @@ def get_person(id: int):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona FROM persona_O WHERE id_persona = %s', (id,))
+        cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona FROM persona_O WHERE id_persona = %s', (id,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
         if not row:
             raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # Normalize fotoPersona to public URL via proxy
+        if isinstance(row.get('fotoPersona'), str) and row['fotoPersona'].startswith('/uploads'):
+            row['fotoPersona'] = '/api/personas' + row['fotoPersona']
         return row
     except HTTPException:
         raise
@@ -487,14 +578,16 @@ def auth_me(request: Request):
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         # fetch permissions for this role
         perms = get_permissions_for_role(payload.get('role'))
-        # fetch profile photo from DB
+        # fetch fotoPersona from persona_O and return as public URL
         profile_photo = None
         try:
-            conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-            cur.execute('SELECT profile_photo FROM user_O WHERE id_user = %s', (payload.get('sub'),))
-            r = cur.fetchone()
-            profile_photo = (r or {}).get('profile_photo')
-            cur.close(); conn.close()
+            if payload.get('id_persona'):
+                conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+                cur.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (payload.get('id_persona'),))
+                r = cur.fetchone(); rel = (r or {}).get('fotoPersona')
+                if rel:
+                    profile_photo = '/api/personas' + rel if rel.startswith('/uploads') else rel
+                cur.close(); conn.close()
         except Exception:
             profile_photo = None
         return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'permissions': perms, 'profilePhoto': profile_photo}
@@ -511,12 +604,12 @@ def auth_logout():
 
 
 class PhotoIn(BaseModel):
-    photo: str  # Can be a data URL or a path
+    photo: str  # Can be a data URL; server will write file and store relative path in persona_O
 
 
 @app.post('/users/me/photo')
 async def upload_my_photo(request: Request, x_user_role: Optional[str] = Header(None)):
-    """Accepts either JSON {photo: dataURL} or multipart form field 'file'. Stores in DB and returns updated value."""
+    """Accepts either JSON {photo: dataURL} or multipart 'file'. Saves to /uploads and stores relative path in persona_O.fotoPersona."""
     # authenticate via cookie
     token = request.cookies.get('ollantay_token')
     if not token:
@@ -527,35 +620,63 @@ async def upload_my_photo(request: Request, x_user_role: Optional[str] = Header(
         if not user_id:
             raise HTTPException(status_code=401, detail='Invalid token')
         content_type = request.headers.get('content-type','')
-        photo_data: Optional[str] = None
+        photo_bytes: Optional[bytes] = None
+        file_ext: str = 'png'
         if 'application/json' in content_type:
             body = await request.json()
-            photo_data = body.get('photo')
+            data_url = body.get('photo')
+            if isinstance(data_url, str) and data_url.startswith('data:') and ';base64,' in data_url:
+                header, b64 = data_url.split(';base64,', 1)
+                # try to detect extension
+                if header.startswith('data:image/'):
+                    file_ext = header[len('data:image/'):].split(';')[0].split('/')[0]
+                    if file_ext == 'jpeg':
+                        file_ext = 'jpg'
+                import base64
+                try:
+                    photo_bytes = base64.b64decode(b64)
+                except Exception:
+                    photo_bytes = None
         else:
             try:
                 form = await request.form()
                 file = form.get('file')
                 if file and hasattr(file, 'read'):
-                    content = await file.read()
-                    # Store as data URL with a best-effort MIME from filename
+                    photo_bytes = await file.read()
                     filename = getattr(file, 'filename', 'upload')
-                    ext = (filename.rsplit('.', 1)[-1] if '.' in filename else 'png').lower()
-                    mime = 'image/jpeg' if ext in ('jpg','jpeg') else ('image/png' if ext=='png' else 'image/*')
-                    import base64
-                    b64 = base64.b64encode(content).decode('ascii')
-                    photo_data = f'data:{mime};base64,{b64}'
+                    file_ext = (filename.rsplit('.', 1)[-1] if '.' in filename else 'png').lower()
             except Exception:
-                photo_data = None
-        if not photo_data:
+                photo_bytes = None
+        if not photo_bytes:
             raise HTTPException(status_code=400, detail='No photo provided')
-        # persist
+        # Persist to filesystem
+        safe_ext = file_ext if file_ext in ('png','jpg','jpeg','gif','webp') else 'png'
+        filename = f"user_{user_id}_{int(datetime.utcnow().timestamp())}.{ 'jpg' if safe_ext=='jpeg' else safe_ext }"
         try:
-            conn = get_db_connection(); cur = conn.cursor()
-            cur.execute('UPDATE user_O SET profile_photo=%s WHERE id_user=%s', (photo_data, user_id))
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            path = os.path.join(UPLOAD_DIR, filename)
+            with open(path, 'wb') as f:
+                f.write(photo_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f'Failed to write file: {e}')
+        rel_path = f"/uploads/{filename}"
+        # update persona_O.fotoPersona
+        try:
+            # need id_persona to update persona record
+            conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+            cur.execute('SELECT id_persona FROM user_O WHERE id_user = %s', (user_id,))
+            ur = cur.fetchone()
+            idp = (ur or {}).get('id_persona')
+            if not idp:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=400, detail='User is not linked to a persona')
+            cur2 = conn.cursor()
+            cur2.execute('UPDATE persona_O SET fotoPersona=%s WHERE id_persona=%s', (rel_path, idp))
             conn.commit(); cur.close(); conn.close()
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-        return {'ok': True, 'profilePhoto': photo_data}
+        public_url = '/api/personas' + rel_path
+        return {'ok': True, 'profilePhoto': public_url, 'path': rel_path}
     except HTTPException:
         raise
     except jwt.ExpiredSignatureError:
@@ -565,7 +686,71 @@ async def upload_my_photo(request: Request, x_user_role: Optional[str] = Header(
 
 
 @app.post('/persons', response_model=PersonaOut, status_code=201)
-def create_person(payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+@app.post('/persons', response_model=PersonaOut, status_code=201)
+async def create_person(
+    nombres_persona: str = Form(...),
+    apellido_paternoPersona: Optional[str] = Form(None),
+    apellido_maternoPer: Optional[str] = Form(None),
+    telefono_persona: Optional[str] = Form(None),
+    id_tipoPersona: int = Form(...),
+    ci_persona: str = Form(...),
+    direccion_persona: str = Form(...),
+    foto: Optional[UploadFile] = File(None),
+    x_user_role: Optional[str] = Header(None),
+    request: Request = None
+):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    nombres = nombres_persona.strip()
+    ci = ci_persona.strip()
+    direccion = direccion_persona.strip()
+    if not nombres or not ci or not direccion:
+        raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
+    foto_path = None
+    if foto:
+        ext = (foto.filename.rsplit('.', 1)[-1] if '.' in foto.filename else 'png').lower()
+        safe_ext = ext if ext in ('png','jpg','jpeg','gif','webp') else 'png'
+        filename = f"persona_{ci}_{int(datetime.utcnow().timestamp())}.{ 'jpg' if safe_ext=='jpeg' else safe_ext }"
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(UPLOAD_DIR, filename)
+        with open(path, 'wb') as f:
+            f.write(await foto.read())
+        foto_path = f"/uploads/{filename}"
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE idtipoPers = %s', (id_tipoPersona,))
+        tipo = cursor.fetchone()
+        if not tipo:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=400, detail='TipoPersona no existe')
+        cursor.execute('SELECT id_persona FROM persona_O WHERE ci_persona = %s', (ci,))
+        exists = cursor.fetchone()
+        if exists:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=400, detail='CI ya registrado')
+        cur2 = conn.cursor()
+        cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)',
+            (nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, foto_path))
+        conn.commit()
+        new_id = cur2.lastrowid
+        cur2.close(); cursor.close(); conn.close()
+        return {
+            'id_persona': new_id,
+            'nombres_persona': nombres,
+            'apellido_paternoPersona': apellido_paternoPersona,
+            'apellido_maternoPer': apellido_maternoPer,
+            'telefono_persona': telefono_persona,
+            'id_tipoPersona': id_tipoPersona,
+            'ci_persona': ci,
+            'direccion_persona': direccion,
+            'fotoPersona': foto_path
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
@@ -609,27 +794,77 @@ def create_person(payload: PersonaIn, x_user_role: Optional[str] = Header(None),
 
 
 @app.put('/persons/{id}', response_model=PersonaOut)
-def update_person(id: int, payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+@app.put('/persons/{id}', response_model=PersonaOut)
+async def update_person(
+    id: int,
+    nombres_persona: str = Form(...),
+    apellido_paternoPersona: Optional[str] = Form(None),
+    apellido_maternoPer: Optional[str] = Form(None),
+    telefono_persona: Optional[str] = Form(None),
+    id_tipoPersona: int = Form(...),
+    ci_persona: str = Form(...),
+    direccion_persona: str = Form(...),
+    foto: Optional[UploadFile] = File(None),
+    x_user_role: Optional[str] = Header(None),
+    request: Request = None
+):
     role = get_role(x_user_role, request)
     if role not in ('admin','editor'):
         raise HTTPException(status_code=403, detail='Permission denied')
-    nombres = payload.nombres_persona.strip()
-    ci = payload.ci_persona.strip()
-    direccion = payload.direccion_persona.strip()
+    nombres = nombres_persona.strip()
+    ci = ci_persona.strip()
+    direccion = direccion_persona.strip()
     if not nombres or not ci or not direccion:
         raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
+    foto_path = None
+    if foto:
+        ext = (foto.filename.rsplit('.', 1)[-1] if '.' in foto.filename else 'png').lower()
+        safe_ext = ext if ext in ('png','jpg','jpeg','gif','webp') else 'png'
+        filename = f"persona_{ci}_{int(datetime.utcnow().timestamp())}.{ 'jpg' if safe_ext=='jpeg' else safe_ext }"
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(UPLOAD_DIR, filename)
+        with open(path, 'wb') as f:
+            f.write(await foto.read())
+        foto_path = f"/uploads/{filename}"
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # check exists
         cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (id,))
         exists_person = cursor.fetchone()
         if not exists_person:
-            cursor.close()
-            conn.close()
+            cursor.close(); conn.close()
             raise HTTPException(status_code=404, detail='Persona no encontrada')
-        # check tipo exists
-        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE idtipoPers = %s', (payload.id_tipoPersona,))
+        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE idtipoPers = %s', (id_tipoPersona,))
+        tipo = cursor.fetchone()
+        if not tipo:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=400, detail='TipoPersona no existe')
+        cur2 = conn.cursor()
+        update_sql = 'UPDATE persona_O SET nombres_persona=%s, apellido_paternoPersona=%s, apellido_maternoPer=%s, telefono_persona=%s, id_tipoPersona=%s, ci_persona=%s, direccion_persona=%s'
+        params = [nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion]
+        if foto_path:
+            update_sql += ', fotoPersona=%s'
+            params.append(foto_path)
+        update_sql += ' WHERE id_persona=%s'
+        params.append(id)
+        cur2.execute(update_sql, tuple(params))
+        conn.commit()
+        cur2.close(); cursor.close(); conn.close()
+        return {
+            'id_persona': id,
+            'nombres_persona': nombres,
+            'apellido_paternoPersona': apellido_paternoPersona,
+            'apellido_maternoPer': apellido_maternoPer,
+            'telefono_persona': telefono_persona,
+            'id_tipoPersona': id_tipoPersona,
+            'ci_persona': ci,
+            'direccion_persona': direccion,
+            'fotoPersona': foto_path
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
         tipo = cursor.fetchone()
         if not tipo:
             cursor.close()
@@ -658,7 +893,18 @@ def update_person(id: int, payload: PersonaIn, x_user_role: Optional[str] = Head
 
 
 @app.delete('/persons/{id}', status_code=204)
-def delete_person(id: int, x_user_role: Optional[str] = Header(None), request: Request = None):
+async def create_person(
+    nombres_persona: str = Form(...),
+    apellido_paternoPersona: str = Form(...),
+    apellido_maternoPer: str = Form(...),
+    telefono_persona: str = Form(...),
+    id_tipoPersona: int = Form(...),
+    ci_persona: str = Form(...),
+    direccion_persona: str = Form(...),
+    foto: UploadFile = File(None),
+    x_user_role: Optional[str] = Header(None),
+    request: Request = None
+):
     role = get_role(x_user_role, request)
     if role != 'admin':
         raise HTTPException(status_code=403, detail='Permission denied')
@@ -739,7 +985,19 @@ def create_role(payload, x_user_role: Optional[str] = Header(None), request: Req
 
 
 @app.put('/roles/{id}')
-def update_role(id, payload, x_user_role: Optional[str] = Header(None), request: Request = None):
+async def update_person(
+    id: int,
+    nombres_persona: str = Form(...),
+    apellido_paternoPersona: str = Form(...),
+    apellido_maternoPer: str = Form(...),
+    telefono_persona: str = Form(...),
+    id_tipoPersona: int = Form(...),
+    ci_persona: str = Form(...),
+    direccion_persona: str = Form(...),
+    foto: UploadFile = File(None),
+    x_user_role: Optional[str] = Header(None),
+    request: Request = None
+):
     require_admin(x_user_role, request)
     name = payload.get('name', '').strip().lower() if isinstance(payload, dict) else getattr(payload, 'name', '').strip().lower()
     if not name:

@@ -65,6 +65,10 @@ services:
       DATABASE_PASSWORD: P4assw@rd
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - ./backend/persona_service:/app
+      - ./backend/persona_service/uploads:/app/uploads
 
   prestamo_service:
     build:

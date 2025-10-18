@@ -12,7 +12,9 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   const [error, setError] = useState(null)
 
   const [form, setForm] = useState({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})
+  const [foto, setFoto] = useState(null)
   const [editingId, setEditingId] = useState(null)
+  const [editingLoading, setEditingLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [searchQ, setSearchQ] = useState('')
@@ -48,6 +50,8 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   const res = await fetch(`${API}/persons`, { headers: { 'X-User-Role': userRole } })
       if(!res.ok) throw new Error('Error fetching persons')
   const data = await res.json()
+  console.log('Personas cargadas:', data) // DEBUG
+  console.log('Primera persona fotoPersona:', data[0]?.fotoPersona) // DEBUG
   setPersons(data)
   setFilteredPersons(data)
     }catch(err){ setError(err.message) }
@@ -82,27 +86,44 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
       setError('Todos los campos son obligatorios')
       return
     }
-    setSubmitting(true)
+  setSubmitting(true)
+  setError(null)
     try{
       let res
-      const payload = {...form, id_tipoPersona: Number(form.id_tipoPersona)}
+      const formData = new FormData()
+      Object.entries({...form, id_tipoPersona: Number(form.id_tipoPersona)}).forEach(([k,v])=>formData.append(k,v))
+      if(foto) formData.append('foto', foto)
       if(editingId){
-        res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+        res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
       } else {
-        res = await fetch(`${API}/persons`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+        res = await fetch(`${API}/persons`, {method:'POST', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
       }
-      if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
+      if(!res.ok){
+        let j = null
+        try { j = await res.json() } catch {}
+        throw new Error(j?.detail || res.statusText || 'Error de red')
+      }
       setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})
+      setFoto(null)
       setEditingId(null)
       loadPersons()
       toast.push(editingId ? 'Persona actualizada' : 'Persona creada','success')
-    }catch(err){ setError(err.message) }
+    }catch(err){
+      if(err.message === 'Failed to fetch') setError('No se pudo conectar con el servidor. Verifique la red o el backend.')
+      else setError(err.message)
+    }
     finally{ setSubmitting(false) }
   }
 
   const edit = (p)=>{
-    setEditingId(p.id_persona)
-    setForm({nombres_persona:p.nombres_persona, apellido_paternoPersona:p.apellido_paternoPersona || '', apellido_maternoPer:p.apellido_maternoPer || '', telefono_persona:p.telefono_persona || '', id_tipoPersona:String(p.id_tipoPersona), ci_persona:p.ci_persona, direccion_persona:p.direccion_persona})
+    setEditingLoading(true)
+    setTimeout(()=>{
+      setEditingId(p.id_persona)
+      setForm({nombres_persona:p.nombres_persona, apellido_paternoPersona:p.apellido_paternoPersona || '', apellido_maternoPer:p.apellido_maternoPer || '', telefono_persona:p.telefono_persona || '', id_tipoPersona:String(p.id_tipoPersona), ci_persona:p.ci_persona, direccion_persona:p.direccion_persona})
+      setFoto(null)
+      setShowCreate(true)
+      setEditingLoading(false)
+    }, 350)
   }
 
   const remove = async (id)=>{
@@ -147,42 +168,53 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
 
   {has('personas','create') && showCreate && (
         <div className="mb-6 p-4 sm:p-6 border-2 border-blue-200 dark:border-blue-800 rounded-lg bg-blue-50 dark:bg-blue-900/20">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">Nueva Persona</h3>
-          <form onSubmit={submit} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">Nombres</label>
-            <input className="p-2 border w-full" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">Tipo</label>
-            <select value={form.id_tipoPersona} onChange={e=>setForm({...form, id_tipoPersona: e.target.value})} className="p-2 border w-full" disabled={loadingTypes}>
-              <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
-              {types.map((t, idx) => (
-                <option key={t.id_tipoPersona ?? `tipo-${idx}`} value={t.id_tipoPersona ?? ''}>{t.nombre_tipoPersona ?? (`Tipo ${t.id_tipoPersona ?? idx}`)}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">Apellido paterno</label>
-            <input className="p-2 border w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">Apellido materno</label>
-            <input className="p-2 border w-full" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">Teléfono</label>
-            <input className="p-2 border w-full" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-1">CI</label>
-            <input className="p-2 border w-full" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
-          </div>
-          <div className="md:col-span-2">
-            <label className="block text-sm text-gray-700 mb-1">Dirección</label>
-            <input className="p-2 border w-full" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
-          </div>
-
+          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">{editingId ? 'Editar Persona' : 'Nueva Persona'}</h3>
+          <form onSubmit={submit} className="grid grid-cols-1 gap-4 sm:grid-cols-2" encType="multipart/form-data">
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">Nombres</label>
+              <input className="p-2 border w-full" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">Tipo</label>
+              <select value={form.id_tipoPersona} onChange={e=>setForm({...form, id_tipoPersona: e.target.value})} className="p-2 border w-full" disabled={loadingTypes}>
+                <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
+                {types.map((t, idx) => (
+                  <option key={t.id_tipoPersona ?? `tipo-${idx}`} value={t.id_tipoPersona ?? ''}>{t.nombre_tipoPersona ?? (`Tipo ${t.id_tipoPersona ?? idx}`)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">Apellido paterno</label>
+              <input className="p-2 border w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">Apellido materno</label>
+              <input className="p-2 border w-full" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">Teléfono</label>
+              <input className="p-2 border w-full" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 mb-1">CI</label>
+              <input className="p-2 border w-full" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm text-gray-700 mb-1">Dirección</label>
+              <input className="p-2 border w-full" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm text-gray-700 mb-1">Foto de perfil</label>
+              <input type="file" accept="image/*" className="p-2 border w-full" onChange={e=>setFoto(e.target.files[0])} />
+              {/* Mostrar foto actual si está editando y existe fotoPersona */}
+              {editingId && persons.length > 0 && (()=>{
+                const persona = persons.find(p=>p.id_persona===editingId)
+                if(persona && persona.fotoPersona){
+                  return <img src={persona.fotoPersona} alt="Foto actual" className="mt-2 w-16 h-16 rounded-full object-cover border" />
+                }
+                return null
+              })()}
+            </div>
             <div className="sm:col-span-2 flex justify-end">
               <button disabled={submitting} className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors">{submitting? 'Procesando...' : (editingId? 'Actualizar' : 'Crear')}</button>
             </div>
@@ -206,13 +238,16 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     {filteredPersons.map(p => (
       <tr key={p.id_persona} className="border-b dark:border-gray-700">
         <td className="px-4 py-2">{p.id_persona}</td>
-        <td className="px-4 py-2">{p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}</td>
+        <td className="px-4 py-2 flex items-center gap-2">
+          {p.fotoPersona && <img src={p.fotoPersona} alt="Foto" className="w-8 h-8 rounded-full object-cover border" onError={(e)=>console.error('Error cargando imagen:', p.fotoPersona)}/>}
+          {p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}
+        </td>
         <td className="px-4 py-2">{p.ci_persona}</td>
         <td className="px-4 py-2">{getTypeName(p.id_tipoPersona)}</td>
         <td className="px-4 py-2">
           {(has('personas','update') || has('personas','delete')) && (
             <div className="flex gap-2">
-              {has('personas','update') && <button onClick={()=>edit(p)} className="btn btn-blue"><span className="mr-1">✎</span>Editar</button>}
+              {has('personas','update') && <button onClick={()=>edit(p)} className={`btn btn-blue ${editingLoading && editingId === p.id_persona ? 'opacity-50 pointer-events-none animate-pulse' : ''}`}><span className="mr-1">✎</span>{editingLoading && editingId === p.id_persona ? 'Cargando...' : 'Editar'}</button>}
               {has('personas','delete') && <button onClick={()=>remove(p.id_persona)} className="btn btn-danger"><span className="mr-1">🗑️</span>Borrar</button>}
             </div>
           )}
