@@ -366,6 +366,6 @@ Este proyecto está bajo la Licencia MIT. Ver el archivo `LICENSE` para más det
 
 ---
 
-**Sistema Ollantay** - Desarrollado con ❤️ para la gestión eficiente de préstamos empresariales.
+**Sistema Ollantay 1.0** - Desarrollado con ❤️ para la gestión eficiente de préstamos empresariales.
 
 Para soporte técnico o consultas: [Crear Issue](https://github.com/tu-usuario/ollantay-project/issues)
