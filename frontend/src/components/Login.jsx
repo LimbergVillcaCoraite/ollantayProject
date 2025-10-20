@@ -24,6 +24,8 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
         throw new Error(msg)
       }
       const data = await res.json()
+      console.log('Login response:', data) // DEBUG
+      console.log('Profile photo received:', data.profilePhoto) // DEBUG
       onLogin(data)
     }catch(err){
       // Normalize some common network/CORS messages for clarity

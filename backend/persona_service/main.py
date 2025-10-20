@@ -70,13 +70,14 @@ class PersonaOut(BaseModel):
     ci_persona: str
     direccion_persona: str
     fotoPersona: Optional[str] = None
+    id_empresa: Optional[int] = None
 
 
 class EmpresaIn(BaseModel):
     nombre_empresa: str = Field(..., max_length=100)
     direccion_empresa: str = Field(..., max_length=100)
     estado_empresa: int = Field(default=1)
-    id_persona: int
+    # No owner (propietario) is stored on empresa_O; personas reference empresa via id_empresa
 
 
 class EmpresaOut(BaseModel):
@@ -84,7 +85,7 @@ class EmpresaOut(BaseModel):
     nombre_empresa: str
     direccion_empresa: str
     estado_empresa: int
-    id_persona: int
+    # Owner is not stored directly on empresa_O; omit id_persona from response
 
 
 class LoginIn(BaseModel):
@@ -193,6 +194,13 @@ def get_permissions_for_role(role_name: str) -> list[str]:
     if not role_name:
         return []
     try:
+        # Superadmin: grant all permissions without mapping lookups
+        if role_name.lower() == 'superadmin':
+            conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+            cur.execute('SELECT resource, action FROM permission_O')
+            rows = cur.fetchall() or []
+            cur.close(); conn.close()
+            return [f"{x['resource']}:{x['action']}" for x in rows]
         conn = get_db_connection(); cur = conn.cursor(dictionary=True)
         cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role_name,))
         r = cur.fetchone()
@@ -213,82 +221,82 @@ def options_login():
 
 @router.post('/auth/login')
 async def login(request: Request):
-    # Detectar tipo de contenido
-    if request.headers.get('content-type', '').startswith('application/json'):
-        body = await request.json()
-        username = body.get('username')
-        password = body.get('password')
+    """Accepts JSON or form data. Avoids 500 on bad JSON by falling back to form and returning 400 if still invalid."""
+    content_type = (request.headers.get('content-type') or '').lower()
+    username = None; password = None
+    if content_type.startswith('application/json'):
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                username = body.get('username')
+                password = body.get('password')
+        except Exception:
+            # Bad JSON payload. Try to fallback to form; if not present, raise 400
+            try:
+                form = await request.form()
+                username = form.get('username')
+                password = form.get('password')
+            except Exception:
+                raise HTTPException(status_code=400, detail='Invalid JSON payload')
     else:
-        form = await request.form()
-        username = form.get('username')
-        password = form.get('password')
+        try:
+            form = await request.form()
+            username = form.get('username')
+            password = form.get('password')
+        except Exception:
+            # Final fallback: try JSON without relying on header
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    username = body.get('username')
+                    password = body.get('password')
+            except Exception:
+                pass
     if not username or not password:
         raise HTTPException(status_code=400, detail='Username y password requeridos')
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo, r.name AS role_name FROM user_O u JOIN role_O r ON u.id_role = r.idrole WHERE u.username = %s', (username,))
+        cursor.execute('''
+            SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo,
+                   r.name AS role_name, p.id_empresa, p.fotoPersona
+            FROM user_O u
+            JOIN role_O r   ON u.id_role = r.idrole
+            LEFT JOIN persona_O p ON u.id_persona = p.id_persona
+            WHERE u.username = %s
+        ''', (username,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
         if not row:
             raise HTTPException(status_code=401, detail='Invalid credentials')
-        if row.get('password_hash'):
-            if not password or password != row.get('password_hash'):
+        # Password verification supports both bcrypt hashes and legacy plaintext
+        stored = row.get('password_hash') or ''
+        if stored:
+            ok = False
+            try:
+                # bcrypt hashes start with $2a$ or $2b$ typically
+                if stored.startswith('$2a$') or stored.startswith('$2b$') or stored.startswith('$2y$'):
+                    ok = bcrypt.checkpw((password or '').encode('utf-8'), stored.encode('utf-8'))
+                else:
+                    # legacy plaintext fallback
+                    ok = (password or '') == stored
+            except Exception:
+                ok = False
+            if not ok:
                 raise HTTPException(status_code=401, detail='Invalid credentials')
-        token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
+        token = create_token({
+            'sub': row['id_user'],
+            'username': row['username'],
+            'role': row['role_name'],
+            'id_persona': row.get('id_persona'),
+            'company_id': row.get('id_empresa')
+        })
         perms = get_permissions_for_role(row['role_name'])
-        photo_url = None
-        try:
-            if row.get('id_persona'):
-                conn2 = get_db_connection(); cur2 = conn2.cursor(dictionary=True)
-                cur2.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (row.get('id_persona'),))
-                pr = cur2.fetchone()
-                rel = (pr or {}).get('fotoPersona')
-                if rel:
-                    photo_url = '/api/personas' + rel if rel.startswith('/uploads') else rel
-                cur2.close(); conn2.close()
-        except Exception:
-            photo_url = None
-        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': photo_url})
-        resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
-        return resp
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo, r.name AS role_name FROM user_O u JOIN role_O r ON u.id_role = r.idrole WHERE u.username = %s', (payload.username,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if not row:
-            raise HTTPException(status_code=401, detail='Invalid credentials')
-        # naive password check: if password_hash is NULL accept login (seeded admin), otherwise compare plaintext (insecure - replace with hashed verify later)
-        if row.get('password_hash'):
-            if not payload.password or payload.password != row.get('password_hash'):
-                raise HTTPException(status_code=401, detail='Invalid credentials')
-        # create JWT and set as httpOnly cookie; include permissions in response for immediate UI gating
-        token = create_token({'sub': row['id_user'], 'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona')})
-        perms = get_permissions_for_role(row['role_name'])
-        # fetch fotoPersona for this user (if linked)
-        photo_url = None
-        try:
-            if row.get('id_persona'):
-                conn2 = get_db_connection(); cur2 = conn2.cursor(dictionary=True)
-                cur2.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (row.get('id_persona'),))
-                pr = cur2.fetchone()
-                rel = (pr or {}).get('fotoPersona')
-                if rel:
-                    # Build public URL under API prefix
-                    photo_url = '/api/personas' + rel if rel.startswith('/uploads') else rel
-                cur2.close(); conn2.close()
-        except Exception:
-            photo_url = None
-        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'permissions': perms, 'profilePhoto': photo_url})
-        # set cookie for session
+        # Build profile photo URL from joined data
+        rel = (row or {}).get('fotoPersona')
+        photo_url = ('/api/personas' + rel) if (isinstance(rel, str) and rel.startswith('/uploads')) else rel
+        resp = JSONResponse(content={'username': row['username'], 'role': row['role_name'], 'id_persona': row.get('id_persona'), 'company_id': row.get('id_empresa'), 'permissions': perms, 'profilePhoto': photo_url})
         resp.set_cookie('ollantay_token', token, httponly=True, samesite='lax', secure=False, path='/')
         return resp
     except HTTPException:
@@ -343,16 +351,37 @@ def register(payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), r
 
 
 @app.get('/persons', response_model=List[PersonaOut])
-def list_persons(tipo: Optional[int] = None):
+def list_persons(tipo: Optional[int] = None, company_id: Optional[int] = None, request: Request = None):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        if tipo is None:
-            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona FROM persona_O')
-            rows = cursor.fetchall()
+        role = get_role(None, request)
+        jwt_company_id = get_company_id_from_request(request)
+        base_sql = 'SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa FROM persona_O'
+        params = []
+        where = []
+        if tipo is not None:
+            where.append('id_tipoPersona = %s')
+            params.append(tipo)
+        # Company scoping:
+        # - If explicit company_id requested and role is superadmin, allow that filter
+        # - If explicit company_id requested but not superadmin, force to JWT company (if available)
+        # - If no explicit filter and not superadmin, scope to JWT company (if available)
+        if company_id is not None:
+            if role == 'superadmin':
+                where.append('id_empresa = %s')
+                params.append(company_id)
+            else:
+                if jwt_company_id is not None:
+                    where.append('id_empresa = %s')
+                    params.append(jwt_company_id)
         else:
-            cursor.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona FROM persona_O WHERE id_tipoPersona = %s', (tipo,))
-            rows = cursor.fetchall()
+            if role != 'superadmin' and jwt_company_id is not None:
+                where.append('id_empresa = %s')
+                params.append(jwt_company_id)
+        sql = base_sql + ((' WHERE ' + ' AND '.join(where)) if where else '')
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
         cursor.close()
         conn.close()
         # Normalize fotoPersona to public URL via proxy
@@ -366,11 +395,11 @@ def list_persons(tipo: Optional[int] = None):
 
 
 @app.get('/empresas')
-def list_empresas(q: Optional[str] = None, id_persona: Optional[int] = None, offset: Optional[int] = 0, limit: Optional[int] = 100):
-    return list_empresas_paginated(q=q, id_persona=id_persona, offset=offset, limit=limit)
+def list_empresas(q: Optional[str] = None, id_persona: Optional[int] = None, offset: Optional[int] = 0, limit: Optional[int] = 100, include_counts: Optional[int] = 0, request: Request = None):
+    return list_empresas_paginated(q=q, id_persona=id_persona, offset=offset, limit=limit, request=request, include_counts=include_counts)
 
 
-def list_empresas_paginated(q: Optional[str] = None, id_persona: Optional[int] = None, offset: int = 0, limit: int = 100):
+def list_empresas_paginated(q: Optional[str] = None, id_persona: Optional[int] = None, offset: int = 0, limit: int = 100, request: Request = None, include_counts: Optional[int] = 0):
     # validate pagination bounds
     try:
         offset = int(offset)
@@ -384,21 +413,36 @@ def list_empresas_paginated(q: Optional[str] = None, id_persona: Optional[int] =
         cursor = conn.cursor(dictionary=True)
         params = []
         where_clauses = []
+        # role-based scoping
+        role = get_role(None, request)
+        company_id = get_company_id_from_request(request)
+        if role != 'superadmin' and company_id is not None:
+            where_clauses.append('id_empresa = %s')
+            params.append(company_id)
         if q:
             like = f"%{q}%"
             where_clauses.append('(nombre_empresa LIKE %s OR direccion_empresa LIKE %s)')
             params.extend([like, like])
-        if id_persona:
-            where_clauses.append('id_persona = %s')
-            params.append(id_persona)
+        # empresa_O does not hold id_persona directly; skip filtering by id_persona
         where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
-        sql = f'SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa, id_persona FROM empresa_O{where_sql} ORDER BY id_empresa DESC LIMIT %s OFFSET %s'
-        params.extend([limit, offset])
-        cursor.execute(sql, tuple(params))
+        # main page query
+        if include_counts:
+            sql = (
+                'SELECT e.id_empresa, e.nombre_empresa, e.direccion_empresa, e.estado_empresa, '
+                '(SELECT COUNT(1) FROM persona_O p WHERE p.id_empresa = e.id_empresa) AS personas_count '
+                f'FROM empresa_O e{where_sql.replace(" FROM empresa_O", " FROM empresa_O e")} ORDER BY e.id_empresa DESC LIMIT %s OFFSET %s'
+            )
+        else:
+            sql = (
+                'SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa '
+                f'FROM empresa_O{where_sql} ORDER BY id_empresa DESC LIMIT %s OFFSET %s'
+            )
+        params_with_pagination = params + [limit, offset]
+        cursor.execute(sql, tuple(params_with_pagination))
         rows = cursor.fetchall()
-        # count total for the same filter
+        # count total for the same filter (without pagination params)
         count_sql = f'SELECT COUNT(1) as total FROM empresa_O{where_sql}'
-        cursor.execute(count_sql, tuple(params[:-2]))
+        cursor.execute(count_sql, tuple(params))
         cnt = cursor.fetchone()
         total = cnt['total'] if cnt else 0
         cursor.close()
@@ -413,7 +457,7 @@ def get_empresa(id: int):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa, id_persona FROM empresa_O WHERE id_empresa = %s', (id,))
+        cursor.execute('SELECT id_empresa, nombre_empresa, direccion_empresa, estado_empresa FROM empresa_O WHERE id_empresa = %s', (id,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
@@ -429,7 +473,7 @@ def get_empresa(id: int):
 @app.post('/empresas', response_model=EmpresaOut, status_code=201)
 def create_empresa(payload: EmpresaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
     role = get_role(x_user_role, request)
-    if role not in ('admin','editor'):
+    if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     # validation
     nombre = payload.nombre_empresa.strip()
@@ -439,21 +483,14 @@ def create_empresa(payload: EmpresaIn, x_user_role: Optional[str] = Header(None)
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # check persona exists
-        cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
-        persona = cursor.fetchone()
-        if not persona:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail='Persona no existe')
         cur2 = conn.cursor()
-        cur2.execute('INSERT INTO empresa_O (nombre_empresa, direccion_empresa, estado_empresa, id_persona) VALUES (%s,%s,%s,%s)', (nombre, direccion, int(bool(payload.estado_empresa)), payload.id_persona))
+        cur2.execute('INSERT INTO empresa_O (nombre_empresa, direccion_empresa, estado_empresa) VALUES (%s,%s,%s)', (nombre, direccion, int(bool(payload.estado_empresa))))
         conn.commit()
         new_id = cur2.lastrowid
         cur2.close()
         cursor.close()
         conn.close()
-        return {**payload.dict(), 'id_empresa': new_id}
+        return {'id_empresa': new_id, 'nombre_empresa': nombre, 'direccion_empresa': direccion, 'estado_empresa': int(bool(payload.estado_empresa))}
     except HTTPException:
         raise
     except Exception as e:
@@ -463,7 +500,7 @@ def create_empresa(payload: EmpresaIn, x_user_role: Optional[str] = Header(None)
 @app.put('/empresas/{id}', response_model=EmpresaOut)
 def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
     role = get_role(x_user_role, request)
-    if role not in ('admin','editor'):
+    if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     nombre = payload.nombre_empresa.strip()
     direccion = payload.direccion_empresa.strip()
@@ -478,20 +515,13 @@ def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Hea
             cursor.close()
             conn.close()
             raise HTTPException(status_code=404, detail='Empresa no encontrada')
-        # check persona exists
-        cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
-        persona = cursor.fetchone()
-        if not persona:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail='Persona no existe')
         cur2 = conn.cursor()
-        cur2.execute('UPDATE empresa_O SET nombre_empresa=%s, direccion_empresa=%s, estado_empresa=%s, id_persona=%s WHERE id_empresa=%s', (nombre, direccion, int(bool(payload.estado_empresa)), payload.id_persona, id))
+        cur2.execute('UPDATE empresa_O SET nombre_empresa=%s, direccion_empresa=%s, estado_empresa=%s WHERE id_empresa=%s', (nombre, direccion, int(bool(payload.estado_empresa)), id))
         conn.commit()
         cur2.close()
         cursor.close()
         conn.close()
-        return {**payload.dict(), 'id_empresa': id}
+        return {'id_empresa': id, 'nombre_empresa': nombre, 'direccion_empresa': direccion, 'estado_empresa': int(bool(payload.estado_empresa))}
     except HTTPException:
         raise
     except Exception as e:
@@ -501,7 +531,7 @@ def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Hea
 @app.delete('/empresas/{id}', status_code=204)
 def delete_empresa(id: int, x_user_role: Optional[str] = Header(None), request: Request = None):
     role = get_role(x_user_role, request)
-    if role != 'admin':
+    if role not in ('admin','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
@@ -562,9 +592,24 @@ def get_role(x_user_role: Optional[str] = Header(None), request: Request = None)
     # 3) Default viewer
     return 'viewer'
 
+def get_company_id_from_request(request: Request) -> Optional[int]:
+    """Extract company_id (id_empresa) from JWT if present."""
+    try:
+        token = request.cookies.get('ollantay_token') if request is not None else None
+        if not token:
+            return None
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        cid = payload.get('company_id')
+        try:
+            return int(cid) if cid is not None else None
+        except Exception:
+            return None
+    except Exception:
+        return None
+
 def require_admin(x_user_role: Optional[str] = Header(None), request: Request = None):
     role = get_role(x_user_role, request)
-    if role != 'admin':
+    if role not in ('admin', 'superadmin'):
         raise HTTPException(status_code=403, detail=f'Admin required (role={role})')
     return role
 
@@ -578,19 +623,22 @@ def auth_me(request: Request):
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         # fetch permissions for this role
         perms = get_permissions_for_role(payload.get('role'))
-        # fetch fotoPersona from persona_O and return as public URL
-        profile_photo = None
+        # fetch fotoPersona and id_empresa from persona_O
+        profile_photo = None; company_id = None
         try:
             if payload.get('id_persona'):
                 conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-                cur.execute('SELECT fotoPersona FROM persona_O WHERE id_persona = %s', (payload.get('id_persona'),))
-                r = cur.fetchone(); rel = (r or {}).get('fotoPersona')
-                if rel:
-                    profile_photo = '/api/personas' + rel if rel.startswith('/uploads') else rel
+                cur.execute('SELECT fotoPersona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.get('id_persona'),))
+                r = cur.fetchone()
+                if r:
+                    rel = r.get('fotoPersona')
+                    if rel:
+                        profile_photo = '/api/personas' + rel if rel.startswith('/uploads') else rel
+                    company_id = r.get('id_empresa')
                 cur.close(); conn.close()
         except Exception:
             profile_photo = None
-        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'permissions': perms, 'profilePhoto': profile_photo}
+        return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'company_id': company_id or payload.get('company_id'), 'permissions': perms, 'profilePhoto': profile_photo}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail='Token expired')
     except Exception:
@@ -985,45 +1033,12 @@ def create_role(payload, x_user_role: Optional[str] = Header(None), request: Req
 
 
 @app.put('/roles/{id}')
-async def update_person(
-    id: int,
-    nombres_persona: str = Form(...),
-    apellido_paternoPersona: str = Form(...),
-    apellido_maternoPer: str = Form(...),
-    telefono_persona: str = Form(...),
-    id_tipoPersona: int = Form(...),
-    ci_persona: str = Form(...),
-    direccion_persona: str = Form(...),
-    foto: UploadFile = File(None),
-    x_user_role: Optional[str] = Header(None),
-    request: Request = None
-):
+def update_role(id: int, payload: RoleIn, x_user_role: Optional[str] = Header(None), request: Request = None):
     require_admin(x_user_role, request)
-    name = payload.get('name', '').strip().lower() if isinstance(payload, dict) else getattr(payload, 'name', '').strip().lower()
+    name = payload.name.strip().lower()
     if not name:
         raise HTTPException(status_code=400, detail='name required')
     if name in ('admin','editor','viewer') and id not in (1,2,3):
-        raise HTTPException(status_code=400, detail='Reserved role name')
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT idrole, name FROM role_O WHERE idrole = %s', (id,))
-        ex = cur.fetchone()
-        if not ex:
-            cur.close(); conn.close();
-            raise HTTPException(status_code=404, detail='Role not found')
-        if ex['name'] in ('admin','editor','viewer') and ex['name'] != name:
-            cur.close(); conn.close();
-            raise HTTPException(status_code=400, detail='Cannot rename built-in role')
-        cur.execute('UPDATE role_O SET name=%s, description=%s WHERE idrole=%s', (name, payload.get('description') if isinstance(payload, dict) else getattr(payload, 'description', None), id))
-        conn.commit(); cur.close(); conn.close()
-        return {'idrole': id, 'name': name, 'description': payload.get('description') if isinstance(payload, dict) else getattr(payload, 'description', None)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    if name in ('admin','editor','viewer') and id not in (1,2,3):
-        # do not allow renaming some other id to built-in names
         raise HTTPException(status_code=400, detail='Reserved role name')
     try:
         conn = get_db_connection()
@@ -1118,9 +1133,11 @@ def set_role_permissions(id, payload: RolePermissionsIn, x_user_role: Optional[s
         if not r:
             cur.close(); conn.close();
             raise HTTPException(status_code=404, detail='Role not found')
-        if r['name'] == 'admin':
+        # Only a superadmin can change the built-in 'admin' role permissions
+        caller_role = get_role(x_user_role, request)
+        if r['name'] == 'admin' and caller_role != 'superadmin':
             cur.close(); conn.close();
-            raise HTTPException(status_code=400, detail='Cannot modify admin permissions')
+            raise HTTPException(status_code=403, detail='Only superadmin can modify admin permissions')
         # replace mapping
         d = conn.cursor(); d.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,)); d.close()
         if payload.perm_ids:

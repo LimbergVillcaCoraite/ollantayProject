@@ -12,6 +12,155 @@
 				"-Command",
 				"New-NetFirewallRule -DisplayName 'Ollantay Web (3000)' -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow; New-NetFirewallRule -DisplayName 'Ollantay API (8001-8003)' -Direction Inbound -LocalPort 8001-8003 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow"
 			]
+		},
+		{
+			"label": "Restart prestamo_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"prestamo_service"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$eslint-stylish"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart reverse_proxy",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"reverse_proxy"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart persona_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"persona_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Open firewall ports 3000,8001-8003",
+			"type": "shell",
+			"command": "PowerShell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"New-NetFirewallRule -DisplayName 'Ollantay Web (3000)' -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow; New-NetFirewallRule -DisplayName 'Ollantay API (8001-8003)' -Direction Inbound -LocalPort 8001-8003 -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow"
+			]
+		},
+		{
+			"label": "Restart persona_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"persona_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart reverse_proxy",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"reverse_proxy"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart prestamo_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"prestamo_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart reverse_proxy",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"reverse_proxy"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild prestamo_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"up",
+				"--build",
+				"-d",
+				"prestamo_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart prestamo_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"prestamo_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Restart persona_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"persona_service"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

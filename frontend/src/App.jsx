@@ -26,6 +26,7 @@ export default function App(){
       return ''
     }
   })
+  const [personasCompanyFilter, setPersonasCompanyFilter] = useState(null)
   const perms = loggedUser?.permissions || []
   const has = (resource, action) => perms.includes(`${resource}:${action}`)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
@@ -61,13 +62,17 @@ export default function App(){
         const res = await fetch(`${API_PERSONS}/auth/me`, { credentials: 'include' })
         if(!res.ok) return
         const data = await res.json()
+        console.log('Session restored:', data) // DEBUG
         setLoggedUser(data)
         setUserRole(data.role)
         if(data?.profilePhoto){
+          console.log('Profile photo from backend:', data.profilePhoto) // DEBUG
           setProfilePhoto(data.profilePhoto)
           try{ localStorage.setItem('ollantay-profile-photo', data.profilePhoto) }catch(e){}
+        } else {
+          console.log('No profile photo in session') // DEBUG
         }
-      }catch(e){ /* ignore */ }
+      }catch(e){ console.error('Error restoring session:', e) }
     }
     restore()
   }, [])
@@ -258,7 +263,9 @@ export default function App(){
           <div className={`mt-auto px-3 py-4 border-t ${dark ? 'border-gray-700' : 'border-gray-200'} space-y-3`}>
             <div className="flex items-center gap-3 px-2">
               {profilePhoto ? (
-                <img src={profilePhoto} alt="Foto de perfil" className="w-8 h-8 rounded-full object-cover border-2 border-blue-500" />
+                <img src={profilePhoto} alt="Foto de perfil" className="w-8 h-8 rounded-full object-cover border-2 border-blue-500"
+                  onError={(e)=>{ e.currentTarget.onerror=null; e.currentTarget.src='data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="%23bfdbfe"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>`); }}
+                />
               ) : (
                 <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
                   {loggedUser?.nombres?.[0] || loggedUser?.username?.[0] || 'U'}
@@ -311,8 +318,8 @@ export default function App(){
         {/* Main content */}
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
           {view === 'tipos' && has('tipos','view') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
-          {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} />}
-          {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} />}
+          {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
+          {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
           {view === 'prestamos' && has('prestamos','view') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
           {view === 'usuarios' && has('roles','manage') && <Usuarios API={API_PERSONS} userRole={userRole} />}
           {view === 'admin' && has('roles','manage') && (

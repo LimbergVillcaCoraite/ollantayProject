@@ -165,7 +165,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
     return r ? r.name : String(id)
   }
 
-  if (userRole !== 'admin') {
+  if (userRole !== 'admin' && userRole !== 'superadmin') {
     return (
       <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded">
         <p className="text-red-600 dark:text-red-400">Solo administradores pueden gestionar usuarios</p>

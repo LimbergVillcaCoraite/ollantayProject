@@ -1,7 +1,7 @@
 import React, {useState, useEffect} from 'react'
 import { useToast } from '../ToastContext'
 
-export default function Personas({API, API_TYPES, userRole='admin', permissions=[]}){
+export default function Personas({API, API_TYPES, userRole='admin', permissions=[], companyFilter=null, onClearCompanyFilter}){
   const has = (res, act) => permissions.includes(`${res}:${act}`)
   const toast = useToast()
   const [persons, setPersons] = useState([])
@@ -47,13 +47,15 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     setLoading(true)
     setError(null)
     try{
-  const res = await fetch(`${API}/persons`, { headers: { 'X-User-Role': userRole } })
+      const url = new URL(`${API}/persons`)
+      if(companyFilter?.id) url.searchParams.set('company_id', companyFilter.id)
+  const res = await fetch(url.toString(), { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       if(!res.ok) throw new Error('Error fetching persons')
-  const data = await res.json()
-  console.log('Personas cargadas:', data) // DEBUG
-  console.log('Primera persona fotoPersona:', data[0]?.fotoPersona) // DEBUG
-  setPersons(data)
-  setFilteredPersons(data)
+      const data = await res.json()
+      console.log('Personas cargadas:', data) // DEBUG
+      console.log('Primera persona fotoPersona:', data[0]?.fotoPersona) // DEBUG
+      setPersons(data)
+      setFilteredPersons(data)
     }catch(err){ setError(err.message) }
     finally{ setLoading(false) }
   }
@@ -76,7 +78,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     finally{ setLoadingTypes(false) }
   }
 
-  useEffect(()=>{ loadTypes(); loadPersons() }, [API, API_TYPES])
+  useEffect(()=>{ loadTypes(); loadPersons() }, [API, API_TYPES, companyFilter])
 
   const submit = async (e)=>{
     e.preventDefault()
@@ -130,7 +132,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     if(!confirm('Eliminar persona?')) return
     setError(null)
     try{
-      const res = await fetch(`${API}/persons/${id}`, {method:'DELETE', headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API}/persons/${id}`, {method:'DELETE', headers: { 'X-User-Role': userRole }, credentials: 'include' })
       if(res.status !== 204){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
       toast.push('Persona eliminada','success')
       loadPersons()
@@ -145,6 +147,26 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
 
   return (
     <div className="bg-white dark:bg-gray-800 p-4 sm:p-6 rounded-lg shadow-lg">
+      {companyFilter && (
+        <div className="mb-4 p-3 bg-purple-50 dark:bg-purple-900/20 border-l-4 border-purple-500 rounded flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-purple-800 dark:text-purple-300">
+              Filtrando personas de: <span className="font-bold">{companyFilter.name}</span>
+            </p>
+            <p className="text-xs text-purple-600 dark:text-purple-400">
+              Mostrando solo personas asociadas a esta empresa
+            </p>
+          </div>
+          {onClearCompanyFilter && (
+            <button 
+              onClick={onClearCompanyFilter}
+              className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-medium transition-colors"
+            >
+              ✕ Limpiar filtro
+            </button>
+          )}
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
         <input 
           placeholder="Buscar por nombre, apellidos, CI o teléfono" 
@@ -223,8 +245,8 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
         </div>
       )}
 
-  <div className="bg-panel rounded shadow text-panel">
-        <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
+  <div className="bg-panel rounded shadow text-panel overflow-x-auto">
+    <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
   <thead className="bg-gray-50 dark:bg-gray-800">
     <tr>
       <th className="px-4 py-2">ID</th>
@@ -239,7 +261,21 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
       <tr key={p.id_persona} className="border-b dark:border-gray-700">
         <td className="px-4 py-2">{p.id_persona}</td>
         <td className="px-4 py-2 flex items-center gap-2">
-          {p.fotoPersona && <img src={p.fotoPersona} alt="Foto" className="w-8 h-8 rounded-full object-cover border" onError={(e)=>console.error('Error cargando imagen:', p.fotoPersona)}/>}
+          {p.fotoPersona ? (
+            <img 
+              src={p.fotoPersona} 
+              alt="Foto" 
+              className="w-8 h-8 rounded-full object-cover border flex-shrink-0"
+              onError={(e)=>{
+                console.warn('Fallo imagen, usando placeholder:', p.fotoPersona)
+                e.currentTarget.onerror = null
+                e.currentTarget.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="%23e5e7eb"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>`)
+              }}
+            />
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-gray-200 border flex items-center justify-center text-gray-500">?
+            </div>
+          )}
           {p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}
         </td>
         <td className="px-4 py-2">{p.ci_persona}</td>

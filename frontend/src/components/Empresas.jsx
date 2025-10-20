@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 
-export default function Empresas({ API = 'http://localhost:8002', userRole='', permissions=[] }){
+export default function Empresas({ API = 'http://localhost:8002', userRole='', permissions=[], onOpenPersonasForEmpresa }){
   const has = (res, act) => permissions.includes(`${res}:${act}`)
   const [q, setQ] = useState('')
   const [items, setItems] = useState([])
@@ -10,8 +10,7 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ nombre_empresa:'', direccion_empresa:'', estado_empresa:1, id_persona: '' })
-  const [propietarios, setPropietarios] = useState([])
+  const [form, setForm] = useState({ nombre_empresa:'', direccion_empresa:'', estado_empresa:1 })
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({})
 
@@ -23,7 +22,8 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
       if(q) url.searchParams.set('q', q)
       url.searchParams.set('offset', offset)
       url.searchParams.set('limit', limit)
-  const res = await fetch(url.toString(), { credentials: 'include' })
+      url.searchParams.set('include_counts', '1')
+      const res = await fetch(url.toString())
       if(!res.ok) throw new Error(`Server ${res.status}`)
       const data = await res.json()
       setItems(data.items || data)
@@ -34,30 +34,18 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
 
   useEffect(()=>{ fetchPage() }, [q, offset, limit])
 
-  useEffect(()=>{
-    // Cargar personas con tipo "Propietario" (id_tipoPersona = 3)
-    const fetchPropietarios = async ()=>{
-      try{
-        const res = await fetch(`${API}/persons?tipo=3`, { credentials: 'include' })
-        if(res.ok){
-          const data = await res.json()
-          setPropietarios(data)
-        }
-      }catch(err){ console.error('Error cargando propietarios:', err) }
-    }
-    fetchPropietarios()
-  }, [])
+  // Propietarios ya no se asignan ni muestran; personas referencian empresa via id_empresa
 
   const handleCreate = async ()=>{
     setError(null)
     try{
-      const body = { ...form, estado_empresa: Number(form.estado_empresa) }
-  const res = await fetch(`${API}/empresas`, { method: 'POST', credentials: 'include', headers: { 'Content-Type':'application/json', ...(userRole ? {'X-User-Role': userRole} : {}) }, body: JSON.stringify(body) })
+  const body = { nombre_empresa: form.nombre_empresa, direccion_empresa: form.direccion_empresa, estado_empresa: Number(form.estado_empresa) }
+  const res = await fetch(`${API}/empresas`, { method: 'POST', headers: { 'Content-Type':'application/json', ...(userRole ? {'X-User-Role': userRole} : {}) }, body: JSON.stringify(body) })
       if(res.status !== 201){
         const txt = await res.text()
         throw new Error(txt || `Status ${res.status}`)
       }
-      setForm({ nombre_empresa:'', direccion_empresa:'', estado_empresa:1, id_persona:'' })
+  setForm({ nombre_empresa:'', direccion_empresa:'', estado_empresa:1 })
       setShowCreate(false)
       fetchPage()
     }catch(e){ setError(e.message) }
@@ -66,8 +54,8 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
   const handleUpdate = async (id)=>{
     setError(null)
     try{
-      const body = { ...editForm, estado_empresa: Number(editForm.estado_empresa) }
-  const res = await fetch(`${API}/empresas/${id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type':'application/json', ...(userRole ? {'X-User-Role': userRole} : {}) }, body: JSON.stringify(body) })
+  const body = { nombre_empresa: editForm.nombre_empresa, direccion_empresa: editForm.direccion_empresa, estado_empresa: Number(editForm.estado_empresa) }
+  const res = await fetch(`${API}/empresas/${id}`, { method: 'PUT', headers: { 'Content-Type':'application/json', ...(userRole ? {'X-User-Role': userRole} : {}) }, body: JSON.stringify(body) })
       if(!res.ok){
         const txt = await res.text()
         throw new Error(txt || `Status ${res.status}`)
@@ -81,7 +69,7 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
   const handleDelete = async (id)=>{
     if(!confirm('Eliminar empresa?')) return
     try{
-  const res = await fetch(`${API}/empresas/${id}`, { method: 'DELETE', credentials: 'include', headers: { ...(userRole ? {'X-User-Role': userRole} : {}) } })
+  const res = await fetch(`${API}/empresas/${id}`, { method: 'DELETE', headers: { ...(userRole ? {'X-User-Role': userRole} : {}) } })
       if(res.status !== 204) throw new Error('Failed to delete')
       fetchPage()
     }catch(e){ setError(e.message) }
@@ -139,18 +127,7 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
               <option value="1">Activo</option>
               <option value="0">Inactivo</option>
             </select>
-            <select 
-              value={form.id_persona} 
-              onChange={e=>setForm(f=>({...f, id_persona: e.target.value}))} 
-              className="p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 sm:col-span-2"
-            >
-              <option value="">Seleccionar propietario...</option>
-              {propietarios.map(p => (
-                <option key={p.id_persona} value={p.id_persona}>
-                  {p.nombres_persona} {p.apellido_paternoPersona || ''} {p.apellido_maternoPer || ''}
-                </option>
-              ))}
-            </select>
+            {/* Propietario: ya no se asigna aquí; se puede gestionar desde Personas */}
           </div>
           <div className="flex justify-end mt-4">
             <button 
@@ -187,16 +164,13 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Nombre</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider hidden sm:table-cell">Dirección</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider hidden md:table-cell">Estado</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider hidden lg:table-cell">Propietario</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider hidden lg:table-cell">Personas</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Acciones</th>
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                 {items.map(it=> {
                   const isEditing = editingId === it.id_empresa
-                  const propietario = propietarios.find(p => p.id_persona === it.id_persona)
-                  const propietarioNombre = propietario ? `${propietario.nombres_persona} ${propietario.apellido_paternoPersona || ''}`.trim() : it.id_persona
-                  
                   return (
                   <tr key={it.id_empresa} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{it.id_empresa}</td>
@@ -234,21 +208,10 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100 hidden lg:table-cell">
-                      {isEditing ? (
-                        <select 
-                          value={editForm.id_persona} 
-                          onChange={e=>setEditForm(f=>({...f, id_persona: e.target.value}))} 
-                          className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700"
-                        >
-                          <option value="">Seleccionar propietario...</option>
-                          {propietarios.map(p => (
-                            <option key={p.id_persona} value={p.id_persona}>
-                              {p.nombres_persona} {p.apellido_paternoPersona || ''} {p.apellido_maternoPer || ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : propietarioNombre}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm hidden lg:table-cell">
+                      <span className="px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 text-xs">
+                        {Number.isFinite(it.personas_count) ? it.personas_count : '—'}
+                      </span>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end gap-2">
@@ -283,6 +246,15 @@ export default function Empresas({ API = 'http://localhost:8002', userRole='', p
                                 className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-xs font-medium transition-colors"
                               >
                                 ✕ Borrar
+                              </button>
+                            )}
+                            {onOpenPersonasForEmpresa && (
+                              <button 
+                                onClick={()=>onOpenPersonasForEmpresa(it.id_empresa, it.nombre_empresa)} 
+                                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-xs font-medium transition-colors"
+                                title="Ver personas de esta empresa"
+                              >
+                                👥 Ver Personas
                               </button>
                             )}
                           </>

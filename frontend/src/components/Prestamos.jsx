@@ -1,6 +1,7 @@
 import React, {useState, useEffect, useMemo} from 'react'
 import { useToast } from '../ToastContext'
 
+function t(str) { return str; }
 export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin', loggedUser=null, permissions=[]}){
   const has = (res, act) => permissions.includes(`${res}:${act}`)
   const [loans, setLoans] = useState([])
@@ -34,6 +35,8 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const [showAdminSummary, setShowAdminSummary] = useState(false)
   const [adminQ, setAdminQ] = useState('')
   const [expandedClient, setExpandedClient] = useState(null)
+  // company filter for clients
+  const [selectedCompanyId, setSelectedCompanyId] = useState('')
 
   React.useEffect(()=>{
     const t = setTimeout(()=>{
@@ -63,8 +66,15 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
     try{
       // If user role is 'cliente', filter by their id_persona
       const isCliente = userRole === 'cliente' && loggedUser?.id_persona
-      const url = isCliente ? `${API}/loans?id_persona=${loggedUser.id_persona}` : `${API}/loans`
-  const res = await fetch(url, { headers: { 'X-User-Role': userRole } })
+      let url
+      if(isCliente){
+        const params = new URLSearchParams({ id_persona: String(loggedUser.id_persona) })
+        if(selectedCompanyId){ params.set('company_id', String(selectedCompanyId)) }
+        url = `${API}/loans?${params.toString()}`
+      }else{
+        url = `${API}/loans`
+      }
+  const res = await fetch(url, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       const data = await res.json()
       // normalize loan objects: ensure keys like id_persona and chofer exist even if backend returned odd keys
       const norm = (item) => {
@@ -96,7 +106,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadPersons = async ()=>{
     setLoadingPersons(true)
     try{
-      const res = await fetch(`${API_PERSONAS}/persons`, { headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API_PERSONAS}/persons`, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       const data = await res.json()
       setAllPersons(Array.isArray(data) ? data : [])
       setPersons(Array.isArray(data) ? data : [])
@@ -107,7 +117,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadTypes = async ()=>{
     if(!API_TYPES) return
     try{
-  const res = await fetch(`${API_TYPES}/types`, { headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API_TYPES}/types`, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
     if(!res.ok) throw new Error('Error fetching tipos')
       const data = await res.json()
       // normalize shape if needed
@@ -123,7 +133,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadTipocajas = async ()=>{
     if(!API) return
     try{
-      const res = await fetch(`${API}/tipocajas`, { headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API}/tipocajas`, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       if(!res.ok) throw new Error('Error fetching tipocajas')
       const data = await res.json()
       setTipocajas(Array.isArray(data) ? data : [])
@@ -134,7 +144,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const loadProductos = async ()=>{
     if(!API) return
     try{
-      const res = await fetch(`${API}/productos`, { headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API}/productos`, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       if(!res.ok) throw new Error('Error fetching productos')
       const data = await res.json()
       setProductos(Array.isArray(data) ? data : [])
@@ -145,6 +155,30 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
   const toast = useToast()
 
   useEffect(()=>{ loadLoans(); loadPersons(); loadTypes(); loadTipocajas(); loadProductos() }, [])
+
+  // Reload loans when client switches company filter
+  useEffect(()=>{
+    if(userRole === 'cliente'){
+      loadLoans()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompanyId])
+
+  // derive company options from current loan list (for client)
+  const companyOptions = useMemo(()=>{
+    const opts = []
+    const seen = new Set()
+    for(const l of loans){
+      const id = l.chofer_empresa ?? l.empresaChofer ?? l.empresa_chofer ?? null
+      const name = l.nombreEmpresaChofer || (id ? `Empresa ${id}` : null)
+      if(id && !seen.has(String(id))){
+        seen.add(String(id))
+        opts.push({ id, name })
+      }
+    }
+    // sort by name asc
+    return opts.sort((a,b)=> String(a.name).localeCompare(String(b.name)))
+  }, [loans])
 
   // Auto-set multiplier from tipo de caja selection (madera=40, plástico=12)
   useEffect(()=>{
@@ -174,7 +208,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
       }
       setLoadingPersons(true)
       try{
-        const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`, { headers: { 'X-User-Role': userRole } })
+  const res = await fetch(`${API_PERSONAS}/persons?tipo=${selectedFilterTipo}`, { headers: { 'X-User-Role': userRole }, credentials: 'include' })
         if(!res.ok) throw new Error('Error fetching persons by tipo')
         const data = await res.json()
         setPersons(Array.isArray(data) ? data : [])
@@ -256,7 +290,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
         idTipocaja: Number(form.idTipocaja),
         idProducto: form.idProducto ? Number(form.idProducto) : null
       }
-  const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
+  const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
       if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
   const out = await res.json()
   toast.push('Prestamo creado','success')
@@ -295,7 +329,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
           fecha_devolucion: form.fecha_devolucion || null
         }
       }
-  const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, body: JSON.stringify(payload)})
+  const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
   if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
   toast.push('Prestamo actualizado','success')
       // refresh
@@ -343,6 +377,17 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
       {userRole === 'cliente' && (
         <div className="bg-blue-50 dark:bg-gray-800 p-4 rounded-lg shadow mb-4 border-2 border-blue-200 dark:border-blue-800">
           <h3 className="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">Resumen de Préstamos Pendientes</h3>
+          {companyOptions.length > 0 && (
+            <div className="mb-3 flex items-center gap-3">
+              <label className="text-sm text-gray-700 dark:text-gray-300">{t('Empresa')}</label>
+              <select className="p-2 border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" value={selectedCompanyId} onChange={e=>setSelectedCompanyId(e.target.value)}>
+                <option value="">Todas</option>
+                {companyOptions.map(c => (
+                  <option key={`emp-${c.id}`} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white dark:bg-gray-700 p-3 rounded shadow">
               <div className="text-sm text-gray-600 dark:text-gray-400">Total Cajas Prestadas</div>
@@ -460,8 +505,8 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
           <input className="p-2 border" placeholder="Buscar por cliente, chofer, descripción" value={loanSearchQ} onChange={e=>setLoanSearchQ(e.target.value)} />
           <select className="p-2 border" value={filterEstado} onChange={e=>setFilterEstado(e.target.value)}>
             <option value="">Todos</option>
-            <option value="0">Devuelto</option>
-            <option value="1">Activo</option>
+            <option value="1">Devuelto</option>
+            <option value="0">Activo</option>
           </select>
           <input type="date" className="p-2 border" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)} />
           <input type="date" className="p-2 border" value={filterTo} onChange={e=>setFilterTo(e.target.value)} />
@@ -498,7 +543,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
             <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} className="p-2 border w-full" placeholder="Cantidad botellas" value={form.cantidad_prestamoBotellas} inputMode="numeric" onChange={e=>{ setBottlesEdited(true); setForm({...form, cantidad_prestamoBotellas: e.target.value}) }} />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">Botellas por caja</label>
+            <label className="text-sm text-gray-600">{t('Botellas por caja')}</label>
             <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} type="number" min="0" step="1" className="p-2 border w-24" value={multiplier} onChange={e=>{
               const m = Number(e.target.value) || 0
               setMultiplier(m)
@@ -513,7 +558,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
           
           {/* Tipo de caja dropdown (required) */}
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo de Caja <span className="text-red-500">*</span></label>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">{t('Tipo de Caja')} <span className="text-red-500">*</span></label>
             <div className="relative">
               <select disabled={(isEditing && !has('prestamos','update')) || loadingTipocajas} className="p-2 border w-full" value={form.idTipocaja} onChange={e=>setForm({...form, idTipocaja:e.target.value})} required>
                 <option value="">{loadingTipocajas ? 'Cargando tipos de caja...' : 'Seleccionar tipo de caja'}</option>
@@ -525,7 +570,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
 
           {/* Producto dropdown (optional) */}
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Producto</label>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">{t('Producto')}</label>
             <div className="relative">
               <select disabled={(isEditing && !has('prestamos','update')) || loadingProductos} className="p-2 border w-full" value={form.idProducto} onChange={e=>setForm({...form, idProducto:e.target.value})}>
                 <option value="">{loadingProductos ? 'Cargando productos...' : 'Seleccionar producto (opcional)'}</option>
@@ -536,11 +581,11 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
           </div>
 
           <div>
-            <label className="block text-sm text-gray-700 mb-1">Fecha de préstamo</label>
+            <label className="block text-sm text-gray-700 mb-1">{t('Fecha de préstamo')}</label>
             <input disabled={(isEditing && !has('prestamos','update')) || !has('prestamos','create')} type="date" max={todayISO} className="p-2 border w-full" value={form.fecha_prestamo} onChange={e=>setForm({...form, fecha_prestamo:e.target.value})} />
           </div>
           <div>
-            <label className="block text-sm text-gray-700 mb-1">Filtrar clientes por Tipo</label>
+            <label className="block text-sm text-gray-700 mb-1">{t('Filtrar clientes por Tipo')}</label>
             <div className="relative">
               <select className="p-2 border w-full" value={selectedFilterTipo} onChange={e=>setSelectedFilterTipo(e.target.value)} disabled={loadingTypes || isEditing || userRole === 'viewer'}>
                 <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
@@ -552,7 +597,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
 
           {/* client select: only visible after selecting a tipo */}
           <div>
-            <label className="block text-sm text-gray-700 mb-1">Cliente</label>
+            <label className="block text-sm text-gray-700 mb-1">{t('Cliente')}</label>
             <div className="relative">
               {/* Build the options: filtered by selectedFilterTipo, but always include the currently selected client so it shows when editing */}
               {loadingPersons && <div className="p-2">Cargando personas...</div>}
@@ -580,7 +625,7 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
 
           {/* chofer select: only persons whose tipo equals choferTypeId */}
           <div>
-            <label className="block text-sm text-gray-700 mb-1">Chofer</label>
+            <label className="block text-sm text-gray-700 mb-1">{t('Chofer')}</label>
               <div className="relative">
               <select className="p-2 border w-full" value={form.chofer} onChange={e=>setForm({...form, chofer:e.target.value})} disabled={loadingPersons || !choferTypeId || (isEditing && !has('prestamos','update'))}>
                 <option value="">{loadingPersons ? 'Cargando choferes...' : (!choferTypeId ? 'No hay tipo chofer detectado' : 'Seleccionar chofer')}</option>

@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from fastapi import Header
 from datetime import date, datetime
 import os
 import mysql.connector
+import jwt
 
 app = FastAPI()
 
@@ -33,6 +33,45 @@ def get_db_connection():
         database=os.getenv('DATABASE_NAME', 'SystemaOllantay'),
     )
 
+# JWT settings (shared with persona_service)
+JWT_SECRET = os.getenv('JWT_SECRET', 'dev-secret-change-me')
+JWT_ALG = 'HS256'
+
+def get_role(x_user_role: str = Header(None), request: Request = None) -> str:
+    if x_user_role:
+        return x_user_role.lower()
+    try:
+        if request is not None:
+            token = request.cookies.get('ollantay_token')
+            if token:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                return (payload.get('role') or 'viewer').lower()
+    except Exception:
+        pass
+    return 'viewer'
+
+def get_company_id_from_request(request: Request = None) -> Optional[int]:
+    try:
+        token = request.cookies.get('ollantay_token') if request is not None else None
+        if not token:
+            return None
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        cid = payload.get('company_id')
+        return int(cid) if cid is not None else None
+    except Exception:
+        return None
+
+def get_id_persona_from_request(request: Request = None) -> Optional[int]:
+    try:
+        token = request.cookies.get('ollantay_token') if request is not None else None
+        if not token:
+            return None
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        pid = payload.get('id_persona')
+        return int(pid) if pid is not None else None
+    except Exception:
+        return None
+
 
 class PrestamoIn(BaseModel):
     cantidad_envaseCaja: Optional[int] = Field(None, ge=0, le=127)
@@ -51,35 +90,63 @@ class PrestamoOut(PrestamoIn):
     id_prestamo: int
     nombretipo_caja: Optional[str] = None
     nombreProducto: Optional[str] = None
+    chofer_empresa: Optional[int] = None
+    nombreEmpresaChofer: Optional[str] = None
 
 
 
 
 
 @app.get('/loans', response_model=List[PrestamoOut])
-def list_loans(id_persona: Optional[int] = None):
+def list_loans(id_persona: Optional[int] = None, company_id: Optional[int] = None, x_user_role: str = Header(None), request: Request = None):
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        # Use JOIN to get tipocaja and producto names
+        role = get_role(x_user_role, request)
+        user_company = get_company_id_from_request(request)
+        user_persona = get_id_persona_from_request(request)
+
+        # Base query with joins to get company of chofer and optional company name
         query = '''
             SELECT 
-                p.id_prestamo, p.cantidad_envaseCaja, p.cantidad_prestamoBotellas, 
+                p.id_prestamo, p.cantidad_envaseCaja, p.cantidad_prestamoBotellas,
                 p.descripcion_envase, p.fecha_prestamo, p.id_persona, 
-                p.estado_prestamo, p.fecha_devolucion, p.chofer, 
+                p.estado_prestamo, p.fecha_devolucion, p.chofer,
                 p.idTipocaja, tc.nombretipo_caja,
-                p.idProducto, pr.nombreProducto
+                p.idProducto, pr.nombreProducto,
+                ch.id_empresa AS chofer_empresa,
+                e.nombre_empresa AS nombreEmpresaChofer
             FROM prestamo_O p
             LEFT JOIN tipocaja_O tc ON p.idTipocaja = tc.idTipocaja
             LEFT JOIN producto_O pr ON p.idProducto = pr.idProducto
+            LEFT JOIN persona_O ch ON p.chofer = ch.id_persona
+            LEFT JOIN empresa_O e ON ch.id_empresa = e.id_empresa
         '''
-        if id_persona is not None:
-            # Filter by id_persona for cliente view
-            query += ' WHERE p.id_persona = %s'
-            cur.execute(query, (id_persona,))
+        where = []
+        params: list = []
+
+        # If client role: force own id_persona
+        if role == 'cliente':
+            if user_persona is not None:
+                where.append('p.id_persona = %s')
+                params.append(user_persona)
+            # Allow optional company filter (by chofer empresa)
+            if company_id is not None:
+                where.append('ch.id_empresa = %s')
+                params.append(company_id)
         else:
-            # Admin/editor view: all loans
-            cur.execute(query)
+            # Non-superadmin scoping by company via chofer
+            if role != 'superadmin' and user_company is not None:
+                where.append('ch.id_empresa = %s')
+                params.append(user_company)
+            # Optional filter by explicit id_persona
+            if id_persona is not None:
+                where.append('p.id_persona = %s')
+                params.append(id_persona)
+
+        if where:
+            query += ' WHERE ' + ' AND '.join(where)
+        cur.execute(query, tuple(params))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -119,15 +186,10 @@ def get_loan(id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-def get_role(x_user_role: str | None = Header(None)) -> str:
-    return (x_user_role or 'admin').lower()
-
-
 @app.post('/loans', response_model=PrestamoOut, status_code=201)
-def create_loan(payload: PrestamoIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
-    if role not in ('admin','editor'):
+def create_loan(payload: PrestamoIn, x_user_role: str = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     # basic validations: chofer must exist, id_persona if provided must exist
     try:
@@ -194,9 +256,9 @@ def create_loan(payload: PrestamoIn, x_user_role: str | None = Header(None)):
 
 
 @app.put('/loans/{id}', response_model=PrestamoOut)
-def update_loan(id: int, payload: PrestamoIn, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
-    if role not in ('admin','editor'):
+def update_loan(id: int, payload: PrestamoIn, x_user_role: str = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
@@ -267,9 +329,9 @@ def update_loan(id: int, payload: PrestamoIn, x_user_role: str | None = Header(N
 
 
 @app.delete('/loans/{id}', status_code=204)
-def delete_loan(id: int, x_user_role: str | None = Header(None)):
-    role = get_role(x_user_role)
-    if role != 'admin':
+def delete_loan(id: int, x_user_role: str = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()

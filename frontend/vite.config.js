@@ -13,6 +13,17 @@ export default defineConfig({
     },
     watch: {
       usePolling: true
+    },
+    // Proxy API calls to the local reverse proxy (nginx) so that
+    // requests like /api/personas/... and static uploads work while
+    // developing on http://localhost:3000
+    proxy: {
+      '/api': {
+        target: 'http://localhost',
+        changeOrigin: true,
+        // do not rewrite, keep /api prefix as nginx expects it
+        secure: false
+      }
     }
   }
 })
