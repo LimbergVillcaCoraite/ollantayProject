@@ -1,0 +1,76 @@
+-- SystemaOllantay Database Production Deployment Instructions
+-- Generated on October 24, 2025
+-- ===========================================================
+
+-- PRODUCTION SETUP GUIDE
+-- =======================
+
+-- 1. COMPLETE DATABASE RESTORE (with test data)
+-- Use this file: database_dump_complete.sql
+-- This includes ALL tables, structure, data, and stored procedures/triggers
+-- 
+-- Command to restore:
+-- mysql -u[username] -p[password] [target_database_name] < database_dump_complete.sql
+--
+-- Example:
+-- mysql -uroot -p SystemaOllantay < database_dump_complete.sql
+
+-- 2. STRUCTURE-ONLY RESTORE (clean production setup)
+-- Use this file: database_structure_only.sql  
+-- This includes ONLY table structures, indexes, procedures - NO test data
+--
+-- Command to restore:
+-- mysql -u[username] -p[password] [target_database_name] < database_structure_only.sql
+--
+-- Example:
+-- mysql -uroot -p SystemaOllantay_prod < database_structure_only.sql
+
+-- TABLES INCLUDED:
+-- ================
+-- - compra_O (purchases)
+-- - cuenta_corriente_O (current accounts) 
+-- - detalle_compra_O (purchase details)
+-- - detalle_venta_O (sale details)
+-- - empresa_O (companies)
+-- - negocio (business)
+-- - pago_O (payments)
+-- - permission_O (permissions)
+-- - persona_O (persons/users)
+-- - prestamo_O (loans)
+-- - producto_O (products)
+-- - proveedor_O (suppliers)
+-- - role_O (roles)
+-- - role_permission_O (role-permission mapping)
+-- - schema_migrations (migration history)
+-- - tipoBotella (bottle types)
+-- - tipoNegocio (business types)
+-- - tipoPago (payment types)
+-- - tipoVenta (sale types)
+-- - tipo_personaO (person types)
+-- - tipocaja_O (box types)
+-- - user_O (system users)
+-- - venta_O (sales)
+
+-- RECOMMENDED PRODUCTION WORKFLOW:
+-- ===============================
+-- 1. Create production database
+-- 2. Use structure-only dump for clean setup
+-- 3. Set up proper production users and permissions
+-- 4. Configure application environment variables
+-- 5. Run application-specific seed data (if needed)
+
+-- BACKUP VERIFICATION:
+-- ===================
+-- Complete dump size: ~75KB
+-- Structure dump size: ~52KB
+-- MySQL version: 8.0.32
+-- Character set: utf8mb4
+-- Includes: Tables, Indexes, Foreign Keys, Triggers, Routines
+
+-- SECURITY NOTES:
+-- ==============
+-- - Change default passwords in production
+-- - Set proper MySQL user permissions
+-- - Enable SSL connections
+-- - Configure firewall rules
+-- - Regular backup schedule recommended
