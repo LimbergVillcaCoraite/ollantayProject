@@ -74,8 +74,8 @@ def get_id_persona_from_request(request: Request = None) -> Optional[int]:
 
 
 class PrestamoIn(BaseModel):
-    cantidad_envaseCaja: Optional[int] = Field(None, ge=0, le=127)
-    cantidad_prestamoBotellas: Optional[int] = Field(None, ge=0, le=127)
+    cantidad_envaseCaja: Optional[int] = Field(None, ge=0)
+    cantidad_prestamoBotellas: Optional[int] = Field(None, ge=0)
     descripcion_envase: Optional[str] = Field(None, max_length=500)
     fecha_prestamo: Optional[str] = None  # ISO date string
     id_persona: Optional[int] = None
@@ -92,6 +92,20 @@ class PrestamoOut(PrestamoIn):
     nombreProducto: Optional[str] = None
     chofer_empresa: Optional[int] = None
     nombreEmpresaChofer: Optional[str] = None
+
+
+# Modelo para actualizaciones parciales
+class PrestamoUpdateIn(BaseModel):
+    cantidad_envaseCaja: Optional[int] = Field(None, ge=0)
+    cantidad_prestamoBotellas: Optional[int] = Field(None, ge=0)
+    descripcion_envase: Optional[str] = Field(None, max_length=500)
+    fecha_prestamo: Optional[str] = None
+    id_persona: Optional[int] = None
+    estado_prestamo: Optional[int] = Field(None, ge=0, le=1)
+    fecha_devolucion: Optional[str] = None
+    chofer: Optional[int] = None
+    idTipocaja: Optional[int] = None
+    idProducto: Optional[int] = None
 
 
 
@@ -256,7 +270,7 @@ def create_loan(payload: PrestamoIn, x_user_role: str = Header(None), request: R
 
 
 @app.put('/loans/{id}', response_model=PrestamoOut)
-def update_loan(id: int, payload: PrestamoIn, x_user_role: str = Header(None), request: Request = None):
+def update_loan(id: int, payload: PrestamoUpdateIn, x_user_role: str = Header(None), request: Request = None):
     role = get_role(x_user_role, request)
     if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')

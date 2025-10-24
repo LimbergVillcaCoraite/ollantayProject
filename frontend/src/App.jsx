@@ -4,6 +4,11 @@ import Personas from './components/Personas'
 import Prestamos from './components/Prestamos'
 import Empresas from './components/Empresas'
 import Usuarios from './components/Usuarios'
+import Caja from './components/Caja'
+import Ventas from './components/Ventas'
+import Compras from './components/Compras'
+import Proveedores from './components/Proveedores'
+import Cuentas from './components/Cuentas'
 import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
@@ -16,6 +21,11 @@ export default function App(){
   const API_TYPES = import.meta.env.VITE_API_TYPES || `${proto}//${host}/api/tipos`
   const API_PERSONS = import.meta.env.VITE_API_PERSONS || `${proto}//${host}/api/personas`
   const API_PRESTAMOS = import.meta.env.VITE_API_PRESTAMOS || `${proto}//${host}/api/prestamos`
+  const API_REPORTES = `${proto}//${host}/api/reportes`
+  const API_VENTAS = `${proto}//${host}/api/ventas`
+  const API_COMPRAS = `${proto}//${host}/api/compras`
+  const API_PROVEEDORES = `${proto}//${host}/api/proveedores`
+  const API_CUENTAS = `${proto}//${host}/api/cuentas`
   const [dark, setDark] = useState(() => localStorage.getItem('ollantay-dark') === '1')
   const [userRole, setUserRole] = useState('')
   const [loggedUser, setLoggedUser] = useState(null)
@@ -116,12 +126,17 @@ export default function App(){
 
   // Ensure current view is permitted by permissions; if not, route to first allowed
   useEffect(()=>{
-    const viewsOrder = ['prestamos','personas','empresas','tipos']
+    const viewsOrder = ['prestamos','personas','empresas','tipos','caja','ventas','compras','proveedores','cuentas']
     const allowed = viewsOrder.filter(v => (
       (v==='prestamos' && has('prestamos','view')) ||
       (v==='personas' && has('personas','view')) ||
       (v==='empresas' && has('empresas','view')) ||
-      (v==='tipos' && has('tipos','view'))
+      (v==='tipos' && has('tipos','view')) ||
+      (v==='caja' && (has('inventario','view') || has('caja','view'))) ||
+      (v==='ventas' && has('ventas','view')) ||
+      (v==='compras' && has('compras','view')) ||
+      (v==='proveedores' && has('proveedores','view')) ||
+      (v==='cuentas' && has('cuentas','view'))
     ))
     const adminAllowed = has('roles','manage')
     if((view==='admin' || view==='usuarios') && !adminAllowed){
@@ -245,6 +260,36 @@ export default function App(){
                 Prestamos
               </button>
             )}
+            {(has('inventario','view') || has('caja','view')) && (
+              <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='caja' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
+                Caja
+              </button>
+            )}
+            {has('ventas','view') && (
+              <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='ventas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
+                Ventas
+              </button>
+            )}
+            {has('compras','view') && (
+              <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                Compras
+              </button>
+            )}
+            {has('proveedores','view') && (
+              <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='proveedores' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
+                Proveedores
+              </button>
+            )}
+            {has('cuentas','view') && (
+              <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='cuentas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
+                Cuentas
+              </button>
+            )}
             {has('roles','manage') && (
               <>
                 <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
@@ -321,6 +366,11 @@ export default function App(){
           {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
           {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
           {view === 'prestamos' && has('prestamos','view') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
+          {view === 'caja' && (has('inventario','view') || has('caja','view')) && <Caja API={API_REPORTES} dark={dark} userRole={userRole} />}
+          {view === 'ventas' && has('ventas','view') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
+          {view === 'compras' && has('compras','view') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
+          {view === 'proveedores' && has('proveedores','view') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} />}
+          {view === 'cuentas' && has('cuentas','view') && <Cuentas API={API_CUENTAS} dark={dark} userRole={userRole} />}
           {view === 'usuarios' && has('roles','manage') && <Usuarios API={API_PERSONS} userRole={userRole} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">

@@ -279,19 +279,33 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
     setSubmitting(true)
     try{
       const payload = {
-        cantidad_envaseCaja: form.cantidad_envaseCaja ? Number(form.cantidad_envaseCaja) : null,
-        cantidad_prestamoBotellas: form.cantidad_prestamoBotellas ? Number(form.cantidad_prestamoBotellas) : null,
-        descripcion_envase: form.descripcion_envase || null,
-        fecha_prestamo: form.fecha_prestamo || null,
-        id_persona: form.id_persona ? Number(form.id_persona) : null,
-        estado_prestamo: Number(form.estado_prestamo),
-        fecha_devolucion: form.fecha_devolucion || null,
+        cantidad_envaseCaja: form.cantidad_envaseCaja && form.cantidad_envaseCaja !== '' ? Number(form.cantidad_envaseCaja) : null,
+        cantidad_prestamoBotellas: form.cantidad_prestamoBotellas && form.cantidad_prestamoBotellas !== '' ? Number(form.cantidad_prestamoBotellas) : null,
+        descripcion_envase: form.descripcion_envase && form.descripcion_envase.trim() !== '' ? form.descripcion_envase : null,
+        fecha_prestamo: form.fecha_prestamo && form.fecha_prestamo.trim() !== '' ? form.fecha_prestamo : null,
+        id_persona: form.id_persona && form.id_persona !== '' ? Number(form.id_persona) : null,
+        estado_prestamo: Number(form.estado_prestamo) || 0,
+        fecha_devolucion: form.fecha_devolucion && form.fecha_devolucion.trim() !== '' ? form.fecha_devolucion : null,
         chofer: Number(form.chofer),
         idTipocaja: Number(form.idTipocaja),
-        idProducto: form.idProducto ? Number(form.idProducto) : null
+        idProducto: form.idProducto && form.idProducto !== '' ? Number(form.idProducto) : null
       }
   const res = await fetch(`${API}/loans`, {method:'POST', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
-      if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
+      if(!res.ok){ 
+        const j = await res.json().catch(()=>null)
+        let errMsg = res.statusText
+        if(j?.detail){
+          // If detail is an array (validation errors), extract messages
+          if(Array.isArray(j.detail)){
+            errMsg = j.detail.map(e => `${e.loc?.join('.')}: ${e.msg}`).join(', ')
+          } else if(typeof j.detail === 'string'){
+            errMsg = j.detail
+          } else {
+            errMsg = JSON.stringify(j.detail)
+          }
+        }
+        throw new Error(errMsg)
+      }
   const out = await res.json()
   toast.push('Prestamo creado','success')
       // switch to editing mode for the newly created loan: lock fields except date/status
@@ -330,7 +344,20 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
         }
       }
   const res = await fetch(`${API}/loans/${editingLoanId}`, {method:'PUT', headers:{'Content-Type':'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
-  if(!res.ok){ const j = await res.json().catch(()=>null); throw new Error(j?.detail || res.statusText) }
+  if(!res.ok){ 
+    const j = await res.json().catch(()=>null)
+    let errMsg = res.statusText
+    if(j?.detail){
+      if(Array.isArray(j.detail)){
+        errMsg = j.detail.map(e => `${e.loc?.join('.')}: ${e.msg}`).join(', ')
+      } else if(typeof j.detail === 'string'){
+        errMsg = j.detail
+      } else {
+        errMsg = JSON.stringify(j.detail)
+      }
+    }
+    throw new Error(errMsg)
+  }
   toast.push('Prestamo actualizado','success')
       // refresh
       setCreatedLoan(null)
