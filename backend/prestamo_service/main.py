@@ -1,13 +1,18 @@
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date, datetime
 import os
+import time
 import mysql.connector
 import jwt
 
 app = FastAPI()
+
+# Servir archivos estáticos
+app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
 
 origins = [
     "http://localhost:3000",
@@ -378,11 +383,314 @@ def list_tipocajas():
 
 
 @app.get('/productos')
-def list_productos():
+def list_productos(request: Request):
+    try:
+        # Multi-empresa security
+        user_role = request.headers.get('x-user-role', '').lower()
+        
+        # Verificar autenticación y autorización ANTES de obtener conexión DB
+        if user_role != 'superadmin':
+            # Otros roles necesitan JWT token válido
+            token = request.cookies.get('ollantay_token')
+            if not token:
+                raise HTTPException(status_code=401, detail="Sesión expirada o no autenticado")
+            
+            # Obtener company_id del JWT
+            try:
+                company_id = get_company_id_from_request(request)
+                if not company_id:
+                    raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+            except Exception as jwt_error:
+                print(f"JWT Error: {jwt_error}")
+                raise HTTPException(status_code=401, detail="Token JWT inválido")
+        else:
+            company_id = None  # Superadmin no necesita company_id
+        
+        # Authentication and authorization validated
+        
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        if user_role == 'superadmin':
+            # Superadmin ve todos los productos con info de empresa
+            query = """
+            SELECT p.*, tb.tipoBotella, e.nombre_empresa,
+                   pp_min.precio as precio_minorista,
+                   pp_may.precio as precio_mayorista,
+                   pp_esp.precio as precio_especial
+            FROM producto_O p
+            LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
+            LEFT JOIN empresa_O e ON p.idEmpresa = e.id_empresa
+            LEFT JOIN precio_producto_O pp_min ON p.idProducto = pp_min.idProducto AND pp_min.tipoPrecio = 'minorista'
+            LEFT JOIN precio_producto_O pp_may ON p.idProducto = pp_may.idProducto AND pp_may.tipoPrecio = 'mayorista'
+            LEFT JOIN precio_producto_O pp_esp ON p.idProducto = pp_esp.idProducto AND pp_esp.tipoPrecio = 'especial'
+            ORDER BY p.idProducto
+            """
+            cur.execute(query)
+        else:
+            # Otros roles ven solo productos de su empresa
+            query = """
+            SELECT p.*, tb.tipoBotella,
+                   pp_min.precio as precio_minorista,
+                   pp_may.precio as precio_mayorista,
+                   pp_esp.precio as precio_especial
+            FROM producto_O p
+            LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
+            LEFT JOIN precio_producto_O pp_min ON p.idProducto = pp_min.idProducto AND pp_min.tipoPrecio = 'minorista'
+            LEFT JOIN precio_producto_O pp_may ON p.idProducto = pp_may.idProducto AND pp_may.tipoPrecio = 'mayorista'
+            LEFT JOIN precio_producto_O pp_esp ON p.idProducto = pp_esp.idProducto AND pp_esp.tipoPrecio = 'especial'
+            WHERE p.idEmpresa = %s
+            ORDER BY p.idProducto
+            """
+            cur.execute(query, (company_id,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except HTTPException:
+        # Re-raise HTTP exceptions sin modificar
+        raise
+    except Exception as e:
+        # Log del error interno para debugging
+        print(f"Internal error in list_productos: {e}")
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+
+@app.post('/productos')
+async def create_producto(
+    request: Request,
+    nombreProducto: str = Form(...),
+    stockCaja: int = Form(default=0),
+    idTipoBotella: int = Form(...),
+    idEmpresa: int = Form(None),
+    imagen_producto: UploadFile = File(None),
+    precio_minorista: float = Form(None),
+    precio_mayorista: float = Form(None),
+    precio_especial: float = Form(None)
+):
+    # Multi-empresa security
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    # Determinar empresa objetivo
+    if user_role == 'superadmin':
+        if not idEmpresa:
+            raise HTTPException(status_code=400, detail="Superadmin debe especificar idEmpresa")
+        target_company_id = idEmpresa
+    else:
+        if not company_id:
+            raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+        target_company_id = company_id
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Manejar imagen
+        imagen_path = None
+        if imagen_producto and imagen_producto.filename:
+            # Crear directorio si no existe
+            os.makedirs('/app/uploads/productos', exist_ok=True)
+            
+            # Generar nombre único
+            ext = os.path.splitext(imagen_producto.filename)[1]
+            filename = f"producto_{int(time.time())}_{hash(imagen_producto.filename)}{ext}"
+            imagen_path = f"/uploads/productos/{filename}"
+            
+            # Guardar archivo
+            with open(f"/app{imagen_path}", "wb") as buffer:
+                content = await imagen_producto.read()
+                buffer.write(content)
+        
+        # Insertar producto
+        cur.execute("""
+            INSERT INTO producto_O (nombreProducto, stockCaja, idEmpresa, idTipoBotella, imagen_producto)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (nombreProducto, stockCaja, target_company_id, idTipoBotella, imagen_path))
+        
+        producto_id = cur.lastrowid
+        
+        # Insertar precios si se proporcionan
+        precios = [
+            ('minorista', precio_minorista),
+            ('mayorista', precio_mayorista),
+            ('especial', precio_especial)
+        ]
+        
+        for tipo_precio, precio in precios:
+            if precio is not None and precio > 0:
+                cur.execute("""
+                    INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, fechaCreacion)
+                    VALUES (%s, %s, %s, NOW())
+                """, (producto_id, tipo_precio, precio))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"message": "Producto creado exitosamente", "idProducto": producto_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/productos/{producto_id}')
+async def update_producto(
+    producto_id: int,
+    request: Request,
+    nombreProducto: str = Form(...),
+    stockCaja: int = Form(default=0),
+    idTipoBotella: int = Form(...),
+    imagen_producto: UploadFile = File(None),
+    precio_minorista: float = Form(None),
+    precio_mayorista: float = Form(None),
+    precio_especial: float = Form(None)
+):
+    # Multi-empresa security
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT idProducto, nombreProducto FROM producto_O ORDER BY idProducto')
+        
+        # Verificar que el producto existe y el usuario tiene permisos
+        if user_role == 'superadmin':
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s", (producto_id,))
+        else:
+            if not company_id:
+                raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s AND idEmpresa = %s", (producto_id, company_id))
+        
+        producto = cur.fetchone()
+        if not producto:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        
+        # Manejar imagen
+        imagen_path = producto['imagen_producto']
+        if imagen_producto and imagen_producto.filename:
+            # Eliminar imagen anterior si existe
+            if imagen_path and os.path.exists(f"/app{imagen_path}"):
+                os.remove(f"/app{imagen_path}")
+            
+            # Crear directorio si no existe
+            os.makedirs('/app/uploads/productos', exist_ok=True)
+            
+            # Generar nombre único
+            ext = os.path.splitext(imagen_producto.filename)[1]
+            filename = f"producto_{int(time.time())}_{hash(imagen_producto.filename)}{ext}"
+            imagen_path = f"/uploads/productos/{filename}"
+            
+            # Guardar archivo
+            with open(f"/app{imagen_path}", "wb") as buffer:
+                content = await imagen_producto.read()
+                buffer.write(content)
+        
+        # Actualizar producto
+        cur.execute("""
+            UPDATE producto_O 
+            SET nombreProducto = %s, stockCaja = %s, idTipoBotella = %s, imagen_producto = %s
+            WHERE idProducto = %s
+        """, (nombreProducto, stockCaja, idTipoBotella, imagen_path, producto_id))
+        
+        # Actualizar precios
+        precios = [
+            ('minorista', precio_minorista),
+            ('mayorista', precio_mayorista),
+            ('especial', precio_especial)
+        ]
+        
+        for tipo_precio, precio in precios:
+            if precio is not None:
+                if precio > 0:
+                    # Insertar o actualizar precio
+                    cur.execute("""
+                        INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, fechaCreacion)
+                        VALUES (%s, %s, %s, NOW())
+                        ON DUPLICATE KEY UPDATE precio = VALUES(precio), fechaCreacion = NOW()
+                    """, (producto_id, tipo_precio, precio))
+                else:
+                    # Eliminar precio si es 0
+                    cur.execute("""
+                        DELETE FROM precio_producto_O 
+                        WHERE idProducto = %s AND tipoPrecio = %s
+                    """, (producto_id, tipo_precio))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"message": "Producto actualizado exitosamente"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete('/productos/{producto_id}')
+def delete_producto(producto_id: int, request: Request):
+    # Multi-empresa security
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Verificar que el producto existe y el usuario tiene permisos
+        if user_role == 'superadmin':
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s", (producto_id,))
+        else:
+            if not company_id:
+                raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s AND idEmpresa = %s", (producto_id, company_id))
+        
+        producto = cur.fetchone()
+        if not producto:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        
+        # Eliminar imagen si existe
+        if producto['imagen_producto'] and os.path.exists(f"/app{producto['imagen_producto']}"):
+            os.remove(f"/app{producto['imagen_producto']}")
+        
+        # Eliminar precios relacionados
+        cur.execute("DELETE FROM precio_producto_O WHERE idProducto = %s", (producto_id,))
+        
+        # Eliminar producto
+        cur.execute("DELETE FROM producto_O WHERE idProducto = %s", (producto_id,))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"message": "Producto eliminado exitosamente"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/tipobotellas')
+def list_tipo_botellas():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idTipoBotella, tipoBotella FROM tipoBotella ORDER BY idTipoBotella')
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/empresas')
+def list_empresas(request: Request):
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    if user_role != 'superadmin':
+        raise HTTPException(status_code=403, detail="Solo superadmin puede ver todas las empresas")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT id_empresa, nombre_empresa FROM empresa_O ORDER BY nombre_empresa')
         rows = cur.fetchall()
         cur.close()
         conn.close()

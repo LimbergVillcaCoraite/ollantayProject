@@ -76,14 +76,14 @@ class ProveedorIn(BaseModel):
     telefono: Optional[str] = Field(None, max_length=15)
     email: Optional[str] = Field(None, max_length=100)
     direccion: Optional[str] = Field(None, max_length=200)
-    esEmpresa: str = Field(..., max_length=1)  # 'E'=empresa, 'P'=persona
+    esEmpresa: int = Field(..., ge=0, le=1)  # 1=empresa, 0=persona
     idPersona: Optional[int] = None  # Si tipo='P', referencia a persona_O
     estado: int = Field(default=1, ge=0, le=1)
 
 
 class ProveedorOut(ProveedorIn):
     idProveedor: int
-    idEmpresa: int
+    idEmpresaProveedor: int
     nombreEmpresa: Optional[str] = None
 
 
@@ -179,7 +179,7 @@ def get_proveedor(id: int, x_user_role: str = Header(None), request: Request = N
             raise HTTPException(status_code=404, detail='Proveedor no encontrado')
 
         # Validar scoping
-        if role != 'superadmin' and user_company is not None and prov['idEmpresa'] != user_company:
+        if role != 'superadmin' and user_company is not None and prov['idEmpresaProveedor'] != user_company:
             cur.close()
             conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
@@ -257,7 +257,7 @@ def create_proveedor(payload: ProveedorIn, x_user_role: str = Header(None), requ
         # Insertar
         ins = conn.cursor()
         ins.execute('''
-            INSERT INTO proveedor_O (nombreComercial, contacto, telefono, email, direccion, esEmpresa, idPersona, estado, idEmpresa)
+            INSERT INTO proveedor_O (nombreComercial, contacto, telefono, email, direccion, esEmpresa, idPersona, estado, idEmpresaProveedor)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (nombre, payload.contacto, payload.telefono, payload.email, payload.direccion, 
               payload.esEmpresa, payload.idPersona, payload.estado, target_company))
@@ -294,14 +294,14 @@ def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(No
         user_company = get_company_id_from_request(request)
 
         # Verificar existencia y scoping
-        cur.execute('SELECT idProveedor, idEmpresa FROM proveedor_O WHERE idProveedor = %s', (id,))
+        cur.execute('SELECT idProveedor, idEmpresaProveedor FROM proveedor_O WHERE idProveedor = %s', (id,))
         prov = cur.fetchone()
         if not prov:
             cur.close()
             conn.close()
             raise HTTPException(status_code=404, detail='Proveedor no encontrado')
 
-        if role != 'superadmin' and user_company is not None and prov['idEmpresa'] != user_company:
+        if role != 'superadmin' and user_company is not None and prov['idEmpresaProveedor'] != user_company:
             cur.close()
             conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
@@ -351,14 +351,14 @@ def delete_proveedor(id: int, x_user_role: str = Header(None), request: Request 
         cur = conn.cursor(dictionary=True)
         user_company = get_company_id_from_request(request)
 
-        cur.execute('SELECT idProveedor, idEmpresa FROM proveedor_O WHERE idProveedor = %s', (id,))
+        cur.execute('SELECT idProveedor, idEmpresaProveedor FROM proveedor_O WHERE idProveedor = %s', (id,))
         prov = cur.fetchone()
         if not prov:
             cur.close()
             conn.close()
             raise HTTPException(status_code=404, detail='Proveedor no encontrado')
 
-        if role != 'superadmin' and user_company is not None and prov['idEmpresa'] != user_company:
+        if role != 'superadmin' and user_company is not None and prov['idEmpresaProveedor'] != user_company:
             cur.close()
             conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')

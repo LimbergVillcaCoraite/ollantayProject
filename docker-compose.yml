@@ -12,12 +12,6 @@ services:
       MYSQL_DATABASE: SystemaOllantay
     volumes:
       - /var/lib/mysql8032-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pP4assw@rd"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
 
   backend:
     build:
@@ -27,7 +21,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8000:8000"
     environment:
@@ -45,7 +38,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8001:8001"
     environment:
@@ -64,7 +56,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8002:8002"
     environment:
@@ -87,7 +78,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8003:8003"
     environment:
@@ -97,6 +87,10 @@ services:
       DATABASE_PASSWORD: P4assw@rd
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - ./backend/prestamo_service:/app
+      - ./backend/prestamo_service/uploads:/app/uploads
 
   venta_service:
     build:
@@ -106,7 +100,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8004:8004"
     environment:
@@ -125,7 +118,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8005:8005"
     environment:
@@ -144,7 +136,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8006:8006"
     environment:
@@ -163,7 +154,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mysql8032
-      - db_init
     ports:
       - "8007:8007"
     environment:
@@ -203,24 +193,6 @@ services:
       - "80:80"
     volumes:
       - ./reverse-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
-
-  db_init:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: db_init
-    restart: "no"
-    depends_on:
-      - mysql8032
-    environment:
-      DATABASE_HOST: mysql8032
-      DATABASE_PORT: "3306"
-      DATABASE_USER: root
-      DATABASE_PASSWORD: P4assw@rd
-      DATABASE_NAME: SystemaOllantay
-    command: ["python", "/app/migrations/apply_migrations.py"]
-    volumes:
-      - ./backend:/app
 
 volumes:
   mysql8032-data:

@@ -2,16 +2,18 @@ import React, {useState, useEffect} from 'react'
 import { useToast } from '../ToastContext'
 
 export default function Personas({API, API_TYPES, userRole='admin', permissions=[], companyFilter=null, onClearCompanyFilter}){
+  console.log('DEBUG: Personas component - userRole received:', userRole)
   const has = (res, act) => permissions.includes(`${res}:${act}`)
   const toast = useToast()
   const [persons, setPersons] = useState([])
   const [filteredPersons, setFilteredPersons] = useState([])
   const [types, setTypes] = useState([])
+  const [empresas, setEmpresas] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadingTypes, setLoadingTypes] = useState(true)
   const [error, setError] = useState(null)
 
-  const [form, setForm] = useState({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})
+  const [form, setForm] = useState({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:''})
   const [foto, setFoto] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editingLoading, setEditingLoading] = useState(false)
@@ -78,7 +80,26 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     finally{ setLoadingTypes(false) }
   }
 
-  useEffect(()=>{ loadTypes(); loadPersons() }, [API, API_TYPES, companyFilter])
+  const loadEmpresas = async () => {
+    console.log('DEBUG: loadEmpresas - userRole:', userRole)
+    if (userRole !== 'superadmin') {
+      console.log('DEBUG: Not superadmin, skipping empresas load')
+      return setEmpresas([])
+    }
+    try {
+      console.log('DEBUG: Loading empresas for superadmin')
+      const res = await fetch(`${API}/empresas`, { headers: { 'X-User-Role': userRole } })
+      if (!res.ok) throw new Error('Error fetching empresas')
+      const data = await res.json()
+      console.log('DEBUG: Empresas loaded:', data)
+      setEmpresas(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.error('DEBUG: Error loading empresas:', err)
+      setEmpresas([])
+    }
+  }
+
+  useEffect(()=>{ loadTypes(); loadEmpresas(); loadPersons() }, [API, API_TYPES, companyFilter, userRole])
 
   const submit = async (e)=>{
     e.preventDefault()
@@ -88,24 +109,42 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
       setError('Todos los campos son obligatorios')
       return
     }
+    
+    // For superadmin, empresa is required
+    if (userRole === 'superadmin' && !form.id_empresa) {
+      setError('Debe seleccionar una empresa')
+      return
+    }
   setSubmitting(true)
   setError(null)
     try{
       let res
-      const formData = new FormData()
-      Object.entries({...form, id_tipoPersona: Number(form.id_tipoPersona)}).forEach(([k,v])=>formData.append(k,v))
-      if(foto) formData.append('foto', foto)
-      if(editingId){
-        res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
+      
+      if(foto) {
+        // Use multipart/form-data when there's a photo
+        const formData = new FormData()
+        Object.entries({...form, id_tipoPersona: Number(form.id_tipoPersona)}).forEach(([k,v])=>formData.append(k,v))
+        formData.append('foto', foto)
+        if(editingId){
+          res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
+        } else {
+          res = await fetch(`${API}/persons`, {method:'POST', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
+        }
       } else {
-        res = await fetch(`${API}/persons`, {method:'POST', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
+        // Use JSON when no photo
+        const payload = {...form, id_tipoPersona: Number(form.id_tipoPersona)}
+        if(editingId){
+          res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+        } else {
+          res = await fetch(`${API}/persons-json`, {method:'POST', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+        }
       }
       if(!res.ok){
         let j = null
         try { j = await res.json() } catch {}
         throw new Error(j?.detail || res.statusText || 'Error de red')
       }
-      setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:''})
+      setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:''})
       setFoto(null)
       setEditingId(null)
       loadPersons()
@@ -121,7 +160,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     setEditingLoading(true)
     setTimeout(()=>{
       setEditingId(p.id_persona)
-      setForm({nombres_persona:p.nombres_persona, apellido_paternoPersona:p.apellido_paternoPersona || '', apellido_maternoPer:p.apellido_maternoPer || '', telefono_persona:p.telefono_persona || '', id_tipoPersona:String(p.id_tipoPersona), ci_persona:p.ci_persona, direccion_persona:p.direccion_persona})
+      setForm({nombres_persona:p.nombres_persona, apellido_paternoPersona:p.apellido_paternoPersona || '', apellido_maternoPer:p.apellido_maternoPer || '', telefono_persona:p.telefono_persona || '', id_tipoPersona:String(p.id_tipoPersona), ci_persona:p.ci_persona, direccion_persona:p.direccion_persona, id_empresa: String(p.id_empresa || '')})
       setFoto(null)
       setShowCreate(true)
       setEditingLoading(false)
@@ -205,6 +244,22 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
                 ))}
               </select>
             </div>
+            {(() => {
+              console.log('DEBUG: Checking selector visibility - userRole:', userRole, 'empresas:', empresas)
+              return userRole === 'superadmin'
+            })() && (
+              <div>
+                <label className="block text-sm text-gray-700 mb-1">Empresa ({empresas.length} disponibles)</label>
+                <select value={form.id_empresa} onChange={e=>setForm({...form, id_empresa: e.target.value})} className="p-2 border w-full">
+                  <option value="">Seleccionar empresa</option>
+                  {empresas.map((empresa) => (
+                    <option key={empresa.id_empresa} value={empresa.id_empresa}>
+                      {empresa.nombre_empresa}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-sm text-gray-700 mb-1">Apellido paterno</label>
               <input className="p-2 border w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
