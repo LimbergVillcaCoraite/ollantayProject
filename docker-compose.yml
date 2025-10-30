@@ -127,6 +127,8 @@ services:
       DATABASE_PASSWORD: P4assw@rd
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
+    volumes:
+      - ./backend/compra_service/uploads:/app/uploads
 
   proveedores_service:
     build:

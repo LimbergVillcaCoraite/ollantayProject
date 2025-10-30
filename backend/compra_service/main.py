@@ -12,9 +12,12 @@ import jwt
 
 app = FastAPI()
  # Serve uploads for this service as well (e.g., comprobantes)
-# Create uploads directory if it doesn't exist
+# Create uploads directories if they don't exist and mount static paths
 os.makedirs("/app/uploads", exist_ok=True)
+os.makedirs("/app/uploads/comprobantes", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
+# Backward-compatible mount for existing records that stored rutaArchivo starting with /comprobantes
+app.mount("/comprobantes", StaticFiles(directory="/app/uploads/comprobantes"), name="comprobantes")
 
 origins = [
     "http://localhost:3000",
@@ -736,7 +739,7 @@ def get_lotes_compra(id: int, x_user_role: str = Header(None), request: Request 
                 l.fechaCompra,
                 l.fechaVencimiento,
                 l.idProveedor,
-                prov.empresa as nombreProveedor
+                prov.nombreComercial as nombreProveedor
             FROM lote_producto l
             LEFT JOIN producto_O p ON l.idProducto = p.idProducto
             LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
