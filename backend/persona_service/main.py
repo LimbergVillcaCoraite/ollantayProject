@@ -106,6 +106,7 @@ class UserUpdateIn(BaseModel):
     password: Optional[str] = None
     id_persona: Optional[int] = None
     id_role: Optional[int] = None
+    estado: Optional[int] = Field(None, ge=0, le=1)  # 0=inactivo, 1=activo
 
 class SuperAdminUserCreateIn(BaseModel):
     username: str
@@ -203,8 +204,14 @@ def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
-def get_permissions_for_role(role_name: str) -> list[str]:
-    """Return list like ['module:action'] for a role name."""
+def get_permissions_for_role(role_name: str, company_id: int = None) -> list[str]:
+    """Return list like ['module:action'] for a role name.
+    
+    Args:
+        role_name: Name of the role (e.g., 'admin', 'cliente')
+        company_id: ID of the company. If None, gets global permissions only.
+                   Superadmin always gets all permissions regardless of company_id.
+    """
     if not role_name:
         return []
     try:
@@ -215,17 +222,38 @@ def get_permissions_for_role(role_name: str) -> list[str]:
             rows = cur.fetchall() or []
             cur.close(); conn.close()
             return [f"{x['resource']}:{x['action']}" for x in rows]
+        
         conn = get_db_connection(); cur = conn.cursor(dictionary=True)
         cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role_name,))
         r = cur.fetchone()
         if not r:
             cur.close(); conn.close();
             return []
-        cur.execute('SELECT p.resource, p.action FROM role_permission_O rp JOIN permission_O p ON rp.perm_id = p.id_perm WHERE rp.role_id = %s', (r['idrole'],))
+        
+        # Get permissions for this role filtered by company
+        # If company_id is provided, get permissions for that specific company OR global permissions (id_empresa IS NULL)
+        if company_id is not None:
+            cur.execute('''
+                SELECT p.resource, p.action 
+                FROM role_permission_O rp 
+                JOIN permission_O p ON rp.perm_id = p.id_perm 
+                WHERE rp.role_id = %s 
+                  AND (rp.id_empresa = %s OR rp.id_empresa IS NULL)
+            ''', (r['idrole'], company_id))
+        else:
+            # No company context - only get global permissions (superadmin scenario)
+            cur.execute('''
+                SELECT p.resource, p.action 
+                FROM role_permission_O rp 
+                JOIN permission_O p ON rp.perm_id = p.id_perm 
+                WHERE rp.role_id = %s AND rp.id_empresa IS NULL
+            ''', (r['idrole'],))
+        
         rows = cur.fetchall() or []
         cur.close(); conn.close()
         return [f"{x['resource']}:{x['action']}" for x in rows]
-    except Exception:
+    except Exception as e:
+        print(f"Error in get_permissions_for_role: {e}")
         return []
 
 
@@ -273,7 +301,7 @@ async def login(request: Request):
         cursor = conn.cursor(dictionary=True)
         cursor.execute('''
             SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo,
-                   r.name AS role_name, p.id_empresa, p.fotoPersona
+                   u.estado, r.name AS role_name, p.id_empresa, p.fotoPersona
             FROM user_O u
             JOIN role_O r   ON u.id_role = r.idrole
             LEFT JOIN persona_O p ON u.id_persona = p.id_persona
@@ -284,6 +312,10 @@ async def login(request: Request):
         conn.close()
         if not row:
             raise HTTPException(status_code=401, detail='Invalid credentials')
+        
+        # Verificar si el usuario está activo
+        if row.get('estado') == 0:
+            raise HTTPException(status_code=403, detail='Usuario inactivo. Contacte al administrador.')
         # Password verification supports both bcrypt hashes and legacy plaintext
         stored = row.get('password_hash') or ''
         if stored:
@@ -306,7 +338,7 @@ async def login(request: Request):
             'id_persona': row.get('id_persona'),
             'company_id': row.get('id_empresa')
         })
-        perms = get_permissions_for_role(row['role_name'])
+        perms = get_permissions_for_role(row['role_name'], row.get('id_empresa'))
         # Build profile photo URL from joined data
         rel = (row or {}).get('fotoPersona')
         photo_url = ('/api/personas' + rel) if (isinstance(rel, str) and rel.startswith('/uploads')) else rel
@@ -488,6 +520,8 @@ def list_empresas_paginated(q: Optional[str] = None, id_persona: Optional[int] =
         # role-based scoping
         role = get_role(None, request)
         company_id = get_company_id_from_request(request)
+        # Superadmin (no tiene empresa, company_id es NULL): ve todas las empresas
+        # Admin (tiene empresa): solo ve su empresa
         if role != 'superadmin' and company_id is not None:
             where_clauses.append('id_empresa = %s')
             params.append(company_id)
@@ -724,13 +758,12 @@ def auth_me(request: Request):
         raise HTTPException(status_code=401, detail='Not authenticated')
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        # fetch permissions for this role
-        perms = get_permissions_for_role(payload.get('role'))
-        # fetch fotoPersona and id_empresa from persona_O
-        profile_photo = None; company_id = None
+        profile_photo = None
+        company_id = None
         try:
             if payload.get('id_persona'):
-                conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+                conn = get_db_connection()
+                cur = conn.cursor(dictionary=True)
                 cur.execute('SELECT fotoPersona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.get('id_persona'),))
                 r = cur.fetchone()
                 if r:
@@ -738,9 +771,11 @@ def auth_me(request: Request):
                     if rel:
                         profile_photo = '/api/personas' + rel if rel.startswith('/uploads') else rel
                     company_id = r.get('id_empresa')
-                cur.close(); conn.close()
+                cur.close()
+                conn.close()
         except Exception:
             profile_photo = None
+        perms = get_permissions_for_role(payload.get('role'), company_id or payload.get('company_id'))
         return {'username': payload.get('username'), 'role': payload.get('role'), 'sub': payload.get('sub'), 'id_persona': payload.get('id_persona'), 'company_id': company_id or payload.get('company_id'), 'permissions': perms, 'profilePhoto': profile_photo}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail='Token expired')
@@ -1045,16 +1080,7 @@ async def update_person(
     direccion = direccion_persona.strip()
     if not nombres or not ci or not direccion:
         raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
-    foto_path = None
-    if foto:
-        ext = (foto.filename.rsplit('.', 1)[-1] if '.' in foto.filename else 'png').lower()
-        safe_ext = ext if ext in ('png','jpg','jpeg','gif','webp') else 'png'
-        filename = f"persona_{ci}_{int(datetime.utcnow().timestamp())}.{ 'jpg' if safe_ext=='jpeg' else safe_ext }"
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        path = os.path.join(UPLOAD_DIR, filename)
-        with open(path, 'wb') as f:
-            f.write(await foto.read())
-        foto_path = f"/uploads/{filename}"
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -1065,19 +1091,46 @@ async def update_person(
             if jwt_company_id is None:
                 cursor.close(); conn.close()
                 raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
-            cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s AND id_empresa = %s', (id, jwt_company_id))
+            cursor.execute('SELECT id_persona, fotoPersona FROM persona_O WHERE id_persona = %s AND id_empresa = %s', (id, jwt_company_id))
         else:
-            cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (id,))
+            cursor.execute('SELECT id_persona, fotoPersona FROM persona_O WHERE id_persona = %s', (id,))
             
         exists_person = cursor.fetchone()
         if not exists_person:
             cursor.close(); conn.close()
             raise HTTPException(status_code=404, detail='Persona no encontrada o no pertenece a su empresa')
+        
+        old_foto = exists_person.get('fotoPersona')
+        
         cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE idtipoPers = %s', (id_tipoPersona,))
         tipo = cursor.fetchone()
         if not tipo:
             cursor.close(); conn.close()
             raise HTTPException(status_code=400, detail='TipoPersona no existe')
+        
+        # Procesar nueva foto si se proporciona
+        foto_path = None
+        if foto:
+            ext = (foto.filename.rsplit('.', 1)[-1] if '.' in foto.filename else 'png').lower()
+            safe_ext = ext if ext in ('png','jpg','jpeg','gif','webp') else 'png'
+            filename = f"persona_{ci}_{int(datetime.utcnow().timestamp())}.{ 'jpg' if safe_ext=='jpeg' else safe_ext }"
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            path = os.path.join(UPLOAD_DIR, filename)
+            with open(path, 'wb') as f:
+                f.write(await foto.read())
+            foto_path = f"/uploads/{filename}"
+            
+            # Eliminar foto anterior si existe
+            if old_foto:
+                old_foto_filename = old_foto.split('/')[-1] if '/' in old_foto else old_foto
+                old_foto_path = os.path.join(UPLOAD_DIR, old_foto_filename)
+                try:
+                    if os.path.exists(old_foto_path):
+                        os.remove(old_foto_path)
+                        print(f"✅ Foto anterior eliminada: {old_foto_path}")
+                except Exception as e:
+                    print(f"⚠️  Error al eliminar foto anterior: {e}")
+        
         cur2 = conn.cursor()
         update_sql = 'UPDATE persona_O SET nombres_persona=%s, apellido_paternoPersona=%s, apellido_maternoPer=%s, telefono_persona=%s, id_tipoPersona=%s, ci_persona=%s, direccion_persona=%s'
         params = [nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion]
@@ -1315,45 +1368,28 @@ def list_permissions(x_user_role: Optional[str] = Header(None), request: Request
 
 @app.get('/roles/{id}/permissions')
 def get_role_permissions(id, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
+    """Return permission ids for a role, filtered by company context for admins; superadmin returns global (NULL) perms."""
+    role = get_role(x_user_role, request)
     try:
         conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT perm_id FROM role_permission_O WHERE role_id = %s', (id,))
+        if role == 'superadmin':
+            # Superadmin: global permissions only
+            cur.execute('SELECT perm_id FROM role_permission_O WHERE role_id = %s AND id_empresa IS NULL', (id,))
+        else:
+            company_id = get_company_id_from_request(request)
+            if company_id is None:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+            cur.execute('SELECT perm_id FROM role_permission_O WHERE role_id = %s AND (id_empresa = %s OR id_empresa IS NULL)', (id, company_id))
         rows = cur.fetchall(); cur.close(); conn.close();
         return [r['perm_id'] for r in rows]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put('/roles/{id}/permissions', status_code=204)
-def set_role_permissions(id, payload: RolePermissionsIn, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
-    try:
-        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-        # basic checks
-        cur.execute('SELECT name FROM role_O WHERE idrole = %s', (id,))
-        r = cur.fetchone()
-        if not r:
-            cur.close(); conn.close();
-            raise HTTPException(status_code=404, detail='Role not found')
-        # Only a superadmin can change the built-in 'admin' role permissions
-        caller_role = get_role(x_user_role, request)
-        if r['name'] == 'admin' and caller_role != 'superadmin':
-            cur.close(); conn.close();
-            raise HTTPException(status_code=403, detail='Only superadmin can modify admin permissions')
-        # replace mapping
-        d = conn.cursor(); d.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,)); d.close()
-        if payload.perm_ids:
-            ins = conn.cursor()
-            values = [(id, pid) for pid in payload.perm_ids]
-            ins.executemany('INSERT INTO role_permission_O (role_id, perm_id) VALUES (%s,%s)', values)
-            ins.close()
-        conn.commit(); cur.close(); conn.close();
-        return None
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Removed legacy set_role_permissions to avoid duplicate route and 204 responses; use update_role_permissions instead.
 
 
 # User management endpoints
@@ -1361,9 +1397,43 @@ def set_role_permissions(id, payload: RolePermissionsIn, x_user_role: Optional[s
 def list_users(x_user_role: Optional[str] = Header(None), request: Request = None):
     require_admin(x_user_role, request)
     try:
+        role = get_role(x_user_role, request)
+        company_id = get_company_id_from_request(request)
+        
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT id_user, username, id_persona, id_role FROM user_O ORDER BY id_user')
+        
+        # Include company information for proper display in RoleManagement
+        # Superadmin: see all users INCLUDING other superadmins
+        # Admin: only see users from their company, EXCLUDING superadmins
+        if role == 'superadmin':
+            # Superadmin ve todos los usuarios (incluyendo otros superadmins)
+            cur.execute('''
+                SELECT u.id_user, u.username, u.id_persona, u.id_role, u.estado,
+                       p.nombres_persona, p.apellido_paternoPersona, 
+                       p.ci_persona, p.id_empresa, p.fotoPersona,
+                       e.nombre_empresa, r.name as role_name
+                FROM user_O u
+                LEFT JOIN persona_O p ON u.id_persona = p.id_persona
+                LEFT JOIN empresa_O e ON p.id_empresa = e.id_empresa
+                LEFT JOIN role_O r ON u.id_role = r.idrole
+                ORDER BY FIELD(r.name, 'superadmin', 'admin', 'cliente'), e.nombre_empresa, u.id_user
+            ''')
+        else:
+            # Admin: solo usuarios de su empresa, excluyendo superadmins
+            cur.execute('''
+                SELECT u.id_user, u.username, u.id_persona, u.id_role, u.estado,
+                       p.nombres_persona, p.apellido_paternoPersona, 
+                       p.ci_persona, p.id_empresa, p.fotoPersona,
+                       e.nombre_empresa, r.name as role_name
+                FROM user_O u
+                LEFT JOIN persona_O p ON u.id_persona = p.id_persona
+                LEFT JOIN empresa_O e ON p.id_empresa = e.id_empresa
+                LEFT JOIN role_O r ON u.id_role = r.idrole
+                WHERE p.id_empresa = %s AND r.name != 'superadmin'
+                ORDER BY u.id_user
+            ''', (company_id,))
+        
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -1374,37 +1444,75 @@ def list_users(x_user_role: Optional[str] = Header(None), request: Request = Non
 
 @app.put('/users/{id}')
 def update_user(id: int, payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
+    # Only admin/superadmin can update users at all
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+
     if not payload.username:
         raise HTTPException(status_code=400, detail='username required')
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # check exists
-        cursor.execute('SELECT id_user FROM user_O WHERE id_user = %s', (id,))
-        if not cursor.fetchone():
-            cursor.close()
-            conn.close()
+
+        # Check target user exists and get their company via persona
+        cursor.execute('''
+            SELECT u.id_user, u.username, u.id_persona, u.id_role, u.estado, p.id_empresa AS target_company
+            FROM user_O u
+            LEFT JOIN persona_O p ON u.id_persona = p.id_persona
+            WHERE u.id_user = %s
+        ''', (id,))
+        target = cursor.fetchone()
+        if not target:
+            cursor.close(); conn.close()
             raise HTTPException(status_code=404, detail='User not found')
-        # check username unique (excluding current user)
+
+        # Username uniqueness (excluding current)
         cursor.execute('SELECT id_user FROM user_O WHERE username = %s AND id_user <> %s', (payload.username, id))
         if cursor.fetchone():
-            cursor.close()
-            conn.close()
+            cursor.close(); conn.close()
             raise HTTPException(status_code=400, detail='username already exists')
-        
-        # Update fields
+
+        # Estado update restrictions: admin (same company) OR superadmin (any)
+        estado_to_set = payload.estado
+        if estado_to_set is not None:
+                if role == 'admin':
+                    admin_company = get_company_id_from_request(request)
+                    if admin_company is None or (target.get('target_company') is not None and target['target_company'] != admin_company):
+                        cursor.close(); conn.close()
+                        raise HTTPException(status_code=403, detail='Solo puede cambiar estado de usuarios de su empresa')
+                elif role == 'superadmin':
+                    # superadmin puede cambiar estado de cualquier usuario
+                    pass
+                else:
+                    cursor.close(); conn.close()
+                    raise HTTPException(status_code=403, detail='No tiene permisos para cambiar el estado de usuarios')
+
+        # Build update dynamically
+        params = []
+        set_clauses = ['username=%s']
+        params.append(payload.username)
+
         if payload.password:
             pw_hash = hash_password(payload.password)
-            cursor.execute('UPDATE user_O SET username=%s, password_hash=%s, id_persona=%s, id_role=%s WHERE id_user=%s',
-                          (payload.username, pw_hash, payload.id_persona, payload.id_role, id))
-        else:
-            # Don't update password if not provided
-            cursor.execute('UPDATE user_O SET username=%s, id_persona=%s, id_role=%s WHERE id_user=%s',
-                          (payload.username, payload.id_persona, payload.id_role, id))
+            set_clauses.append('password_hash=%s')
+            params.append(pw_hash)
+
+        set_clauses.append('id_persona=%s')
+        params.append(payload.id_persona)
+        set_clauses.append('id_role=%s')
+        params.append(payload.id_role)
+
+        # Only include estado if allowed by previous check
+        if estado_to_set is not None:
+            set_clauses.append('estado=%s')
+            params.append(int(estado_to_set))
+
+        sql = f"UPDATE user_O SET {', '.join(set_clauses)} WHERE id_user=%s"
+        params.append(id)
+        cursor.execute(sql, tuple(params))
         conn.commit()
-        cursor.close()
-        conn.close()
+        cursor.close(); conn.close()
         return {'username': payload.username, 'id_user': id}
     except HTTPException:
         raise
@@ -1567,21 +1675,41 @@ def list_permissions(x_user_role: Optional[str] = Header(None), request: Request
 
 @app.get('/role-permissions')
 def list_role_permissions(x_user_role: Optional[str] = Header(None), request: Request = None):
-    """List all role-permission mappings"""
+    """List role-permission mappings filtered by user's company (admin) or all (superadmin)"""
     role = get_role(x_user_role, request)
     if role not in ['admin', 'superadmin']:
         raise HTTPException(status_code=403, detail='Acceso denegado')
     
+    company_id = get_company_id_from_request(request)
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute('''
-            SELECT rp.role_id, rp.perm_id, r.name as role_name, p.resource, p.action
-            FROM role_permission_O rp
-            JOIN role_O r ON rp.role_id = r.idrole
-            JOIN permission_O p ON rp.perm_id = p.id_perm
-            ORDER BY r.name, p.resource, p.action
-        ''')
+        
+        if role == 'superadmin':
+            # Superadmin ve todos los permisos (globales y de todas las empresas)
+            cursor.execute('''
+                SELECT rp.role_id, rp.perm_id, rp.id_empresa, r.name as role_name, p.resource, p.action,
+                       e.nombre_empresa
+                FROM role_permission_O rp
+                JOIN role_O r ON rp.role_id = r.idrole
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                LEFT JOIN empresa_O e ON rp.id_empresa = e.id_empresa
+                ORDER BY rp.id_empresa, r.name, p.resource, p.action
+            ''')
+        else:
+            # Admin solo ve permisos de su empresa
+            cursor.execute('''
+                SELECT rp.role_id, rp.perm_id, rp.id_empresa, r.name as role_name, p.resource, p.action,
+                       e.nombre_empresa
+                FROM role_permission_O rp
+                JOIN role_O r ON rp.role_id = r.idrole
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                LEFT JOIN empresa_O e ON rp.id_empresa = e.id_empresa
+                WHERE rp.id_empresa = %s OR rp.id_empresa IS NULL
+                ORDER BY rp.id_empresa, r.name, p.resource, p.action
+            ''', (company_id,))
+        
         role_permissions = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -1589,19 +1717,32 @@ def list_role_permissions(x_user_role: Optional[str] = Header(None), request: Re
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put('/roles/{role_id}/permissions')
+@app.put('/roles/{role_id}/permissions', status_code=204)
 def update_role_permissions(
     role_id: int,
     payload: dict,
     x_user_role: Optional[str] = Header(None),
     request: Request = None
 ):
-    """Update permissions for a specific role"""
+    """Update permissions for a specific role for a specific company or globally (superadmin)"""
+    print(f"🎯 ENTRY: update_role_permissions called with role_id={role_id}")
     role = get_role(x_user_role, request)
     if role not in ['admin', 'superadmin']:
         raise HTTPException(status_code=403, detail='Acceso denegado')
     
-    permission_ids = payload.get('permission_ids', [])
+    # Get company_id from JWT token
+    company_id = get_company_id_from_request(request)
+    
+    # Superadmin can set global permissions (id_empresa = NULL) or for any company
+    # Admin can only set permissions for their own company
+    if role != 'superadmin' and company_id is None:
+        raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+    
+    # Support both 'permission_ids' and 'perm_ids' for backwards compatibility
+    permission_ids = payload.get('permission_ids', payload.get('perm_ids', []))
+    print(f"🔍 DEBUG: Updating permissions for role_id={role_id}, company_id={company_id}, user_role={role}")
+    print(f"🔍 DEBUG: Received payload: {payload}")
+    print(f"🔍 DEBUG: Extracted permission_ids: {permission_ids}")
     
     try:
         conn = get_db_connection()
@@ -1621,15 +1762,29 @@ def update_role_permissions(
             conn.close()
             raise HTTPException(status_code=403, detail='No puedes modificar permisos del superadmin')
         
-        # Eliminar permisos existentes
-        cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s', (role_id,))
+        # Eliminar permisos existentes para este rol y empresa específica
+        if role == 'superadmin':
+            # Superadmin elimina permisos globales (NULL) o para empresa específica si se proporciona
+            target_company = payload.get('target_company_id', None)  # Allow superadmin to specify target company
+            if target_company is None:
+                cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa IS NULL', (role_id,))
+            else:
+                cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa = %s', (role_id, target_company))
+        else:
+            # Admin solo puede eliminar permisos de su propia empresa
+            cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa = %s', (role_id, company_id))
         
         # Agregar nuevos permisos
         if permission_ids:
-            values = [(role_id, perm_id) for perm_id in permission_ids if isinstance(perm_id, int)]
+            target_company = company_id
+            if role == 'superadmin':
+                # Superadmin puede establecer permisos globales o para una empresa específica
+                target_company = payload.get('target_company_id', None)
+            
+            values = [(role_id, perm_id, target_company) for perm_id in permission_ids if isinstance(perm_id, int)]
             if values:
                 cursor.executemany(
-                    'INSERT INTO role_permission_O (role_id, perm_id) VALUES (%s, %s)',
+                    'INSERT INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s, %s, %s)',
                     values
                 )
         
@@ -1637,13 +1792,11 @@ def update_role_permissions(
         cursor.close()
         conn.close()
         
-        return {
-            'message': f'Permisos actualizados para el rol {role_data["name"]}',
-            'role_id': role_id,
-            'permissions_count': len(permission_ids)
-        }
+        # Return 204 No Content for compatibility with existing frontend
+        return Response(status_code=204)
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ ERROR updating role permissions: {e}")
         raise HTTPException(status_code=500, detail=str(e))

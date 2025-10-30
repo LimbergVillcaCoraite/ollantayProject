@@ -163,13 +163,13 @@ def list_cuentas(
         if where:
             query += ' WHERE ' + ' AND '.join(where)
         
-    # Usar columnas reales en ORDER BY (no alias) y el PK correcto
-    query += ' ORDER BY cc.fechaMovimiento DESC, cc.idCuentaCorriente DESC LIMIT %s OFFSET %s'
+        # Usar columnas reales en ORDER BY (no alias) y el PK correcto
+        query += ' ORDER BY cc.fechaMovimiento DESC, cc.idCuentaCorriente DESC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
 
         cur.execute(query, tuple(params))
         rows = cur.fetchall() or []
-        
+        m
         # Convertir tipos
         for r in rows:
             r['saldo'] = float(r['saldo']) if r.get('saldo') else 0.0
@@ -308,7 +308,7 @@ def update_cuenta(id: int, payload: CuentaCorrienteIn, x_user_role: str = Header
         cur = conn.cursor(dictionary=True)
         user_company = get_company_id_from_request(request)
 
-    cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
+        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
         cuenta = cur.fetchone()
         if not cuenta:
             cur.close()
@@ -351,7 +351,7 @@ def delete_cuenta(id: int, x_user_role: str = Header(None), request: Request = N
         cur = conn.cursor(dictionary=True)
         user_company = get_company_id_from_request(request)
 
-    cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
+        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
         cuenta = cur.fetchone()
         if not cuenta:
             cur.close()
@@ -399,7 +399,7 @@ def list_pagos(id: int, x_user_role: str = Header(None), request: Request = None
         user_company = get_company_id_from_request(request)
 
         # Validar que la cuenta existe y tenemos acceso
-    cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
+        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
         cuenta = cur.fetchone()
         if not cuenta:
             cur.close()

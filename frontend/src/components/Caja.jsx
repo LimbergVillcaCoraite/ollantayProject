@@ -13,7 +13,7 @@ export default function Caja({ API, userRole }){
     params.set('period', period)
     if(fecha) params.set('fecha', fecha)
     if(idEmpresa) params.set('idEmpresa', idEmpresa)
-    return `${API}/caja/resumen?${params.toString()}`
+    return `${API}/reportes/caja/resumen?${params.toString()}`
   }, [API, period, fecha, idEmpresa])
 
   const reload = async ()=>{
@@ -43,11 +43,13 @@ export default function Caja({ API, userRole }){
   )
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end gap-3">
+    <div className="p-4 max-w-7xl mx-auto space-y-6">
+      <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mb-4">Reporte de Caja</h2>
+      
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div>
           <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Periodo</label>
-          <select value={period} onChange={e=>setPeriod(e.target.value)} className="input">
+          <select value={period} onChange={e=>setPeriod(e.target.value)} className="input w-full">
             <option value="day">Día</option>
             <option value="week">Semana</option>
             <option value="month">Mes</option>
@@ -56,13 +58,15 @@ export default function Caja({ API, userRole }){
         </div>
         <div>
           <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Fecha base</label>
-          <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)} className="input" />
+          <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)} className="input w-full" />
         </div>
         <div>
           <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Empresa (opcional)</label>
-          <input type="number" placeholder="idEmpresa" value={idEmpresa} onChange={e=>setIdEmpresa(e.target.value)} className="input" />
+          <input type="number" placeholder="idEmpresa" value={idEmpresa} onChange={e=>setIdEmpresa(e.target.value)} className="input w-full" />
         </div>
-        <button onClick={reload} disabled={loading} className="btn btn-primary">{loading ? 'Cargando...' : 'Actualizar'}</button>
+        <div className="flex items-end">
+          <button onClick={reload} disabled={loading} className="btn btn-primary w-full">{loading ? 'Cargando...' : 'Actualizar'}</button>
+        </div>
       </div>
 
       {error && (

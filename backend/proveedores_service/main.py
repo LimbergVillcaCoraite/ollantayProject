@@ -66,6 +66,50 @@ def get_company_id_from_request(request: Request = None) -> Optional[int]:
         return None
 
 
+def has_permission(request: Request, resource: str, action: str) -> bool:
+    """Check if current user's role has a specific permission for the current company.
+
+    Permissions are stored in role_permission_O and permission_O tables.
+    Superadmin always has all permissions.
+    For company-scoped roles, permission applies when rp.id_empresa equals the user's company or is NULL (global).
+    """
+    try:
+        role = get_role(None, request)
+        if role == 'superadmin':
+            return True
+        company_id = get_company_id_from_request(request)
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # Resolve role id
+        cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close();
+            return False
+        if company_id is not None:
+            cur.execute('''
+                SELECT 1
+                FROM role_permission_O rp
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                WHERE rp.role_id = %s AND p.resource = %s AND p.action = %s
+                  AND (rp.id_empresa = %s OR rp.id_empresa IS NULL)
+                LIMIT 1
+            ''', (r['idrole'], resource, action, company_id))
+        else:
+            cur.execute('''
+                SELECT 1
+                FROM role_permission_O rp
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                WHERE rp.role_id = %s AND p.resource = %s AND p.action = %s
+                  AND rp.id_empresa IS NULL
+                LIMIT 1
+            ''', (r['idrole'], resource, action))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return bool(row)
+    except Exception:
+        return False
+
+
 # ========================
 # Modelos para Proveedores
 # ========================
@@ -76,8 +120,10 @@ class ProveedorIn(BaseModel):
     telefono: Optional[str] = Field(None, max_length=15)
     email: Optional[str] = Field(None, max_length=100)
     direccion: Optional[str] = Field(None, max_length=200)
-    esEmpresa: int = Field(..., ge=0, le=1)  # 1=empresa, 0=persona
-    idPersona: Optional[int] = None  # Si tipo='P', referencia a persona_O
+    esEmpresa: int = Field(..., ge=0, le=1)  # 1=empresa, 0=persona (consistente con frontend y DB)
+    idPersona: Optional[int] = None  # Si esEmpresa=0, referencia a persona_O.id_persona
+    # Para superadmin: permitir especificar empresa destino explícitamente
+    idEmpresaProveedor: Optional[int] = None
     estado: int = Field(default=1, ge=0, le=1)
 
 
@@ -94,7 +140,7 @@ class ProveedorOut(ProveedorIn):
 @app.get('/proveedores', response_model=List[ProveedorOut])
 def list_proveedores(
     q: Optional[str] = None,
-    esEmpresa: Optional[str] = None,
+    esEmpresa: Optional[int] = None,
     estado: Optional[int] = None,
     offset: int = 0,
     limit: int = 100,
@@ -102,6 +148,10 @@ def list_proveedores(
     request: Request = None
 ):
     """Listar proveedores. Superadmin ve todos, admin solo de su empresa."""
+    # Authorization: view permission or default roles admin/editor/superadmin
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'editor', 'superadmin') and not has_permission(request, 'proveedores', 'view'):
+        raise HTTPException(status_code=403, detail='Permission denied')
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
@@ -130,9 +180,9 @@ def list_proveedores(
             like = f"%{q}%"
             where.append('(p.nombreComercial LIKE %s OR p.contacto LIKE %s OR p.email LIKE %s)')
             params.extend([like, like, like])
-        if esEmpresa:
+        if esEmpresa is not None:
             where.append('p.esEmpresa = %s')
-            params.append(esEmpresa)
+            params.append(int(esEmpresa))
         if estado is not None:
             where.append('p.estado = %s')
             params.append(estado)
@@ -195,72 +245,110 @@ def get_proveedor(id: int, x_user_role: str = Header(None), request: Request = N
 
 @app.post('/proveedores', response_model=ProveedorOut, status_code=201)
 def create_proveedor(payload: ProveedorIn, x_user_role: str = Header(None), request: Request = None):
-    """Crear proveedor."""
+    """Crear proveedor.
+    
+    Reglas de negocio:
+    - Empresa (esEmpresa=1): Requiere idEmpresaProveedor, NO debe tener idPersona
+    - Persona (esEmpresa=0): Requiere idPersona, idEmpresaProveedor se obtiene de persona_O.id_empresa
+    - Superadmin puede crear proveedores para cualquier empresa
+    - Admin/Editor solo pueden crear proveedores para su propia empresa
+    """
     role = get_role(x_user_role, request)
-    if role not in ('admin', 'editor', 'superadmin'):
+    if role not in ('admin', 'editor', 'superadmin') and not has_permission(request, 'proveedores', 'create'):
         raise HTTPException(status_code=403, detail='Permission denied')
 
     nombre = payload.nombreComercial.strip()
     if not nombre:
         raise HTTPException(status_code=400, detail='nombreComercial requerido')
 
-    if payload.esEmpresa not in ('E', 'P'):
-        raise HTTPException(status_code=400, detail='esEmpresa debe ser E o P')
+    # esEmpresa debe ser 0 (Persona) o 1 (Empresa)
+    if payload.esEmpresa not in (0, 1):
+        raise HTTPException(status_code=400, detail='esEmpresa debe ser 0 (Persona) o 1 (Empresa)')
 
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         
-        # Determinar empresa
         user_company = get_company_id_from_request(request)
-        if role == 'superadmin':
-            # Si tipo='P' y hay idPersona, usar empresa de esa persona
-            if payload.esEmpresa == 'P' and payload.idPersona:
-                cur.execute('SELECT id_empresa FROM persona_O WHERE idPersona = %s', (payload.idPersona,))
-                pers = cur.fetchone()
-                if not pers or not pers.get('id_empresa'):
-                    cur.close()
-                    conn.close()
-                    raise HTTPException(status_code=400, detail='Persona no tiene empresa asignada')
-                target_company = pers['id_empresa']
+        
+        # Validar que no exista otro proveedor con el mismo nombre (case-insensitive)
+        cur.execute('SELECT idProveedor FROM proveedor_O WHERE LOWER(nombreComercial) = LOWER(%s) AND estado = 1', (nombre,))
+        existing = cur.fetchone()
+        if existing:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail=f'Ya existe un proveedor activo con el nombre "{nombre}"')
+        
+        # Determinar empresa objetivo y validar según tipo de proveedor
+        if payload.esEmpresa == 1:  # EMPRESA
+            # Proveedor tipo EMPRESA
+            if role == 'superadmin':
+                # Superadmin puede especificar empresa explícitamente vía payload.idEmpresaProveedor
+                if payload.idEmpresaProveedor is not None:
+                    # Validar que la empresa exista
+                    cur.execute('SELECT id_empresa FROM empresa_O WHERE id_empresa = %s', (payload.idEmpresaProveedor,))
+                    emp = cur.fetchone()
+                    if not emp:
+                        cur.close(); conn.close()
+                        raise HTTPException(status_code=400, detail='Empresa especificada no existe')
+                    target_company = int(payload.idEmpresaProveedor)
+                elif user_company is not None:
+                    target_company = user_company
+                else:
+                    cur.close(); conn.close()
+                    raise HTTPException(status_code=400, detail='Superadmin debe especificar empresa (idEmpresaProveedor)')
             else:
-                # Superadmin debe especificar empresa de alguna forma; por ahora requerir user_company
+                # Admin/Editor: usar su empresa
                 if user_company is None:
                     cur.close()
                     conn.close()
-                    raise HTTPException(status_code=400, detail='Empresa requerida para superadmin')
+                    raise HTTPException(status_code=400, detail='Usuario sin empresa asignada')
                 target_company = user_company
-        else:
-            if user_company is None:
+            
+            # Validar que idPersona NO esté presente para tipo empresa
+            if payload.idPersona is not None:
                 cur.close()
                 conn.close()
-                raise HTTPException(status_code=400, detail='Usuario sin empresa')
-            target_company = user_company
-
-        # Si tipo='P', validar que idPersona existe y pertenece a la empresa
-        if payload.esEmpresa == 'P':
+                raise HTTPException(status_code=400, detail='Proveedor tipo Empresa no debe tener idPersona')
+            
+            id_persona_final = None
+            
+        else:  # PERSONA (esEmpresa == 0)
+            # Proveedor tipo PERSONA: debe tener idPersona
             if not payload.idPersona:
                 cur.close()
                 conn.close()
-                raise HTTPException(status_code=400, detail='idPersona requerido para proveedor tipo P')
-            cur.execute('SELECT idPersona, id_empresa FROM persona_O WHERE idPersona = %s', (payload.idPersona,))
+                raise HTTPException(status_code=400, detail='idPersona requerido para proveedor tipo Persona')
+            
+            # Obtener empresa de la persona
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.idPersona,))
             pers = cur.fetchone()
             if not pers:
                 cur.close()
                 conn.close()
                 raise HTTPException(status_code=400, detail='Persona no existe')
-            if role != 'superadmin' and pers['id_empresa'] != target_company:
+            
+            if not pers['id_empresa']:
                 cur.close()
                 conn.close()
-                raise HTTPException(status_code=400, detail='Persona no pertenece a su empresa')
+                raise HTTPException(status_code=400, detail='Persona no tiene empresa asignada')
+            
+            # Para admin/editor: validar que la persona pertenece a su empresa
+            if role != 'superadmin' and user_company is not None and pers['id_empresa'] != user_company:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=403, detail='Persona no pertenece a su empresa')
+            
+            target_company = pers['id_empresa']
+            id_persona_final = payload.idPersona
 
-        # Insertar
+        # Insertar proveedor
         ins = conn.cursor()
         ins.execute('''
             INSERT INTO proveedor_O (nombreComercial, contacto, telefono, email, direccion, esEmpresa, idPersona, estado, idEmpresaProveedor)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (nombre, payload.contacto, payload.telefono, payload.email, payload.direccion, 
-              payload.esEmpresa, payload.idPersona, payload.estado, target_company))
+              payload.esEmpresa, id_persona_final, payload.estado, target_company))
         conn.commit()
         new_id = ins.lastrowid
         ins.close()
@@ -276,17 +364,24 @@ def create_proveedor(payload: ProveedorIn, x_user_role: str = Header(None), requ
 
 @app.put('/proveedores/{id}', response_model=ProveedorOut)
 def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(None), request: Request = None):
-    """Actualizar proveedor."""
+    """Actualizar proveedor.
+    
+    Reglas de negocio:
+    - Empresa (esEmpresa=1): Debe tener idEmpresaProveedor, NO debe tener idPersona
+    - Persona (esEmpresa=0): Debe tener idPersona, idEmpresaProveedor se hereda de persona_O
+    - No se puede cambiar el tipo de proveedor (empresa <-> persona)
+    - Admin/Editor solo pueden editar proveedores de su empresa
+    """
     role = get_role(x_user_role, request)
-    if role not in ('admin', 'editor', 'superadmin'):
+    if role not in ('admin', 'editor', 'superadmin') and not has_permission(request, 'proveedores', 'edit'):
         raise HTTPException(status_code=403, detail='Permission denied')
 
     nombre = payload.nombreComercial.strip()
     if not nombre:
         raise HTTPException(status_code=400, detail='nombreComercial requerido')
 
-    if payload.esEmpresa not in ('E', 'P'):
-        raise HTTPException(status_code=400, detail='esEmpresa debe ser E o P')
+    if payload.esEmpresa not in (0, 1):
+        raise HTTPException(status_code=400, detail='esEmpresa debe ser 0 (Persona) o 1 (Empresa)')
 
     try:
         conn = get_db_connection()
@@ -294,7 +389,7 @@ def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(No
         user_company = get_company_id_from_request(request)
 
         # Verificar existencia y scoping
-        cur.execute('SELECT idProveedor, idEmpresaProveedor FROM proveedor_O WHERE idProveedor = %s', (id,))
+        cur.execute('SELECT idProveedor, idEmpresaProveedor, esEmpresa FROM proveedor_O WHERE idProveedor = %s', (id,))
         prov = cur.fetchone()
         if not prov:
             cur.close()
@@ -304,19 +399,50 @@ def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(No
         if role != 'superadmin' and user_company is not None and prov['idEmpresaProveedor'] != user_company:
             cur.close()
             conn.close()
-            raise HTTPException(status_code=403, detail='No autorizado')
+            raise HTTPException(status_code=403, detail='No autorizado para editar este proveedor')
 
-        # Si tipo='P', validar idPersona
-        if payload.esEmpresa == 'P':
+        # Validar que no exista otro proveedor con el mismo nombre (case-insensitive) excepto el actual
+        cur.execute('SELECT idProveedor FROM proveedor_O WHERE LOWER(nombreComercial) = LOWER(%s) AND idProveedor != %s AND estado = 1', (nombre, id))
+        existing = cur.fetchone()
+        if existing:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail=f'Ya existe otro proveedor activo con el nombre "{nombre}"')
+
+        # Validar que no se cambie el tipo de proveedor
+        if prov['esEmpresa'] != payload.esEmpresa:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='No se puede cambiar el tipo de proveedor (Empresa <-> Persona)')
+
+        # Validar según tipo
+        if payload.esEmpresa == 1:  # EMPRESA
+            if payload.idPersona is not None:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='Proveedor tipo Empresa no debe tener idPersona')
+            id_persona_final = None
+        else:  # PERSONA
             if not payload.idPersona:
                 cur.close()
                 conn.close()
-                raise HTTPException(status_code=400, detail='idPersona requerido para tipo P')
-            cur.execute('SELECT idPersona FROM persona_O WHERE idPersona = %s', (payload.idPersona,))
-            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail='idPersona requerido para tipo Persona')
+            
+            # Validar que la persona existe
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.idPersona,))
+            pers = cur.fetchone()
+            if not pers:
                 cur.close()
                 conn.close()
                 raise HTTPException(status_code=400, detail='Persona no existe')
+            
+            # Validar permisos sobre la persona
+            if role != 'superadmin' and user_company is not None and pers['id_empresa'] != user_company:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=403, detail='Persona no pertenece a su empresa')
+            
+            id_persona_final = payload.idPersona
 
         # Actualizar
         upd = conn.cursor()
@@ -326,7 +452,7 @@ def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(No
                 esEmpresa=%s, idPersona=%s, estado=%s
             WHERE idProveedor=%s
         ''', (nombre, payload.contacto, payload.telefono, payload.email, payload.direccion,
-              payload.esEmpresa, payload.idPersona, payload.estado, id))
+              payload.esEmpresa, id_persona_final, payload.estado, id))
         conn.commit()
         upd.close()
         cur.close()
@@ -343,7 +469,7 @@ def update_proveedor(id: int, payload: ProveedorIn, x_user_role: str = Header(No
 def delete_proveedor(id: int, x_user_role: str = Header(None), request: Request = None):
     """Eliminar/desactivar proveedor."""
     role = get_role(x_user_role, request)
-    if role not in ('admin', 'superadmin'):
+    if role not in ('admin', 'superadmin') and not has_permission(request, 'proveedores', 'delete'):
         raise HTTPException(status_code=403, detail='Permission denied')
 
     try:

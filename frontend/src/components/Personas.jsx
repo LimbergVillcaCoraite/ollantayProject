@@ -300,53 +300,120 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
         </div>
       )}
 
-  <div className="bg-panel rounded shadow text-panel overflow-x-auto">
-    <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
-  <thead className="bg-gray-50 dark:bg-gray-800">
-    <tr>
-      <th className="px-4 py-2">ID</th>
-      <th className="px-4 py-2">Nombre</th>
-      <th className="px-4 py-2">CI</th>
-      <th className="px-4 py-2">Tipo</th>
-      <th className="px-4 py-2">Acciones</th>
-    </tr>
-  </thead>
-  <tbody>
-    {filteredPersons.map(p => (
-      <tr key={p.id_persona} className="border-b dark:border-gray-700">
-        <td className="px-4 py-2">{p.id_persona}</td>
-        <td className="px-4 py-2 flex items-center gap-2">
-          {p.fotoPersona ? (
-            <img 
-              src={p.fotoPersona} 
-              alt="Foto" 
-              className="w-8 h-8 rounded-full object-cover border flex-shrink-0"
-              onError={(e)=>{
-                console.warn('Fallo imagen, usando placeholder:', p.fotoPersona)
-                e.currentTarget.onerror = null
-                e.currentTarget.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="%23e5e7eb"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>`)
-              }}
-            />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-gray-200 border flex items-center justify-center text-gray-500">?
+      {/* Desktop Table View - Hidden on mobile */}
+      <div className="hidden md:block bg-panel rounded shadow text-panel overflow-x-auto">
+        <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
+          <thead className="bg-gray-50 dark:bg-gray-800">
+            <tr>
+              <th className="px-4 py-2">ID</th>
+              <th className="px-4 py-2">Nombre</th>
+              <th className="px-4 py-2">CI</th>
+              <th className="px-4 py-2">Tipo</th>
+              <th className="px-4 py-2">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredPersons.map(p => (
+              <tr key={p.id_persona} className="border-b dark:border-gray-700">
+                <td className="px-4 py-2">{p.id_persona}</td>
+                <td className="px-4 py-2 flex items-center gap-2">
+                  {p.fotoPersona ? (
+                    <img 
+                      src={p.fotoPersona} 
+                      alt="Foto" 
+                      className="w-8 h-8 rounded-full object-cover border flex-shrink-0"
+                      onError={(e)=>{
+                        console.warn('Fallo imagen, usando placeholder:', p.fotoPersona)
+                        e.currentTarget.onerror = null
+                        e.currentTarget.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="%23e5e7eb"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>`)
+                      }}
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-gray-200 border flex items-center justify-center text-gray-500">?
+                    </div>
+                  )}
+                  {p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}
+                </td>
+                <td className="px-4 py-2">{p.ci_persona}</td>
+                <td className="px-4 py-2">{getTypeName(p.id_tipoPersona)}</td>
+                <td className="px-4 py-2">
+                  {(has('personas','update') || has('personas','delete')) && (
+                    <div className="flex gap-2">
+                      {has('personas','update') && <button onClick={()=>edit(p)} className={`btn btn-blue ${editingLoading && editingId === p.id_persona ? 'opacity-50 pointer-events-none animate-pulse' : ''}`}><span className="mr-1">✎</span>{editingLoading && editingId === p.id_persona ? 'Cargando...' : 'Editar'}</button>}
+                      {has('personas','delete') && <button onClick={()=>remove(p.id_persona)} className="btn btn-danger"><span className="mr-1">🗑️</span>Borrar</button>}
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile Card View - Visible only on mobile */}
+      <div className="md:hidden space-y-4">
+        {filteredPersons.length === 0 ? (
+          <div className="p-4 text-center text-gray-500 dark:text-gray-400">No hay personas</div>
+        ) : filteredPersons.map(p => (
+          <div key={p.id_persona} className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 border border-gray-200 dark:border-gray-700">
+            <div className="flex items-start gap-3 mb-3">
+              {p.fotoPersona ? (
+                <img 
+                  src={p.fotoPersona} 
+                  alt="Foto" 
+                  className="w-16 h-16 rounded-full object-cover border-2 flex-shrink-0"
+                  onError={(e)=>{
+                    e.currentTarget.onerror = null
+                    e.currentTarget.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="%23e5e7eb"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>`)
+                  }}
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-gray-200 dark:bg-gray-700 border-2 flex items-center justify-center text-2xl text-gray-500">?</div>
+              )}
+              <div className="flex-1">
+                <div className="font-bold text-lg text-gray-900 dark:text-white mb-1">
+                  {p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-400">ID: {p.id_persona}</div>
+              </div>
             </div>
-          )}
-          {p.nombres_persona} {p.apellido_paternoPersona} {p.apellido_maternoPer}
-        </td>
-        <td className="px-4 py-2">{p.ci_persona}</td>
-        <td className="px-4 py-2">{getTypeName(p.id_tipoPersona)}</td>
-        <td className="px-4 py-2">
-          {(has('personas','update') || has('personas','delete')) && (
-            <div className="flex gap-2">
-              {has('personas','update') && <button onClick={()=>edit(p)} className={`btn btn-blue ${editingLoading && editingId === p.id_persona ? 'opacity-50 pointer-events-none animate-pulse' : ''}`}><span className="mr-1">✎</span>{editingLoading && editingId === p.id_persona ? 'Cargando...' : 'Editar'}</button>}
-              {has('personas','delete') && <button onClick={()=>remove(p.id_persona)} className="btn btn-danger"><span className="mr-1">🗑️</span>Borrar</button>}
+            
+            <div className="space-y-2 text-sm mb-3">
+              <div className="flex items-start">
+                <span className="font-semibold text-gray-600 dark:text-gray-400 w-20 flex-shrink-0">CI:</span>
+                <span className="text-gray-900 dark:text-gray-100">{p.ci_persona || 'N/A'}</span>
+              </div>
+              <div className="flex items-start">
+                <span className="font-semibold text-gray-600 dark:text-gray-400 w-20 flex-shrink-0">Tipo:</span>
+                <span className="text-gray-900 dark:text-gray-100">{getTypeName(p.id_tipoPersona)}</span>
+              </div>
+              {p.telefono_persona && (
+                <div className="flex items-start">
+                  <span className="font-semibold text-gray-600 dark:text-gray-400 w-20 flex-shrink-0">Teléfono:</span>
+                  <span className="text-gray-900 dark:text-gray-100">{p.telefono_persona}</span>
+                </div>
+              )}
             </div>
-          )}
-        </td>
-      </tr>
-    ))}
-  </tbody>
-</table>
+
+            {(has('personas','update') || has('personas','delete')) && (
+              <div className="flex gap-2 pt-3 border-t border-gray-200 dark:border-gray-700">
+                {has('personas','update') && (
+                  <button 
+                    onClick={()=>edit(p)} 
+                    className={`flex-1 px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 ${editingLoading && editingId === p.id_persona ? 'opacity-50 pointer-events-none animate-pulse' : ''}`}
+                  >
+                    ✎ {editingLoading && editingId === p.id_persona ? 'Cargando...' : 'Editar'}
+                  </button>
+                )}
+                {has('personas','delete') && (
+                  <button onClick={()=>remove(p.id_persona)} className="flex-1 px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700">
+                    🗑️ Borrar
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
       {/* Botón inferior opcional omitido: panel superior cubre creación */}
     </div>

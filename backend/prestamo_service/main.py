@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date, datetime
+from PIL import Image
+from io import BytesIO
 import os
 import time
 import mysql.connector
@@ -76,6 +78,32 @@ def get_id_persona_from_request(request: Request = None) -> Optional[int]:
         return int(pid) if pid is not None else None
     except Exception:
         return None
+
+
+async def process_product_image(image_file: UploadFile) -> bytes:
+    """
+    Procesa la imagen del producto:
+    - Optimiza el tamaño de la imagen
+    - Mantiene formato original
+    """
+    content = await image_file.read()
+    
+    try:
+        img = Image.open(BytesIO(content))
+        
+        # Redimensionar si es muy grande (max 1200px)
+        max_size = 1200
+        if img.width > max_size or img.height > max_size:
+            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        
+        # Mantener formato original
+        buffer = BytesIO()
+        format = img.format or 'PNG'
+        img.save(buffer, format=format, optimize=True)
+        return buffer.getvalue()
+    except Exception as e:
+        print(f"⚠️ Error optimizando imagen: {e}, guardando original")
+        return content
 
 
 class PrestamoIn(BaseModel):
@@ -412,37 +440,66 @@ def list_productos(request: Request):
         cur = conn.cursor(dictionary=True)
         
         if user_role == 'superadmin':
-            # Superadmin ve todos los productos con info de empresa
-            query = """
-            SELECT p.*, tb.tipoBotella, e.nombre_empresa,
-                   pp_min.precio as precio_minorista,
-                   pp_may.precio as precio_mayorista,
-                   pp_esp.precio as precio_especial
-            FROM producto_O p
-            LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
-            LEFT JOIN empresa_O e ON p.idEmpresa = e.id_empresa
-            LEFT JOIN precio_producto_O pp_min ON p.idProducto = pp_min.idProducto AND pp_min.tipoPrecio = 'minorista'
-            LEFT JOIN precio_producto_O pp_may ON p.idProducto = pp_may.idProducto AND pp_may.tipoPrecio = 'mayorista'
-            LEFT JOIN precio_producto_O pp_esp ON p.idProducto = pp_esp.idProducto AND pp_esp.tipoPrecio = 'especial'
-            ORDER BY p.idProducto
-            """
-            cur.execute(query)
+            # Superadmin ve todos los productos con info de empresa y lotes
+            try:
+                query = """
+                SELECT 
+                    idProducto, nombreProducto, stockCaja, imagen_producto, 
+                    idTipoBotella, tipoBotella, idEmpresa, idUsuarioCreador,
+                    lote_activo_id, idProveedor, nombreProveedor,
+                    fecha_vencimiento_proxima, precio_compra_actual,
+                    precio_minorista, precio_mayorista, precio_especial,
+                    stock_total_lotes
+                FROM v_producto_info_completa
+                ORDER BY nombreProducto
+                """
+                cur.execute(query)
+            except Exception as view_err:
+                # Fallback a producto_O básico si la vista no existe o falla
+                print(f"WARN: usando fallback productos (vista no disponible): {view_err}")
+                query = """
+                SELECT p.idProducto, p.nombreProducto, p.stockCaja, p.imagen_producto,
+                       p.idTipoBotella, tb.tipoBotella, p.idEmpresa, p.idUsuarioCreador,
+                       NULL AS lote_activo_id, NULL AS idProveedor, NULL AS nombreProveedor,
+                       NULL AS fecha_vencimiento_proxima, NULL AS precio_compra_actual,
+                       NULL AS precio_minorista, NULL AS precio_mayorista, NULL AS precio_especial,
+                       p.stockCaja AS stock_total_lotes
+                FROM producto_O p
+                LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
+                ORDER BY p.nombreProducto
+                """
+                cur.execute(query)
         else:
             # Otros roles ven solo productos de su empresa
-            query = """
-            SELECT p.*, tb.tipoBotella,
-                   pp_min.precio as precio_minorista,
-                   pp_may.precio as precio_mayorista,
-                   pp_esp.precio as precio_especial
-            FROM producto_O p
-            LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
-            LEFT JOIN precio_producto_O pp_min ON p.idProducto = pp_min.idProducto AND pp_min.tipoPrecio = 'minorista'
-            LEFT JOIN precio_producto_O pp_may ON p.idProducto = pp_may.idProducto AND pp_may.tipoPrecio = 'mayorista'
-            LEFT JOIN precio_producto_O pp_esp ON p.idProducto = pp_esp.idProducto AND pp_esp.tipoPrecio = 'especial'
-            WHERE p.idEmpresa = %s
-            ORDER BY p.idProducto
-            """
-            cur.execute(query, (company_id,))
+            try:
+                query = """
+                SELECT 
+                    idProducto, nombreProducto, stockCaja, imagen_producto, 
+                    idTipoBotella, tipoBotella, idEmpresa, idUsuarioCreador,
+                    lote_activo_id, idProveedor, nombreProveedor,
+                    fecha_vencimiento_proxima, precio_compra_actual,
+                    precio_minorista, precio_mayorista, precio_especial,
+                    stock_total_lotes
+                FROM v_producto_info_completa
+                WHERE idEmpresa = %s
+                ORDER BY nombreProducto
+                """
+                cur.execute(query, (company_id,))
+            except Exception as view_err:
+                print(f"WARN: usando fallback productos empresa (vista no disponible): {view_err}")
+                query = """
+                SELECT p.idProducto, p.nombreProducto, p.stockCaja, p.imagen_producto,
+                       p.idTipoBotella, tb.tipoBotella, p.idEmpresa, p.idUsuarioCreador,
+                       NULL AS lote_activo_id, NULL AS idProveedor, NULL AS nombreProveedor,
+                       NULL AS fecha_vencimiento_proxima, NULL AS precio_compra_actual,
+                       NULL AS precio_minorista, NULL AS precio_mayorista, NULL AS precio_especial,
+                       p.stockCaja AS stock_total_lotes
+                FROM producto_O p
+                LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
+                WHERE p.idEmpresa = %s
+                ORDER BY p.nombreProducto
+                """
+                cur.execute(query, (company_id,))
         
         rows = cur.fetchall()
         cur.close()
@@ -471,6 +528,7 @@ async def create_producto(
 ):
     # Multi-empresa security
     company_id = get_company_id_from_request(request)
+    id_persona = get_id_persona_from_request(request)
     user_role = request.headers.get('x-user-role', '').lower()
     
     # Determinar empresa objetivo
@@ -483,6 +541,9 @@ async def create_producto(
             raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
         target_company_id = company_id
     
+    if not id_persona:
+        raise HTTPException(status_code=403, detail="No se pudo determinar el usuario creador")
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -493,43 +554,37 @@ async def create_producto(
             # Crear directorio si no existe
             os.makedirs('/app/uploads/productos', exist_ok=True)
             
-            # Generar nombre único
+            # Procesar imagen (optimizar tamaño)
+            processed_content = await process_product_image(imagen_producto)
+            
+            # Generar nombre único manteniendo extensión original
             ext = os.path.splitext(imagen_producto.filename)[1]
+            if not ext:
+                ext = '.png'
+            
             filename = f"producto_{int(time.time())}_{hash(imagen_producto.filename)}{ext}"
             imagen_path = f"/uploads/productos/{filename}"
             
-            # Guardar archivo
+            # Guardar archivo procesado
             with open(f"/app{imagen_path}", "wb") as buffer:
-                content = await imagen_producto.read()
-                buffer.write(content)
+                buffer.write(processed_content)
         
-        # Insertar producto
+        # Insertar producto con usuario creador
         cur.execute("""
-            INSERT INTO producto_O (nombreProducto, stockCaja, idEmpresa, idTipoBotella, imagen_producto)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (nombreProducto, stockCaja, target_company_id, idTipoBotella, imagen_path))
+            INSERT INTO producto_O (nombreProducto, stockCaja, idEmpresa, idTipoBotella, imagen_producto, idUsuarioCreador)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (nombreProducto, stockCaja, target_company_id, idTipoBotella, imagen_path, id_persona))
         
         producto_id = cur.lastrowid
         
-        # Insertar precios si se proporcionan
-        precios = [
-            ('minorista', precio_minorista),
-            ('mayorista', precio_mayorista),
-            ('especial', precio_especial)
-        ]
-        
-        for tipo_precio, precio in precios:
-            if precio is not None and precio > 0:
-                cur.execute("""
-                    INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, fechaCreacion)
-                    VALUES (%s, %s, %s, NOW())
-                """, (producto_id, tipo_precio, precio))
+        # DEPRECATED: Ya no insertamos precios aquí, se manejan por lotes
+        # Los precios se calcularán automáticamente desde lote_producto con márgenes
         
         conn.commit()
         cur.close()
         conn.close()
         
-        return {"message": "Producto creado exitosamente", "idProducto": producto_id}
+        return {"message": "Producto creado exitosamente. Agregue un lote para establecer precios.", "idProducto": producto_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -548,6 +603,7 @@ async def update_producto(
 ):
     # Multi-empresa security
     company_id = get_company_id_from_request(request)
+    id_persona = get_id_persona_from_request(request)
     user_role = request.headers.get('x-user-role', '').lower()
     
     try:
@@ -565,6 +621,10 @@ async def update_producto(
         producto = cur.fetchone()
         if not producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        # Permisos: cualquier admin de la misma empresa o superadmin puede editar
+        if user_role not in ('admin', 'superadmin'):
+            raise HTTPException(status_code=403, detail="Solo administradores pueden editar productos")
         
         # Manejar imagen
         imagen_path = producto['imagen_producto']
@@ -576,15 +636,20 @@ async def update_producto(
             # Crear directorio si no existe
             os.makedirs('/app/uploads/productos', exist_ok=True)
             
-            # Generar nombre único
+            # Procesar imagen (optimizar tamaño)
+            processed_content = await process_product_image(imagen_producto)
+            
+            # Generar nombre único manteniendo extensión original
             ext = os.path.splitext(imagen_producto.filename)[1]
+            if not ext:
+                ext = '.png'
+            
             filename = f"producto_{int(time.time())}_{hash(imagen_producto.filename)}{ext}"
             imagen_path = f"/uploads/productos/{filename}"
             
-            # Guardar archivo
+            # Guardar archivo procesado
             with open(f"/app{imagen_path}", "wb") as buffer:
-                content = await imagen_producto.read()
-                buffer.write(content)
+                buffer.write(processed_content)
         
         # Actualizar producto
         cur.execute("""
@@ -593,28 +658,7 @@ async def update_producto(
             WHERE idProducto = %s
         """, (nombreProducto, stockCaja, idTipoBotella, imagen_path, producto_id))
         
-        # Actualizar precios
-        precios = [
-            ('minorista', precio_minorista),
-            ('mayorista', precio_mayorista),
-            ('especial', precio_especial)
-        ]
-        
-        for tipo_precio, precio in precios:
-            if precio is not None:
-                if precio > 0:
-                    # Insertar o actualizar precio
-                    cur.execute("""
-                        INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, fechaCreacion)
-                        VALUES (%s, %s, %s, NOW())
-                        ON DUPLICATE KEY UPDATE precio = VALUES(precio), fechaCreacion = NOW()
-                    """, (producto_id, tipo_precio, precio))
-                else:
-                    # Eliminar precio si es 0
-                    cur.execute("""
-                        DELETE FROM precio_producto_O 
-                        WHERE idProducto = %s AND tipoPrecio = %s
-                    """, (producto_id, tipo_precio))
+        # Precios manejados por lotes: no actualizar precio_producto_O aquí
         
         conn.commit()
         cur.close()
@@ -647,14 +691,24 @@ def delete_producto(producto_id: int, request: Request):
         if not producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
         
-        # Eliminar imagen si existe
+        # Eliminar todas las referencias foreign key antes de eliminar el producto
+        # 1. Eliminar registros de negocio que referencian este producto
+        cur.execute("DELETE FROM negocio WHERE idProducto = %s", (producto_id,))
+        
+        # 2. Eliminar registros de detalle_venta_O
+        cur.execute("DELETE FROM detalle_venta_O WHERE idProducto = %s", (producto_id,))
+        
+        # 3. Eliminar registros de detalle_compra_O
+        cur.execute("DELETE FROM detalle_compra_O WHERE idProducto = %s", (producto_id,))
+        
+        # 4. Eliminar imagen si existe
         if producto['imagen_producto'] and os.path.exists(f"/app{producto['imagen_producto']}"):
             os.remove(f"/app{producto['imagen_producto']}")
         
-        # Eliminar precios relacionados
+        # 5. Eliminar precios relacionados
         cur.execute("DELETE FROM precio_producto_O WHERE idProducto = %s", (producto_id,))
         
-        # Eliminar producto
+        # 6. Finalmente eliminar el producto
         cur.execute("DELETE FROM producto_O WHERE idProducto = %s", (producto_id,))
         
         conn.commit()
@@ -690,11 +744,210 @@ def list_empresas(request: Request):
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT id_empresa, nombre_empresa FROM empresa_O ORDER BY nombre_empresa')
+        cur.execute('SELECT id_empresa, nombre_empresa FROM empresa_O WHERE estado_empresa = 1 ORDER BY nombre_empresa')
         rows = cur.fetchall()
         cur.close()
         conn.close()
         return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== ENDPOINTS DE LOTES ====================
+
+@app.get('/lotes')
+def list_lotes(request: Request, idProducto: int = None):
+    """Lista todos los lotes (compras) de productos"""
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        if user_role == 'superadmin':
+            if idProducto:
+                cur.execute("""
+                    SELECT l.*, p.nombreProducto, prov.nombreComercial as nombreProveedor
+                    FROM lote_producto l
+                    LEFT JOIN producto_O p ON l.idProducto = p.idProducto
+                    LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+                    WHERE l.idProducto = %s
+                    ORDER BY l.fechaVencimiento ASC, l.fechaCompra ASC
+                """, (idProducto,))
+            else:
+                cur.execute("""
+                    SELECT l.*, p.nombreProducto, prov.nombreComercial as nombreProveedor
+                    FROM lote_producto l
+                    LEFT JOIN producto_O p ON l.idProducto = p.idProducto
+                    LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+                    ORDER BY l.fechaVencimiento ASC
+                """)
+        else:
+            if not company_id:
+                raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+            
+            if idProducto:
+                cur.execute("""
+                    SELECT l.*, p.nombreProducto, prov.nombreComercial as nombreProveedor
+                    FROM lote_producto l
+                    LEFT JOIN producto_O p ON l.idProducto = p.idProducto
+                    LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+                    WHERE l.idEmpresa = %s AND l.idProducto = %s
+                    ORDER BY l.fechaVencimiento ASC, l.fechaCompra ASC
+                """, (company_id, idProducto))
+            else:
+                cur.execute("""
+                    SELECT l.*, p.nombreProducto, prov.nombreComercial as nombreProveedor
+                    FROM lote_producto l
+                    LEFT JOIN producto_O p ON l.idProducto = p.idProducto
+                    LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+                    WHERE l.idEmpresa = %s
+                    ORDER BY l.fechaVencimiento ASC
+                """, (company_id,))
+        
+        lotes = cur.fetchall()
+        cur.close()
+        conn.close()
+        return lotes
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/lotes')
+async def create_lote(
+    request: Request,
+    idProducto: int = Form(...),
+    idProveedor: int = Form(None),
+    fechaCompra: str = Form(...),
+    fechaVencimiento: str = Form(None),
+    precioCompra: float = Form(...),
+    cantidadCajas: int = Form(...)
+):
+    """Crea un nuevo lote (registra una compra de producto)"""
+    company_id = get_company_id_from_request(request)
+    id_persona = get_id_persona_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    if not company_id:
+        raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+    
+    if not id_persona:
+        raise HTTPException(status_code=403, detail="No se pudo determinar el usuario")
+    
+    if precioCompra <= 0:
+        raise HTTPException(status_code=400, detail="El precio de compra debe ser mayor a 0")
+    
+    if cantidadCajas <= 0:
+        raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a 0")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Verificar que el producto existe y pertenece a la empresa del usuario
+        if user_role == 'superadmin':
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s", (idProducto,))
+        else:
+            cur.execute("SELECT * FROM producto_O WHERE idProducto = %s AND idEmpresa = %s", (idProducto, company_id))
+        
+        producto = cur.fetchone()
+        if not producto:
+            raise HTTPException(status_code=404, detail="Producto no encontrado o no pertenece a su empresa")
+        
+        # Insertar lote
+        cur.execute("""
+            INSERT INTO lote_producto 
+            (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, cantidadCajas, company_id, id_persona))
+        
+        lote_id = cur.lastrowid
+        
+        # El trigger tr_actualizar_stock_producto_insert actualizará automáticamente el stock del producto
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"message": "Lote creado exitosamente", "idLote": lote_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/margenes')
+def get_margenes(request: Request):
+    """Obtiene los márgenes de ganancia configurados para la empresa"""
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    if not company_id and user_role != 'superadmin':
+        raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        if user_role == 'superadmin':
+            cur.execute("""
+                SELECT m.*, e.nombre_empresa 
+                FROM margen_ganancia m
+                LEFT JOIN empresa_O e ON m.idEmpresa = e.id_empresa
+                ORDER BY e.nombre_empresa, m.tipoCliente
+            """)
+        else:
+            cur.execute("""
+                SELECT * FROM margen_ganancia 
+                WHERE idEmpresa = %s
+                ORDER BY tipoCliente
+            """, (company_id,))
+        
+        margenes = cur.fetchall()
+        cur.close()
+        conn.close()
+        return margenes
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/margenes/{tipo_cliente}')
+async def update_margen(
+    tipo_cliente: str,
+    request: Request,
+    porcentajeMargen: float = Form(...)
+):
+    """Actualiza el margen de ganancia para un tipo de cliente"""
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    if not company_id:
+        raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+    
+    if tipo_cliente not in ['minorista', 'mayorista', 'especial']:
+        raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    
+    if porcentajeMargen < 0 or porcentajeMargen > 100:
+        raise HTTPException(status_code=400, detail="El margen debe estar entre 0 y 100")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            UPDATE margen_ganancia 
+            SET porcentajeMargen = %s
+            WHERE idEmpresa = %s AND tipoCliente = %s
+        """, (porcentajeMargen, company_id, tipo_cliente))
+        
+        conn.commit()
+        affected = cur.rowcount
+        cur.close()
+        conn.close()
+        
+        if affected == 0:
+            raise HTTPException(status_code=404, detail="Margen no encontrado")
+        
+        return {"message": f"Margen {tipo_cliente} actualizado exitosamente"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

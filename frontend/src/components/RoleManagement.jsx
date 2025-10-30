@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useToast } from '../ToastContext'
 
-export default function RoleManagement({ API, userRole = 'admin' }) {
+export default function RoleManagement({ API, userRole = 'admin', onPermissionsUpdate }) {
   const [roles, setRoles] = useState([])
   const [permissions, setPermissions] = useState([])
   const [rolePermissions, setRolePermissions] = useState({})
@@ -94,10 +94,8 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
     }
   }
 
-  // Cargar empresas (solo para superadmin)
+  // Cargar empresas
   const loadEmpresas = async () => {
-    if (userRole !== 'superadmin') return
-    
     try {
       const res = await fetch(`${API}/empresas`, {
         headers: { 
@@ -108,16 +106,26 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
       })
       if (res.ok) {
         const data = await res.json()
-        setEmpresas(Array.isArray(data) ? data : [])
+        // Backend devuelve {items: [...], total: N} o array directo
+        const empresasList = data.items || (Array.isArray(data) ? data : [])
+        setEmpresas(empresasList)
+        
+        // Superadmin: no tiene empresa (id_empresa = NULL), ve todas
+        // Admin: tiene empresa, auto-seleccionar su única empresa
+        if (userRole !== 'superadmin' && empresasList.length > 0) {
+          setSelectedEmpresa(empresasList[0].id_empresa.toString())
+        }
       }
     } catch (err) {
       console.error('Error loading empresas:', err)
     }
   }
 
-  // Cargar usuarios con sus roles
+  // Cargar usuarios con sus roles (respetando jerarquía multiempresa)
   const loadUsers = async () => {
     try {
+      // Superadmin: ve todos (incluidos otros superadmins) - sin id_empresa
+      // Admin: solo ve usuarios de su empresa (backend excluye superadmins automáticamente)
       const res = await fetch(`${API}/users`, {
         headers: { 
           'X-User-Role': userRole,
@@ -126,8 +134,13 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
         credentials: 'include'
       })
       if (res.ok) {
-        const data = await res.json()
-        setUsers(Array.isArray(data) ? data : [])
+        let data = await res.json()
+        
+        if (Array.isArray(data)) {
+          // Backend ya filtra: admin no recibe superadmins
+          // Superadmin recibe todo (incluidos otros superadmins)
+          setUsers(data)
+        }
       }
     } catch (err) {
       console.error('Error loading users:', err)
@@ -176,11 +189,23 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
         [roleId]: permissionIds
       }))
       
-      toast.showToast('Permisos actualizados correctamente', 'success')
+  try { toast.push('Permisos actualizados correctamente', 'success') } catch (e) { try { (await import('../toast')).showToast('Permisos actualizados correctamente', 'success') } catch(_){} }
       setEditingRole(null)
+      
+      // Refrescar permisos del usuario si está disponible la función
+      if (onPermissionsUpdate) {
+        console.log('🔄 Triggering permissions update for role:', roleId)
+        console.log('👤 Current user role check - updating role permissions may affect current session')
+        setTimeout(() => {
+          console.log('📞 Calling onPermissionsUpdate callback to refresh user session')
+          onPermissionsUpdate()
+        }, 500) // Pequeño delay para asegurar que el backend se actualice
+      } else {
+        console.log('⚠️ onPermissionsUpdate callback not available - permissions may not refresh immediately')
+      }
     } catch (err) {
-      console.error('Error saving role permissions:', err)
-      toast.showToast('Error guardando permisos: ' + err.message, 'error')
+  console.error('Error saving role permissions:', err)
+  try { toast.push('Error guardando permisos: ' + err.message, 'error') } catch (e) { try { (await import('../toast')).showToast('Error guardando permisos: ' + err.message, 'error') } catch(_){} }
     } finally {
       setSaving(false)
     }
@@ -211,7 +236,7 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
   // Filtrar usuarios según empresa seleccionada y término de búsqueda
   const filteredUsers = users.filter(user => {
     // Filtrar por empresa (solo para superadmin)
-    if (userRole === 'superadmin' && selectedEmpresa && user.company_id !== parseInt(selectedEmpresa)) {
+    if (userRole === 'superadmin' && selectedEmpresa && user.id_empresa !== parseInt(selectedEmpresa)) {
       return false
     }
     
@@ -219,8 +244,9 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
     if (searchTerm) {
       const term = searchTerm.toLowerCase()
       return user.username?.toLowerCase().includes(term) || 
-             user.role?.toLowerCase().includes(term) ||
-             (user.nombres && user.nombres.toLowerCase().includes(term))
+             user.role_name?.toLowerCase().includes(term) ||
+             user.nombres_persona?.toLowerCase().includes(term) ||
+             user.nombre_empresa?.toLowerCase().includes(term)
     }
     
     return true
@@ -228,12 +254,16 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
 
   // Agrupar usuarios por empresa y rol
   const groupedUsers = filteredUsers.reduce((acc, user) => {
-    const empresaKey = user.company_id || 'sin_empresa'
-    const roleKey = user.role || 'sin_role'
+    // Superadmin users (sin empresa) van a clave 'superadmin_group'
+    // Usuarios con empresa van agrupados por id_empresa
+    const empresaKey = user.role_name === 'superadmin' ? 'superadmin_group' : (user.id_empresa || 'sin_empresa')
+    const roleKey = user.role_name || 'sin_role'
     
     if (!acc[empresaKey]) {
       acc[empresaKey] = {
-        empresa: empresas.find(e => e.id_empresa === user.company_id) || { nombre_empresa: 'Sin Empresa' },
+        empresa: empresaKey === 'superadmin_group' 
+          ? { nombre_empresa: '🔐 Super Administradores', id_empresa: null }
+          : (empresas.find(e => e.id_empresa === user.id_empresa) || { nombre_empresa: user.nombre_empresa || 'Sin Empresa' }),
         roles: {}
       }
     }
@@ -343,8 +373,8 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
             />
           </div>
 
-          {/* Filtro por empresa (solo superadmin) */}
-          {userRole === 'superadmin' && (
+          {/* Filtro por empresa */}
+          {userRole === 'superadmin' ? (
             <select
               value={selectedEmpresa}
               onChange={(e) => setSelectedEmpresa(e.target.value)}
@@ -357,6 +387,10 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
                 </option>
               ))}
             </select>
+          ) : empresas.length > 0 && (
+            <div className="px-4 py-2 bg-blue-100 dark:bg-blue-900 border border-blue-300 dark:border-blue-700 rounded-lg text-blue-800 dark:text-blue-200 font-medium min-w-[200px]">
+              🏢 {empresas[0].nombre_empresa}
+            </div>
           )}
         </div>
 
@@ -454,22 +488,38 @@ export default function RoleManagement({ API, userRole = 'admin' }) {
                           {roleData.users.map((user) => (
                             <div key={user.id_user} className="flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 hover:shadow-sm transition-shadow">
                               <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">
-                                  {user.username?.[0]?.toUpperCase() || 'U'}
+                                <div className="relative">
+                                  {user.fotoPersona ? (
+                                    <img 
+                                      src={`${API}${user.fotoPersona}`} 
+                                      alt={user.nombres_persona}
+                                      className="w-10 h-10 rounded-full object-cover border-2 border-blue-200 dark:border-blue-700"
+                                      onError={(e) => {
+                                        e.target.style.display = 'none'
+                                        e.target.nextElementSibling.style.display = 'flex'
+                                      }}
+                                    />
+                                  ) : null}
+                                  <div 
+                                    className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm"
+                                    style={{ display: user.fotoPersona ? 'none' : 'flex' }}
+                                  >
+                                    {user.nombres_persona?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || 'U'}
+                                  </div>
                                 </div>
                                 <div>
                                   <div className="font-medium text-gray-900 dark:text-gray-100">
-                                    {user.username}
+                                    {user.nombres_persona} {user.apellido_paternoPersona}
                                   </div>
                                   <div className="text-sm text-gray-500 dark:text-gray-400">
-                                    ID: {user.id_user}
+                                    @{user.username} • CI: {user.ci_persona}
                                   </div>
                                 </div>
                               </div>
                               
                               <div className="flex items-center gap-2">
                                 <span className="px-2 py-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-full">
-                                  Empresa: {user.company_id || 'N/A'}
+                                  Empresa: {user.nombre_empresa || 'N/A'}
                                 </span>
                                 <button
                                   onClick={() => toggleUserExpansion(user.id_user)}

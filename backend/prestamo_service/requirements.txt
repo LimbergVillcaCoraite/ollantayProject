@@ -4,3 +4,4 @@ mysql-connector-python==8.0.33
 PyJWT==2.8.0
 pydantic==1.10.7
 python-multipart==0.0.6
+Pillow==10.0.0

@@ -209,7 +209,7 @@ def list_ventas(
         for v in ventas:
             cur.execute('''
                 SELECT 
-                    dv.idDetalle, dv.idVenta, dv.idProducto, dv.cantidad_caja,
+                    dv.idDetalleVenta as idDetalle, dv.idVenta, dv.idProducto, dv.cantidad_caja,
                     dv.precio_unitario, dv.subtotal, pr.nombreProducto
                 FROM detalle_venta_O dv
                 LEFT JOIN producto_O pr ON dv.idProducto = pr.idProducto
@@ -270,7 +270,7 @@ def get_venta(id: int, x_user_role: str = Header(None), request: Request = None)
         # Obtener detalles
         cur.execute('''
             SELECT 
-                dv.idDetalle, dv.idVenta, dv.idProducto, dv.cantidad_caja,
+                dv.idDetalleVenta as idDetalle, dv.idVenta, dv.idProducto, dv.cantidad_caja,
                 dv.precio_unitario, dv.subtotal, pr.nombreProducto
             FROM detalle_venta_O dv
             LEFT JOIN producto_O pr ON dv.idProducto = pr.idProducto

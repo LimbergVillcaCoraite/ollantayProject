@@ -44,6 +44,7 @@ export default function App(){
   const has = (resource, action) => perms.includes(`${resource}:${action}`)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false)
   
   // Load version automatically
   useEffect(() => {
@@ -52,6 +53,30 @@ export default function App(){
       .then(data => setAppVersion(data.version))
       .catch(() => setAppVersion('1.0.0'))
   }, [])
+
+  // Auto-refresh DISABLED - was causing view switching issues
+  // If permissions change, user must log out and back in
+  // useEffect(() => {
+  //   if (!loggedUser) return
+  //   
+  //   console.log('🔄 Setting up auto-refresh for user permissions every 30 seconds')
+  //   const interval = setInterval(() => {
+  //     // Don't auto-refresh if user is actively managing roles/permissions to avoid disruption
+  //     const managementViews = ['admin', 'usuarios', 'superadmin', 'roles']
+  //     if (managementViews.includes(view)) {
+  //       console.log(`⏸️ Skipping auto-refresh - user is on management view '${view}'`)
+  //       return
+  //     }
+  //     
+  //     console.log('⏰ Auto-refreshing user session due to periodic check')
+  //     refreshUserSession()
+  //   }, 30000) // 30 seconds
+  //   
+  //   return () => {
+  //     console.log('🛑 Cleaning up auto-refresh interval')
+  //     clearInterval(interval)
+  //   }
+  // }, [loggedUser])
   
   const handleLogoutConfirm = ()=>{
     // call backend logout to clear cookie and clear session client-side
@@ -67,6 +92,79 @@ export default function App(){
   const handleLogoutCancel = ()=> setShowLogoutConfirm(false)
 
   // NOTE: session is persisted server-side via httpOnly cookie; frontend refresh uses /auth/me to restore
+
+  // Function to refresh user permissions
+  const refreshUserSession = async () => {
+    try {
+      setIsRefreshingPermissions(true)
+      console.log('🔄 Refreshing user session...')
+      const res = await fetch(`${API_PERSONS}/auth/me`, { credentials: 'include' })
+      if (!res.ok) {
+        console.log('❌ Failed to refresh session:', res.status)
+        return
+      }
+      const data = await res.json()
+      
+      // Check for significant permission changes
+      const oldPermissions = loggedUser?.permissions || []
+      const newPermissions = data.permissions || []
+      const permissionsChanged = JSON.stringify(oldPermissions) !== JSON.stringify(newPermissions)
+      
+      console.log('✅ Session refreshed successfully:', {
+        username: data.username,
+        role: data.role,
+        permissions: newPermissions.length,
+        oldRole: userRole,
+        permissionsChanged
+      })
+      
+      if (permissionsChanged) {
+        console.log('🔄 PERMISSIONS CHANGED:', {
+          old: oldPermissions,
+          new: newPermissions
+        })
+        
+        // Show a brief notification about permission changes WITHOUT changing view
+        const notification = document.createElement('div')
+        notification.className = 'fixed top-16 right-4 z-50 bg-green-100 dark:bg-green-900 border border-green-300 dark:border-green-700 rounded-lg px-4 py-3 shadow-lg transform transition-all duration-300'
+        notification.innerHTML = `
+          <div class="flex items-center gap-2 text-green-800 dark:text-green-200">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span class="font-medium">¡Permisos actualizados!</span>
+          </div>
+        `
+        document.body.appendChild(notification)
+        
+        setTimeout(() => {
+          notification.style.transform = 'translateX(100%)'
+          setTimeout(() => {
+            if (document.body.contains(notification)) {
+              document.body.removeChild(notification)
+            }
+          }, 300)
+        }, 2000)
+      }
+      
+      setLoggedUser(data)
+      setUserRole(data.role)
+      if (data?.profilePhoto) {
+        setProfilePhoto(data.profilePhoto)
+        try { localStorage.setItem('ollantay-profile-photo', data.profilePhoto) } catch(e) {}
+      }
+    } catch (e) { 
+      console.error('❌ Error refreshing session:', e) 
+    } finally {
+      setIsRefreshingPermissions(false)
+    }
+  }
+
+  // Simple view change function - auto-refresh handles permission updates
+  const changeView = (newView) => {
+    setView(newView)
+    setSidebarOpen(false)
+  }
 
   // restore session from backend cookie on mount
   useEffect(()=>{
@@ -129,7 +227,7 @@ export default function App(){
 
   // Ensure current view is permitted by permissions; if not, route to first allowed
   useEffect(()=>{
-    const viewsOrder = ['prestamos','personas','empresas','tipos','productos']
+  const viewsOrder = ['prestamos','personas','empresas','tipos','productos']
     const allowed = viewsOrder.filter(v => (
       (v==='prestamos' && has('prestamos','view')) ||
       (v==='personas' && has('personas','view')) ||
@@ -138,6 +236,14 @@ export default function App(){
       (v==='productos' && has('productos','view'))
     ))
     const adminAllowed = has('roles','manage')
+    
+    // Don't auto-redirect if user is on admin/management views to avoid interrupting their work
+    const managementViews = ['admin', 'usuarios', 'superadmin', 'roles', 'loading']
+    if(managementViews.includes(view)) {
+      console.log(`👤 User is on management view '${view}' - skipping auto-redirect`)
+      return
+    }
+    
     if((view==='admin' || view==='usuarios') && !adminAllowed){
       setView(allowed[0] || 'tipos')
       return
@@ -177,7 +283,7 @@ export default function App(){
 
   return (
     <ToastProvider>
-    <div className={`min-h-screen ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+    <div className={`min-h-screen flex flex-col ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       {/* Header con hamburguesa */}
       <header className={`fixed top-0 left-0 right-0 z-50 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
         <div className="flex items-center justify-between px-4 py-3">
@@ -213,6 +319,21 @@ export default function App(){
               )}
             </button>
             <button
+              onClick={refreshUserSession}
+              disabled={isRefreshingPermissions}
+              className={`p-2 rounded-lg transition-colors ${
+                isRefreshingPermissions 
+                  ? 'bg-blue-200 dark:bg-blue-800 text-blue-400' 
+                  : 'hover:bg-blue-100 dark:hover:bg-blue-700 text-blue-600 dark:text-blue-400'
+              }`}
+              aria-label="Actualizar Permisos"
+              title="Actualizar permisos del usuario"
+            >
+              <svg className={`w-5 h-5 ${isRefreshingPermissions ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+            <button
               onClick={() => setShowLogoutConfirm(true)}
               className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-700 dark:text-gray-200"
               aria-label="Salir"
@@ -231,7 +352,7 @@ export default function App(){
         />
       )}
 
-      <div className="flex pt-16">
+      <div className="flex pt-16 flex-1">
         {/* Sidebar */}
         <aside className={`fixed md:static z-40 left-0 top-16 h-[calc(100vh-4rem)] w-64 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-r shadow-lg flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
           <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
@@ -254,37 +375,47 @@ export default function App(){
               </button>
             )}
             {has('prestamos','view') && (
-              <button onClick={()=>{setView('prestamos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+              <button onClick={()=>changeView('prestamos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
                 Prestamos
               </button>
             )}
-            <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='caja' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
-              Caja
-            </button>
-            <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='ventas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
-              Ventas
-            </button>
-            <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
-              Compras
-            </button>
-            <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='proveedores' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2-2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
-              Proveedores
-            </button>
+            {(has('caja','view') || userRole === 'admin' || userRole === 'superadmin') && (
+              <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='caja' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
+                Caja
+              </button>
+            )}
+            {(has('ventas','view') || userRole === 'admin' || userRole === 'superadmin') && (
+              <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='ventas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
+                Ventas
+              </button>
+            )}
+            {(has('compras','view') || userRole === 'admin' || userRole === 'superadmin') && (
+              <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                Compras
+              </button>
+            )}
+            {(has('proveedores','view') || userRole === 'admin' || userRole === 'superadmin') && (
+              <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='proveedores' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2-2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
+                Proveedores
+              </button>
+            )}
             {has('productos','view') && (
-              <button onClick={()=>{setView('productos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='productos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+              <button onClick={()=>changeView('productos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='productos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.2"/></svg>
                 Productos
               </button>
             )}
-            <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='cuentas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
-              Cuentas
-            </button>
+            {(has('cuentas','view') || userRole === 'admin' || userRole === 'superadmin') && (
+              <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='cuentas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
+                Cuentas
+              </button>
+            )}
             {has('roles','manage') && (
               <>
                 <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
@@ -370,20 +501,32 @@ export default function App(){
           </div>
         </aside>
 
+        {/* Permissions update indicator */}
+        {isRefreshingPermissions && (
+          <div className="fixed top-4 right-4 z-50 bg-blue-100 dark:bg-blue-900 border border-blue-300 dark:border-blue-700 rounded-lg px-4 py-2 shadow-lg">
+            <div className="flex items-center gap-2 text-blue-800 dark:text-blue-200">
+              <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Actualizando permisos...
+            </div>
+          </div>
+        )}
+
         {/* Main content */}
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
           {view === 'tipos' && has('tipos','view') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
           {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
           {view === 'prestamos' && has('prestamos','view') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
-          {view === 'caja' && <Caja API={API_REPORTES} dark={dark} userRole={userRole} />}
-          {view === 'ventas' && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
-          {view === 'compras' && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
-          {view === 'proveedores' && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
+          {view === 'caja' && (has('caja','view') || userRole === 'admin' || userRole === 'superadmin') && <Caja API={API_REPORTES} dark={dark} userRole={userRole} />}
+          {view === 'ventas' && (has('ventas','view') || userRole === 'admin' || userRole === 'superadmin') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
+          {view === 'compras' && (has('compras','view') || userRole === 'admin' || userRole === 'superadmin') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
+          {view === 'proveedores' && (has('proveedores','view') || userRole === 'admin' || userRole === 'superadmin') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'productos' && has('productos','view') && <Productos API={API_PRESTAMOS} userRole={userRole} permissions={perms} clienteInfo={loggedUser} />}
-          {view === 'cuentas' && <Cuentas API={API_CUENTAS} dark={dark} userRole={userRole} />}
+          {view === 'cuentas' && (has('cuentas','view') || userRole === 'admin' || userRole === 'superadmin') && <Cuentas API={API_CUENTAS} dark={dark} userRole={userRole} />}
           {view === 'usuarios' && has('roles','manage') && <Usuarios API={API_PERSONS} userRole={userRole} />}
-          {view === 'roles' && has('roles','manage') && <RoleManagement API={API_PERSONS} userRole={userRole} />}
+          {view === 'roles' && has('roles','manage') && <RoleManagement API={API_PERSONS} userRole={userRole} onPermissionsUpdate={refreshUserSession} />}
           {view === 'superadmin' && userRole === 'superadmin' && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">
@@ -407,9 +550,9 @@ export default function App(){
       </div>
 
       {/* Footer mejorado */}
-      <footer className={`${dark ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-600'} border-t py-6 mt-8`}>
+      <footer className={`${dark ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-600'} border-t py-4`}>
         <div className="max-w-7xl mx-auto px-6">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-3">
             <div className="text-center md:text-left">
               <p className="text-sm font-medium">
                 © {new Date().getFullYear()} Sistema Ollantay

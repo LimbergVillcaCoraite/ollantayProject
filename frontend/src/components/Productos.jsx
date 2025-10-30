@@ -8,6 +8,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [filteredProductos, setFilteredProductos] = useState([])
   const [tipos, setTipos] = useState([])
   const [empresas, setEmpresas] = useState([])
+  const [proveedores, setProveedores] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
@@ -18,6 +19,10 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [showPrecios, setShowPrecios] = useState(null)
   const [validationErrors, setValidationErrors] = useState({})
   const [previewImage, setPreviewImage] = useState(null)
+  const [showUSD, setShowUSD] = useState(false) // Toggle para mostrar USD
+  const TASA_CAMBIO = 6.96 // 1 USD = 6.96 Bs (Bolivia)
+  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa dinámica desde API
+  const [removeBg, setRemoveBg] = useState(false) // Opción para remover fondo localmente
 
   const [form, setForm] = useState({
     nombreProducto: '',
@@ -25,6 +30,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     stockCaja: 0,
     idEmpresa: '',
     idTipoBotella: '',
+    idProveedor: '',
     precios: {
       minorista: '',
       mayorista: '',
@@ -217,10 +223,66 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
+  const loadProveedores = async () => {
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (userRole) headers['X-User-Role'] = userRole
+
+      const res = await fetch('http://localhost:8001/api/proveedores', {
+        method: 'GET',
+        headers,
+        credentials: 'include'
+      })
+      
+      if (res.ok) {
+        const data = await res.json()
+        setProveedores(Array.isArray(data) ? data : [])
+      }
+    } catch (err) {
+      console.error('Error loading proveedores:', err)
+      setProveedores([])
+    }
+  }
+
+  const loadTasaCambio = async () => {
+    try {
+      // Intentar primero con exchangerate.host (más actualizado y confiable)
+      let res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=BOB')
+      if (res.ok) {
+        const data = await res.json()
+        if (data.rates && data.rates.BOB) {
+          setTasaCambio(data.rates.BOB)
+          console.log(`💱 Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate.host)`)
+          return
+        }
+      }
+      
+      // Fallback a exchangerate-api.com
+      res = await fetch('https://api.exchangerate-api.com/v4/latest/USD')
+      if (res.ok) {
+        const data = await res.json()
+        if (data.rates && data.rates.BOB) {
+          setTasaCambio(data.rates.BOB)
+          console.log(`💱 Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate-api.com)`)
+          return
+        }
+      }
+      
+      // Si ambas fallan, usar tasa fija
+      console.warn('⚠️ No se pudo obtener tasa de cambio de APIs externas, usando tasa fija 6.96')
+      setTasaCambio(6.96)
+    } catch (err) {
+      console.error('Error loading tasa de cambio:', err)
+      setTasaCambio(6.96) // Fallback
+    }
+  }
+
   useEffect(() => {
     loadProductos()
     loadTipos()
     loadEmpresas()
+    loadProveedores()
+    loadTasaCambio()
   }, [API, userRole])
 
   const submit = async (e) => {
@@ -255,9 +317,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
       const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
+      // No establecer Content-Type para FormData - el navegador lo hace automáticamente
 
       const url = editingId ? `${API}/productos/${editingId}` : `${API}/productos`
       const method = editingId ? 'PUT' : 'POST'
+
+      console.log(`${method} ${url}`, { editingId, formData: Object.fromEntries(formData) }) // Debug
 
       const res = await fetch(url, {
         method,
@@ -297,6 +362,82 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
+  // Función simple para hacer el fondo más transparente (simulación básica)
+  const removeBackground = (imageDataUrl) => {
+    return new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+        canvas.width = img.width
+        canvas.height = img.height
+        
+        ctx.drawImage(img, 0, 0)
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const data = imageData.data
+        
+        // Algoritmo simple: hacer píxeles blancos/claros transparentes
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i]
+          const g = data[i + 1]
+          const b = data[i + 2]
+          
+          // Si el píxel es muy claro (cercano a blanco), hacerlo transparente
+          const brightness = (r + g + b) / 3
+          if (brightness > 240) {
+            data[i + 3] = 0 // Alpha = 0 (transparente)
+          } else if (brightness > 200) {
+            data[i + 3] = Math.floor(data[i + 3] * 0.3) // Semi-transparente
+          }
+        }
+        
+        ctx.putImageData(imageData, 0, 0)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      img.src = imageDataUrl
+    })
+  }
+
+  const handleImageChangeWithBgRemoval = async (e) => {
+    const file = e.target.files[0]
+    if (!file) {
+      setForm({ ...form, imagen_producto: null })
+      setPreviewImage(null)
+      return
+    }
+
+    clearFieldError('imagen_producto')
+    
+    if (removeBg) {
+      // Leer archivo y procesar
+      const reader = new FileReader()
+      reader.onload = async (event) => {
+        try {
+          // Remover fondo (algoritmo simple)
+          const processedDataUrl = await removeBackground(event.target.result)
+          setPreviewImage(processedDataUrl)
+          
+          // Convertir dataURL a File
+          const response = await fetch(processedDataUrl)
+          const blob = await response.blob()
+          const processedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' })
+          setForm({ ...form, imagen_producto: processedFile })
+        } catch (err) {
+          console.error('Error procesando imagen:', err)
+          setPreviewImage(event.target.result)
+          setForm({ ...form, imagen_producto: file })
+        }
+      }
+      reader.readAsDataURL(file)
+    } else {
+      // Sin remover fondo
+      setForm({ ...form, imagen_producto: file })
+      const reader = new FileReader()
+      reader.onload = (e) => setPreviewImage(e.target.result)
+      reader.readAsDataURL(file)
+    }
+  }
+
   const resetForm = () => {
     setForm({
       nombreProducto: '',
@@ -304,6 +445,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       stockCaja: 0,
       idEmpresa: '',
       idTipoBotella: '',
+      idProveedor: '',
       precios: {
         minorista: '',
         mayorista: '',
@@ -318,12 +460,19 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   const startEdit = (producto) => {
+    // Permiso: cualquier admin o superadmin (el backend valida empresa)
+    if (!(userRole === 'admin' || userRole === 'superadmin')) {
+      toast.showToast('Solo administradores pueden editar productos', 'error')
+      return
+    }
+    
     setForm({
       nombreProducto: producto.nombreProducto || '',
       imagen_producto: null,
       stockCaja: producto.stockCaja || 0,
       idEmpresa: producto.idEmpresa ? String(producto.idEmpresa) : '',
       idTipoBotella: producto.idTipoBotella ? String(producto.idTipoBotella) : '',
+      idProveedor: producto.idProveedor ? String(producto.idProveedor) : '',
       precios: {
         minorista: producto.precio_minorista || '',
         mayorista: producto.precio_mayorista || '',
@@ -333,14 +482,17 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     setEditingId(producto.idProducto)
     setShowCreate(true)
     setError(null)
+    setPreviewImage(producto.imagen_producto ? `${API}${producto.imagen_producto}` : null)
   }
 
   const deleteProducto = async (id) => {
-    if (!confirm('¿Eliminar este producto?')) return
+    if (!confirm('¿Está seguro de eliminar este producto? Esta acción no se puede deshacer.')) return
     
     try {
-      const headers = { 'Content-Type': 'application/json' }
+      const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
+
+      console.log(`🗑️ Eliminando producto ${id} con rol: ${userRole}`) // Debug
 
       const res = await fetch(`${API}/productos/${id}`, {
         method: 'DELETE',
@@ -350,19 +502,38 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ detail: 'Error desconocido' }))
+        console.error('Error del servidor:', errorData)
         throw new Error(errorData.detail || `HTTP ${res.status}`)
       }
 
+      const result = await res.json()
+      console.log('✅ Producto eliminado:', result)
+      
       await loadProductos()
-      toast.showToast('Producto eliminado', 'success')
+      toast.showToast('Producto eliminado correctamente', 'success')
     } catch (err) {
       console.error('Error deleting producto:', err)
-      toast.showToast('Error eliminando: ' + err.message, 'error')
+      toast.showToast('Error al eliminar: ' + err.message, 'error')
     }
   }
 
   const togglePrecios = (productoId) => {
     setShowPrecios(showPrecios === productoId ? null : productoId)
+  }
+
+  // Función para formatear precios con conversión a USD
+  const formatPrecio = (precio) => {
+    if (!precio) return 'N/A'
+    const precioNum = parseFloat(precio)
+    if (showUSD) {
+      const precioUSD = precioNum / tasaCambio
+      return `$us ${precioUSD.toFixed(2)}`
+    }
+    return `Bs ${precioNum.toFixed(2)}`
+  }
+
+  const toggleMoneda = () => {
+    setShowUSD(!showUSD)
   }
 
   if (loading) {
@@ -463,33 +634,66 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   <div className="h-48 bg-gray-100 dark:bg-gray-600 overflow-hidden">
                     {producto.imagen_producto ? (
                       <img
-                        src={producto.imagen_producto}
+                        src={`${API}${producto.imagen_producto}`}
                         alt={producto.nombreProducto}
                         className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        onError={(e) => {
+                          e.target.style.display = 'none'
+                          e.target.nextElementSibling.style.display = 'flex'
+                        }}
                       />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-500">
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">📦</div>
-                          <div className="text-sm">Sin imagen</div>
-                        </div>
+                    ) : null}
+                    <div 
+                      className="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-500"
+                      style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
+                    >
+                      <div className="text-center">
+                        <div className="text-4xl mb-2">📦</div>
+                        <div className="text-sm">Sin imagen</div>
                       </div>
-                    )}
+                    </div>
                   </div>
 
                   {/* Información del producto */}
                   <div className="p-4">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2 line-clamp-2">
                       {producto.nombreProducto}
                     </h3>
                     
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded-full text-gray-600 dark:text-gray-300">
+                    {/* Proveedor y Stock */}
+                    <div className="space-y-2 mb-3">
+                      {producto.nombreProveedor && (
+                        <div className="flex items-center text-xs text-gray-600 dark:text-gray-400">
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                          </svg>
+                          <span className="truncate">Prov: {producto.nombreProveedor}</span>
+                        </div>
+                      )}
+                      
+                      {producto.fecha_vencimiento_proxima && (
+                        <div className={`flex items-center text-xs ${
+                          new Date(producto.fecha_vencimiento_proxima) < new Date(Date.now() + 30*24*60*60*1000)
+                            ? 'text-red-600 dark:text-red-400 font-semibold'
+                            : 'text-gray-600 dark:text-gray-400'
+                        }`}>
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                          <span>Vence: {new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}</span>
+                        </div>
+                      )}
+                      
+                      <div className="flex items-center text-xs text-green-600 dark:text-green-400">
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                        </svg>
+                        <span>Stock: {producto.stockCaja || 0} cajas</span>
+                      </div>
+                      
+                      <div className="flex items-center text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded-full text-gray-600 dark:text-gray-300 w-fit">
                         {producto.tipoBotella || 'Sin tipo'}
-                      </span>
-                      <span className="text-xs text-green-600 dark:text-green-400">
-                        Stock: {producto.stockCaja} cajas
-                      </span>
+                      </div>
                     </div>
 
                     {/* Precio */}
@@ -497,12 +701,17 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       <div className="mb-4">
                         <div className="flex items-baseline justify-between">
                           <span className="text-2xl font-bold text-green-600 dark:text-green-400">
-                            Bs. {parseFloat(precio).toFixed(2)}
+                            {formatPrecio(precio)}
                           </span>
                           <span className="text-xs text-gray-500 dark:text-gray-400">
                             {tipoPrecio}
                           </span>
                         </div>
+                        {showUSD && (
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            ≈ Bs {parseFloat(precio).toFixed(2)}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="mb-4">
@@ -527,19 +736,35 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+    <div className="bg-white dark:bg-gray-800 p-4 sm:p-6 rounded-lg shadow-lg">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
           Productos ({filteredProductos.length})
         </h2>
-        {has('productos', 'create') && (
+        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center w-full sm:w-auto">
+          {/* Toggle de moneda */}
           <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+            onClick={toggleMoneda}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors shadow-sm"
+            title={showUSD ? 'Mostrar en Bolivianos' : 'Mostrar en Dólares'}
           >
-            Nuevo Producto
+            <span className="text-lg">{showUSD ? '$us' : 'Bs'}</span>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
+            </svg>
+            {showUSD && (
+              <span className="text-xs opacity-90">1$ = {tasaCambio.toFixed(2)} Bs</span>
+            )}
           </button>
-        )}
+          {has('productos', 'create') && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+            >
+              Nuevo Producto
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filtros */}
@@ -676,6 +901,36 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 )}
               </div>
               
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Proveedor
+                </label>
+                <select
+                  value={form.idProveedor}
+                  onChange={(e) => {
+                    setForm({ ...form, idProveedor: e.target.value })
+                    clearFieldError('idProveedor')
+                  }}
+                  disabled
+                  title="El proveedor se define por lote de compra"
+                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
+                    validationErrors.idProveedor 
+                      ? 'border-red-500 dark:border-red-400' 
+                      : 'border-gray-300 dark:border-gray-600'
+                  } opacity-70 cursor-not-allowed`}
+                >
+                  <option value="">El proveedor se asigna al crear un lote</option>
+                  {proveedores.map((prov) => (
+                    <option key={prov.idProveedor} value={prov.idProveedor}>
+                      {prov.nombreProveedor || prov.nombre}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Nota: el proveedor está ligado a cada lote de compra, no al producto en sí.
+                </p>
+              </div>
+              
               {userRole === 'superadmin' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -712,12 +967,27 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Imagen del Producto
               </label>
+              
+              {/* Checkbox para remover fondo */}
+              <div className="flex items-center space-x-2 mb-2">
+                <input
+                  type="checkbox"
+                  id="removeBg"
+                  checked={removeBg}
+                  onChange={(e) => setRemoveBg(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <label htmlFor="removeBg" className="text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
+                  🎨 Remover fondo automáticamente (solo fondos blancos/claros)
+                </label>
+              </div>
+              
               <div className="flex items-start space-x-4">
                 <div className="flex-1">
                   <input
                     type="file"
                     accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
-                    onChange={handleImageChange}
+                    onChange={handleImageChangeWithBgRemoval}
                     className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                       validationErrors.imagen_producto 
                         ? 'border-red-500 dark:border-red-400' 
@@ -726,6 +996,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Formatos: JPG, PNG, GIF, WebP. Máximo 5MB
+                    {removeBg && <span className="text-blue-600 dark:text-blue-400"> • Procesando con remoción de fondo</span>}
                   </p>
                   {validationErrors.imagen_producto && (
                     <p className="text-red-500 text-xs mt-1">{validationErrors.imagen_producto}</p>
@@ -734,18 +1005,19 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 
                 {/* Previsualización */}
                 {previewImage && (
-                  <div className="w-20 h-20 border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden">
+                  <div className="w-24 h-24 border-2 border-gray-300 dark:border-gray-600 rounded-md overflow-hidden bg-gray-50 dark:bg-gray-700 bg-checkered">
                     <img 
                       src={previewImage} 
                       alt="Vista previa" 
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Configuración de precios con validaciones */}
+            {/* Configuración de precios con validaciones */
+            }
             <div className="border-t pt-4 space-y-4">
               <div className="flex items-center space-x-2">
                 <h4 className="text-md font-medium text-gray-900 dark:text-gray-100">
@@ -755,6 +1027,11 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   (Opcionales - Mayorista debe ser menor que Minorista)
                 </span>
               </div>
+              {editingId && (
+                <div className="bg-amber-50 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-200 px-3 py-2 rounded">
+                  Los precios se gestionan por lotes de compra. Para modificar precios, agregue o edite un lote en la sección de Lotes.
+                </div>
+              )}
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
@@ -775,11 +1052,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, minorista: e.target.value } })
                         clearFieldError('precio_minorista')
                       }}
+                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_minorista 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      }`}
+                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
                       placeholder="0.00"
                     />
                   </div>
@@ -806,11 +1084,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, mayorista: e.target.value } })
                         clearFieldError('precio_mayorista')
                       }}
+                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_mayorista 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      }`}
+                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
                       placeholder="0.00"
                     />
                   </div>
@@ -837,11 +1116,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, especial: e.target.value } })
                         clearFieldError('precio_especial')
                       }}
+                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_especial 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      }`}
+                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
                       placeholder="0.00"
                     />
                   </div>
@@ -910,16 +1190,25 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           filteredProductos.map((producto) => (
             <div key={producto.idProducto} className="bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 p-4">
               {/* Imagen del producto */}
-              {producto.imagen_producto && (
-                <div className="mb-3">
+              <div className="mb-3 h-32 bg-gray-100 dark:bg-gray-600 rounded-lg overflow-hidden">
+                {producto.imagen_producto ? (
                   <img
-                    src={producto.imagen_producto}
+                    src={`${API}${producto.imagen_producto}`}
                     alt={producto.nombreProducto}
-                    className="w-full h-32 object-cover rounded-lg"
-                    onError={(e) => { e.target.style.display = 'none' }}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      e.target.style.display = 'none'
+                      e.target.nextElementSibling.style.display = 'flex'
+                    }}
                   />
+                ) : null}
+                <div 
+                  className="w-full h-full flex items-center justify-center text-gray-400"
+                  style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
+                >
+                  <span className="text-4xl">📦</span>
                 </div>
-              )}
+              </div>
               
               <div className="mb-3">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -945,13 +1234,27 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 {showPrecios === producto.idProducto && (
                   <div className="mt-2 space-y-1 text-sm">
                     {producto.precio_minorista && (
-                      <div>Minorista: S/ {parseFloat(producto.precio_minorista).toFixed(2)}</div>
+                      <div className="flex justify-between items-center">
+                        <span>Minorista:</span>
+                        <span className="font-semibold">{formatPrecio(producto.precio_minorista)}</span>
+                      </div>
                     )}
                     {producto.precio_mayorista && (
-                      <div>Mayorista: S/ {parseFloat(producto.precio_mayorista).toFixed(2)}</div>
+                      <div className="flex justify-between items-center">
+                        <span>Mayorista:</span>
+                        <span className="font-semibold">{formatPrecio(producto.precio_mayorista)}</span>
+                      </div>
                     )}
                     {producto.precio_especial && (
-                      <div>Especial: S/ {parseFloat(producto.precio_especial).toFixed(2)}</div>
+                      <div className="flex justify-between items-center">
+                        <span>Especial:</span>
+                        <span className="font-semibold">{formatPrecio(producto.precio_especial)}</span>
+                      </div>
+                    )}
+                    {showUSD && (
+                      <div className="text-xs text-gray-500 dark:text-gray-400 pt-1 border-t border-gray-200 dark:border-gray-600">
+                        Tasa de cambio: 1 $us = {TASA_CAMBIO} Bs
+                      </div>
                     )}
                   </div>
                 )}
@@ -960,10 +1263,11 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               {/* Acciones */}
               {(has('productos', 'edit') || has('productos', 'delete')) && (
                 <div className="flex space-x-2">
-                  {has('productos', 'edit') && (
+                  {has('productos', 'edit') && (userRole === 'admin' || userRole === 'superadmin') && (
                     <button
                       onClick={() => startEdit(producto)}
                       className="flex-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded font-medium transition-colors"
+                      title={'Editar producto'}
                     >
                       Editar
                     </button>

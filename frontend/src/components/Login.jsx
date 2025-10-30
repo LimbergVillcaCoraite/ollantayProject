@@ -1,5 +1,6 @@
 import React, {useState} from 'react'
 import DarkToggle from './DarkToggle'
+import { useToast } from '../ToastContext'
 
 export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS || 'http://localhost:8002'), onLogin, dark, setDark}){
   const [username, setUsername] = useState('')
@@ -7,6 +8,7 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const toast = useToast()
 
 
   const submit = async (e)=>{
@@ -21,6 +23,27 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
         // try parse json, otherwise read text for debugging (404 might return HTML)
         const j = await res.json().catch(async ()=> ({raw: await res.text()}))
         const msg = j?.detail || j?.raw || res.statusText || `Status ${res.status}`
+        
+        // Mostrar mensajes específicos
+        let popupMsg = `❌ Error de inicio de sesión: ${msg}`
+        if(res.status === 401){
+          popupMsg = '❌ Usuario o contraseña incorrectos'
+        } else if(res.status === 403){
+          // Si el backend indica usuario inactivo, mostrar ese texto
+          if(typeof j?.detail === 'string' && j.detail.toLowerCase().includes('inactivo')){
+            popupMsg = '🚫 Usuario inactivo. Contacte al administrador.'
+          } else {
+            popupMsg = '❌ Acceso denegado'
+          }
+        }
+        try { 
+          toast.push(popupMsg, 'error', 4000) 
+        } catch (e) { 
+          try { 
+            (await import('../toast')).showToast(popupMsg, 'error', 4000) 
+          } catch(_){} 
+        }
+        
         throw new Error(msg)
       }
       const data = await res.json()
@@ -28,9 +51,10 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
       console.log('Profile photo received:', data.profilePhoto) // DEBUG
       onLogin(data)
     }catch(err){
-      // Normalize some common network/CORS messages for clarity
+      // Normalize some common network/CORS messages for clarity and show popup
       const msg = (err?.message || '').toLowerCase().includes('failed to fetch') ? 'No se pudo conectar con el servidor (CORS/red). Verifique que el servicio de personas esté activo.' : err.message
-      setError(msg)
+      try { toast.push(`❌ ${msg}`, 'error', 4000) } catch(_) {}
+      setError(null) // no inline error
     }
     finally{ setLoading(false) }
   }
@@ -39,7 +63,7 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
     <form onSubmit={submit} className="w-full">
       <div className="flex flex-col items-center justify-center mb-4 gap-2">
         <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl">
-          SO
+          ARCH
         </div>
         <div className="top-toggle">
           <DarkToggle dark={dark} setDark={setDark} size='5'/>
@@ -79,7 +103,7 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
           </div>
         </div>
 
-        {error && <div role="alert" className="text-red-600 bg-red-50 dark:bg-red-900/40 p-2 rounded">{error}</div>}
+  {/* Mensaje debajo del password deshabilitado: solo popup */}
 
         <div className="flex items-center justify-between gap-4">
           <button type="submit" disabled={loading} className="w-full btn btn-primary">{loading ? 'Iniciando...' : 'Iniciar sesión'}</button>

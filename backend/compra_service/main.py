@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -10,6 +11,10 @@ from mysql.connector import errors as mysql_errors
 import jwt
 
 app = FastAPI()
+ # Serve uploads for this service as well (e.g., comprobantes)
+# Create uploads directory if it doesn't exist
+os.makedirs("/app/uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
 
 origins = [
     "http://localhost:3000",
@@ -25,6 +30,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"]
 )
 
 
@@ -75,9 +81,11 @@ def get_user_id_from_request(request: Request = None) -> Optional[int]:
         if not token:
             return None
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        uid = payload.get('id_user') or payload.get('user_id')
+        # El JWT usa 'sub' para el id_user
+        uid = payload.get('sub') or payload.get('id_user') or payload.get('user_id')
         return int(uid) if uid is not None else None
-    except Exception:
+    except Exception as e:
+        print(f"Error getting user_id from JWT: {e}")
         return None
 
 
@@ -90,10 +98,11 @@ class DetalleCompraIn(BaseModel):
     cantidad_caja: int = Field(ge=0)
     precio_unitario: Decimal = Field(ge=0)
     subtotal: Decimal = Field(ge=0)
+    fechaVencimiento: Optional[str] = None  # ISO date (YYYY-MM-DD)
 
 
 class DetalleCompraOut(DetalleCompraIn):
-    idDetalle: int
+    idDetalleCompra: int
     idCompra: int
     nombreProducto: Optional[str] = None
 
@@ -110,6 +119,7 @@ class CompraIn(BaseModel):
 
 class CompraOut(BaseModel):
     idCompra: int
+    numeroCompra: Optional[str] = None
     fechaCompra: str
     idProveedor: int
     nombreProveedor: Optional[str] = None
@@ -121,6 +131,7 @@ class CompraOut(BaseModel):
     estado: int
     observaciones: Optional[str] = None
     detalles: List[DetalleCompraOut] = []
+    comprobantes: Optional[List[dict]] = []
 
 
 # ========================
@@ -137,7 +148,8 @@ def list_compras(
     offset: int = 0,
     limit: int = 100,
     x_user_role: str = Header(None),
-    request: Request = None
+    request: Request = None,
+    response: Response = None
 ):
     """Listar compras. Superadmin ve todas, admin solo de su empresa."""
     try:
@@ -148,7 +160,7 @@ def list_compras(
 
         query = '''
             SELECT 
-                c.idCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
+                c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
                 c.idTipoPago, tp.nombrePago AS tipoPago, c.idEmpresa, e.nombre_empresa AS nombreEmpresa,
                 c.montoTotal, c.estado, c.observaciones
             FROM compra_O c
@@ -182,21 +194,33 @@ def list_compras(
             where.append('c.estado = %s')
             params.append(estado)
 
-        if where:
-            query += ' WHERE ' + ' AND '.join(where)
-        
-        query += ' ORDER BY c.fechaCompra DESC, c.idCompra DESC LIMIT %s OFFSET %s'
-        params.extend([limit, offset])
+        base_query = query
+        base_params = list(params)
 
-        cur.execute(query, tuple(params))
+        if where:
+            base_query += ' WHERE ' + ' AND '.join(where)
+        
+        # Total count for pagination
+        count_query = 'SELECT COUNT(*) as total FROM (' + base_query + ') as t'
+        cur.execute(count_query, tuple(base_params))
+        total_row = cur.fetchone() or { 'total': 0 }
+        total_count = int(total_row.get('total') or 0)
+        if response is not None:
+            response.headers['X-Total-Count'] = str(total_count)
+
+        # Fetch page
+        page_query = base_query + ' ORDER BY c.fechaCompra DESC, c.idCompra DESC LIMIT %s OFFSET %s'
+        page_params = base_params + [limit, offset]
+
+        cur.execute(page_query, tuple(page_params))
         compras = cur.fetchall() or []
 
-        # Obtener detalles
+    # Obtener detalles
         result = []
         for c in compras:
             cur.execute('''
                 SELECT 
-                    dc.idDetalle, dc.idCompra, dc.idProducto, dc.cantidad_caja,
+                    dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
                     dc.precio_unitario, dc.subtotal, pr.nombreProducto
                 FROM detalle_compra_O dc
                 LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
@@ -212,6 +236,14 @@ def list_compras(
                 d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
             
             c['detalles'] = detalles
+
+            # Comprobantes
+            cur.execute('''
+                SELECT idComprobante, rutaArchivo, nombreArchivo, mimeType, uploaded_at
+                FROM compra_comprobante_O WHERE idCompra = %s ORDER BY idComprobante ASC
+            ''', (c['idCompra'],))
+            comprobantes = cur.fetchall() or []
+            c['comprobantes'] = comprobantes
             result.append(c)
 
         cur.close()
@@ -232,7 +264,7 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
 
         query = '''
             SELECT 
-                c.idCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
+                c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
                 c.idTipoPago, tp.nombrePago AS tipoPago, c.idEmpresa, e.nombre_empresa AS nombreEmpresa,
                 c.montoTotal, c.estado, c.observaciones
             FROM compra_O c
@@ -258,7 +290,7 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
         # Obtener detalles
         cur.execute('''
             SELECT 
-                dc.idDetalle, dc.idCompra, dc.idProducto, dc.cantidad_caja,
+                dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
                 dc.precio_unitario, dc.subtotal, pr.nombreProducto
             FROM detalle_compra_O dc
             LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
@@ -274,6 +306,14 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
             d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
         
         compra['detalles'] = detalles
+
+        # Comprobantes
+        cur.execute('''
+            SELECT idComprobante, rutaArchivo, nombreArchivo, mimeType, uploaded_at
+            FROM compra_comprobante_O WHERE idCompra = %s ORDER BY idComprobante ASC
+        ''', (id,))
+        comprobantes = cur.fetchall() or []
+        compra['comprobantes'] = comprobantes
         
         cur.close()
         conn.close()
@@ -284,10 +324,117 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post('/compras/{id}/comprobantes')
+async def upload_comprobantes(id: int, request: Request, x_user_role: str = Header(None), files: List[UploadFile] = File(...)):
+    """Sube comprobantes (imagen/pdf) para una compra existente."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'editor', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+
+        # Verificar compra y scoping
+        cur.execute('SELECT idCompra, idEmpresa FROM compra_O WHERE idCompra = %s', (id,))
+        compra = cur.fetchone()
+        if not compra:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Compra no encontrada')
+        if role != 'superadmin' and user_company is not None and compra['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+
+        os.makedirs('/app/uploads/comprobantes', exist_ok=True)
+        saved = []
+        for f in files:
+            if not f.filename:
+                continue
+            mime = f.content_type or ''
+            if not (mime.startswith('image/') or mime == 'application/pdf'):
+                continue  # saltar tipos no permitidos
+            content = await f.read()
+            name, ext = os.path.splitext(f.filename)
+            ext = ext or ('.pdf' if mime == 'application/pdf' else '.bin')
+            safe_name = name.replace(' ', '_').replace('/', '_')
+            filename = f"compra_{id}_{int(os.path.getmtime('/app') if os.path.exists('/app') else 0)}_{hash(f.filename)}{ext}"
+            rel_path = f"/uploads/comprobantes/{filename}"
+            abs_path = f"/app{rel_path}"
+            with open(abs_path, 'wb') as out:
+                out.write(content)
+            # Insert record
+            ins = conn.cursor()
+            ins.execute('''
+                INSERT INTO compra_comprobante_O (idCompra, rutaArchivo, nombreArchivo, mimeType)
+                VALUES (%s, %s, %s, %s)
+            ''', (id, rel_path, f.filename, mime))
+            conn.commit()
+            ins.close()
+            saved.append({ 'rutaArchivo': rel_path, 'nombreArchivo': f.filename, 'mimeType': mime })
+        cur.close(); conn.close()
+        return { 'uploaded': saved }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete('/compras/{id}/comprobantes/{comprobante_id}', status_code=204)
+def delete_comprobante(id: int, comprobante_id: int, x_user_role: str = Header(None), request: Request = None):
+    """Elimina un comprobante específico de una compra (borra archivo y registro)."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+
+        # Validar existencia de compra y scoping
+        cur.execute('SELECT idCompra, idEmpresa FROM compra_O WHERE idCompra = %s', (id,))
+        compra = cur.fetchone()
+        if not compra:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Compra no encontrada')
+        if role != 'superadmin' and user_company is not None and compra['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+
+        # Obtener comprobante
+        cur.execute('SELECT idComprobante, rutaArchivo FROM compra_comprobante_O WHERE idComprobante = %s AND idCompra = %s', (comprobante_id, id))
+        comp = cur.fetchone()
+        if not comp:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Comprobante no encontrado')
+
+        # Borrar archivo
+        rel_path = comp.get('rutaArchivo') or ''
+        abs_path = f"/app{rel_path}" if rel_path.startswith('/') else f"/app/{rel_path}"
+        try:
+            if os.path.exists(abs_path) and os.path.isfile(abs_path):
+                os.remove(abs_path)
+        except Exception:
+            # No bloquear por errores de filesystem
+            pass
+
+        # Borrar registro
+        d = conn.cursor()
+        d.execute('DELETE FROM compra_comprobante_O WHERE idComprobante = %s', (comprobante_id,))
+        conn.commit()
+        d.close(); cur.close(); conn.close()
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post('/compras', response_model=CompraOut, status_code=201)
 def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: Request = None):
     """Crear compra."""
+    print(f"DEBUG: POST /compras called - payload: {payload}")
     role = get_role(x_user_role, request)
+    print(f"DEBUG: Role: {role}")
     if role not in ('admin', 'editor', 'superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
 
@@ -347,14 +494,35 @@ def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: R
                 raise HTTPException(status_code=400, detail=f'Producto {det.idProducto} no pertenece a la empresa')
 
         fechaCompra = payload.fechaCompra or date.today().isoformat()
+        
+        # Parse date to get year and month
+        fecha_obj = date.fromisoformat(fechaCompra)
+        anio = fecha_obj.year
+        mes = fecha_obj.month
+
+        # Generate numeroCompra in format CMP-YYYY-MM-NNN
+        # Find the next available number for this month and year
+        numero_del_mes = 1
+        while True:
+            numero_compra = f"CMP-{anio}-{mes:02d}-{numero_del_mes:03d}"
+            cur.execute('SELECT COUNT(*) as existe FROM compra_O WHERE numeroCompra = %s', (numero_compra,))
+            existe = cur.fetchone()
+            if existe and existe.get('existe', 0) > 0:
+                numero_del_mes += 1
+            else:
+                break
+            # Safety check to avoid infinite loop
+            if numero_del_mes > 999:
+                raise HTTPException(status_code=500, detail='No se pudo generar número de compra único')
 
         # Insertar compra
-        idUsuario = get_user_id_from_request(request)
+        idUsuario = get_user_id_from_request(request) or 1  # Fallback to user 1 if not found
+        print(f"DEBUG: Creating compra - idUsuario from JWT: {idUsuario}, role: {role}")
         ins = conn.cursor()
         ins.execute('''
-            INSERT INTO compra_O (fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
+            INSERT INTO compra_O (numeroCompra, fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (numero_compra, fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
               float(payload.montoTotal), payload.estado, payload.observaciones, idUsuario))
         conn.commit()
         new_id = ins.lastrowid
@@ -363,13 +531,24 @@ def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: R
         # Insertar detalles y actualizar stock
         for det in payload.detalles:
             ins2 = conn.cursor()
+            # subtotal es una columna generada (cantidad_caja * precio_unitario), no se debe insertar explícitamente
             ins2.execute('''
-                INSERT INTO detalle_compra_O (idCompra, idProducto, cantidad_caja, precio_unitario, subtotal)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), float(det.subtotal)))
-            # Incrementar stock
-            ins2.execute('UPDATE producto_O SET stockCaja = stockCaja + %s WHERE idProducto = %s', 
-                        (det.cantidad_caja, det.idProducto))
+                INSERT INTO detalle_compra_O (idCompra, idProducto, cantidad_caja, precio_unitario)
+                VALUES (%s, %s, %s, %s)
+            ''', (new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario)))
+            
+            # Crear lote de producto para rastrear esta compra específica
+            # Esto permite FEFO (First Expired First Out) y trazabilidad por compra
+            fechaVenc = det.fechaVencimiento if det.fechaVencimiento else None
+            ins2.execute('''
+                INSERT INTO lote_producto 
+                (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
+                  det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id))
+            
+            # El stock del producto se actualiza automáticamente por el trigger tr_actualizar_stock_producto_insert
+            # que suma el stockActual de todos los lotes activos
             conn.commit()
             ins2.close()
 
@@ -429,11 +608,25 @@ def update_compra(id: int, payload: CompraIn, x_user_role: str = Header(None), r
             raise HTTPException(status_code=403, detail='No autorizado')
 
         upd = conn.cursor()
-        upd.execute('''
-            UPDATE compra_O 
-            SET estado = %s, observaciones = %s
-            WHERE idCompra = %s
-        ''', (payload.estado, payload.observaciones, id))
+        
+        # Si se está anulando la compra (estado = 0), actualizar lotes y poner total en 0
+        if payload.estado == 0:
+            # Poner stockActual de los lotes en 0
+            upd.execute('UPDATE lote_producto SET stockActual = 0 WHERE idCompra = %s', (id,))
+            # Actualizar compra: estado = 0, montoTotal = 0, observaciones
+            upd.execute('''
+                UPDATE compra_O 
+                SET estado = %s, montoTotal = 0, observaciones = %s
+                WHERE idCompra = %s
+            ''', (payload.estado, payload.observaciones, id))
+        else:
+            # Actualizar solo estado y observaciones (sin cambiar montoTotal)
+            upd.execute('''
+                UPDATE compra_O 
+                SET estado = %s, observaciones = %s
+                WHERE idCompra = %s
+            ''', (payload.estado, payload.observaciones, id))
+        
         conn.commit()
         upd.close()
         cur.close()
@@ -479,8 +672,10 @@ def delete_compra(id: int, x_user_role: str = Header(None), request: Request = N
             conn.commit()
             d2.close()
         else:
+            # Admin/Editor: anular (estado=0, montoTotal=0, stock de lotes=0)
             upd = conn.cursor()
-            upd.execute('UPDATE compra_O SET estado = 0 WHERE idCompra = %s', (id,))
+            upd.execute('UPDATE lote_producto SET stockActual = 0 WHERE idCompra = %s', (id,))
+            upd.execute('UPDATE compra_O SET estado = 0, montoTotal = 0 WHERE idCompra = %s', (id,))
             conn.commit()
             upd.close()
 
@@ -505,6 +700,71 @@ def health():
         return {'status': 'ok', 'db': 'connected'}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'db error: {e}')
+
+
+@app.get('/compras/{id}/lotes')
+def get_lotes_compra(id: int, x_user_role: str = Header(None), request: Request = None):
+    """Obtener lotes de una compra específica."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        role = get_role(x_user_role, request)
+
+        # Verificar permisos de la compra
+        cur.execute('SELECT idEmpresa FROM compra_O WHERE idCompra = %s', (id,))
+        compra = cur.fetchone()
+        if not compra:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail='Compra no encontrada')
+
+        if role != 'superadmin' and user_company is not None and compra['idEmpresa'] != user_company:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+
+        # Obtener lotes de esta compra con información de producto
+        cur.execute('''
+            SELECT 
+                l.idLote,
+                l.idProducto,
+                p.nombreProducto,
+                l.cantidadCajas,
+                l.stockActual,
+                l.precioCompra,
+                l.fechaCompra,
+                l.fechaVencimiento,
+                l.idProveedor,
+                prov.empresa as nombreProveedor
+            FROM lote_producto l
+            LEFT JOIN producto_O p ON l.idProducto = p.idProducto
+            LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+            WHERE l.idCompra = %s
+            ORDER BY l.idLote DESC
+        ''', (id,))
+        lotes = cur.fetchall() or []
+        cur.close()
+        conn.close()
+        return lotes
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/tipos-pago')
+def list_tipos_pago(x_user_role: str = Header(None), request: Request = None):
+    """Lista tipos de pago disponibles (idPago, nombrePago)."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idPago, nombrePago AS tipoPago FROM tipoPago ORDER BY idPago')
+        items = cur.fetchall() or []
+        cur.close(); conn.close()
+        return items
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
