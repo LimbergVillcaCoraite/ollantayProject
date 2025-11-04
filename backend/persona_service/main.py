@@ -59,6 +59,8 @@ class PersonaIn(BaseModel):
     ci_persona: str = Field(..., max_length=10)
     direccion_persona: str = Field(..., max_length=100)
     id_empresa: Optional[int] = Field(None, description="Company ID (required for superadmin, ignored for other roles)")
+    tipo_cliente: Optional[str] = Field('minorista', description="Tipo de cliente: minorista, mayorista, especial")
+    idRuta: Optional[int] = Field(None, description="ID de la ruta asignada al cliente")
 
 
 class PersonaOut(BaseModel):
@@ -72,6 +74,8 @@ class PersonaOut(BaseModel):
     direccion_persona: str
     fotoPersona: Optional[str] = None
     id_empresa: Optional[int] = None
+    tipo_cliente: Optional[str] = None
+    idRuta: Optional[int] = None
 
 
 class EmpresaIn(BaseModel):
@@ -129,11 +133,14 @@ class RolePermissionsIn(BaseModel):
 class RoleIn(BaseModel):
     name: str
     description: Optional[str] = None
+    id_empresa: Optional[int] = None  # For superadmin to create company-specific roles
 
 class RoleOut(BaseModel):
     idrole: int
     name: str
     description: Optional[str] = None
+    id_empresa: Optional[int] = None
+    nombre_empresa: Optional[str] = None
 
 class PermissionOut(BaseModel):
     id_perm: int
@@ -463,7 +470,7 @@ def list_persons(tipo: Optional[int] = None, company_id: Optional[int] = None, r
         cursor = conn.cursor(dictionary=True)
         role = get_role(None, request)
         jwt_company_id = get_company_id_from_request(request)
-        base_sql = 'SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa FROM persona_O'
+        base_sql = 'SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa, tipo_cliente, idRuta FROM persona_O'
         params = []
         where = []
         if tipo is not None:
@@ -732,15 +739,11 @@ def get_company_id_from_request(request: Request) -> Optional[int]:
     try:
         token = request.cookies.get('ollantay_token') if request is not None else None
         if not token:
-            print("DEBUG: No token found in cookies")
             return None
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         cid = payload.get('company_id')
-        print(f"DEBUG: JWT payload: {payload}")
-        print(f"DEBUG: Extracted company_id: {cid}")
         return int(cid) if cid is not None else None
-    except Exception as e:
-        print(f"DEBUG: Error extracting company_id: {e}")
+    except Exception:
         return None
 
 
@@ -875,7 +878,6 @@ async def upload_my_photo(request: Request, x_user_role: Optional[str] = Header(
 async def create_person_json(payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
     """Create person from JSON payload (no photo upload)"""
     role = get_role(x_user_role, request)
-    print(f"DEBUG: User role: {role}")
     if role not in ('admin','editor','superadmin','viewer'):
         raise HTTPException(status_code=403, detail=f'Permission denied. Role: {role}')
     
@@ -887,11 +889,9 @@ async def create_person_json(payload: PersonaIn, x_user_role: Optional[str] = He
     
     # Get company_id from JWT token
     company_id = get_company_id_from_request(request)
-    print(f"DEBUG: Company ID from JWT: {company_id}")
     
     # For superadmin, company_id can be null (they select the target company)
     if role != 'superadmin' and company_id is None:
-        print("DEBUG: Non-superadmin user without company_id, blocking creation")
         raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
     
     # For superadmin, use id_empresa from payload; for others, use their company_id
@@ -915,8 +915,8 @@ async def create_person_json(payload: PersonaIn, x_user_role: Optional[str] = He
             raise HTTPException(status_code=400, detail='CI ya registrado')
         
         cur2 = conn.cursor()
-        cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-            (nombres, payload.apellido_paternoPersona, payload.apellido_maternoPer, payload.telefono_persona, payload.id_tipoPersona, ci, direccion, None, target_company_id))
+        cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa, tipo_cliente, idRuta) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+            (nombres, payload.apellido_paternoPersona, payload.apellido_maternoPer, payload.telefono_persona, payload.id_tipoPersona, ci, direccion, None, target_company_id, payload.tipo_cliente, payload.idRuta))
         conn.commit()
         new_id = cur2.lastrowid
         cur2.close(); cursor.close(); conn.close()
@@ -948,6 +948,8 @@ async def create_person(
     id_tipoPersona: int = Form(...),
     ci_persona: str = Form(...),
     direccion_persona: str = Form(...),
+    tipo_cliente: Optional[str] = Form('minorista'),
+    idRuta: Optional[int] = Form(None),
     foto: Optional[UploadFile] = File(None),
     x_user_role: Optional[str] = Header(None),
     request: Request = None
@@ -990,8 +992,8 @@ async def create_person(
             cursor.close(); conn.close()
             raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
         
-        cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-            (nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, foto_path, company_id))
+        cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa, tipo_cliente, idRuta) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+            (nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, foto_path, company_id, tipo_cliente, idRuta))
         conn.commit()
         new_id = cur2.lastrowid
         cur2.close(); cursor.close(); conn.close()
@@ -1068,6 +1070,8 @@ async def update_person(
     id_tipoPersona: int = Form(...),
     ci_persona: str = Form(...),
     direccion_persona: str = Form(...),
+    tipo_cliente: Optional[str] = Form('minorista'),
+    idRuta: Optional[int] = Form(None),
     foto: Optional[UploadFile] = File(None),
     x_user_role: Optional[str] = Header(None),
     request: Request = None
@@ -1132,8 +1136,8 @@ async def update_person(
                     print(f"⚠️  Error al eliminar foto anterior: {e}")
         
         cur2 = conn.cursor()
-        update_sql = 'UPDATE persona_O SET nombres_persona=%s, apellido_paternoPersona=%s, apellido_maternoPer=%s, telefono_persona=%s, id_tipoPersona=%s, ci_persona=%s, direccion_persona=%s'
-        params = [nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion]
+        update_sql = 'UPDATE persona_O SET nombres_persona=%s, apellido_paternoPersona=%s, apellido_maternoPer=%s, telefono_persona=%s, id_tipoPersona=%s, ci_persona=%s, direccion_persona=%s, tipo_cliente=%s, idRuta=%s'
+        params = [nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, tipo_cliente, idRuta]
         if foto_path:
             update_sql += ', fotoPersona=%s'
             params.append(foto_path)
@@ -1177,6 +1181,64 @@ async def update_person(
         cur2.close()
         cursor.close()
         conn.close()
+        return {**payload.dict(), 'id_persona': id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/persons-json/{id}', response_model=PersonaOut)
+async def update_person_json(id: int, payload: PersonaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Update person from JSON payload (no photo upload)"""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    
+    nombres = payload.nombres_persona.strip()
+    ci = payload.ci_persona.strip()
+    direccion = payload.direccion_persona.strip()
+    if not nombres or not ci or not direccion:
+        raise HTTPException(status_code=400, detail='Campos requeridos faltantes')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Multi-empresa security: validate person belongs to user's company
+        jwt_company_id = get_company_id_from_request(request)
+        if role != 'superadmin':
+            if jwt_company_id is None:
+                cursor.close(); conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+            cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s AND id_empresa = %s', (id, jwt_company_id))
+        else:
+            cursor.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (id,))
+            
+        exists_person = cursor.fetchone()
+        if not exists_person:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Persona no encontrada o no pertenece a su empresa')
+        
+        cursor.execute('SELECT idtipoPers FROM tipo_personaO WHERE idtipoPers = %s', (payload.id_tipoPersona,))
+        tipo = cursor.fetchone()
+        if not tipo:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=400, detail='TipoPersona no existe')
+        
+        # Check unique CI excluding current id
+        cursor.execute('SELECT id_persona FROM persona_O WHERE ci_persona = %s AND id_persona <> %s', (ci, id))
+        dup = cursor.fetchone()
+        if dup:
+            cursor.close(); conn.close()
+            raise HTTPException(status_code=400, detail='CI ya registrado')
+        
+        cur2 = conn.cursor()
+        cur2.execute('UPDATE persona_O SET nombres_persona=%s, apellido_paternoPersona=%s, apellido_maternoPer=%s, telefono_persona=%s, id_tipoPersona=%s, ci_persona=%s, direccion_persona=%s, tipo_cliente=%s, idRuta=%s WHERE id_persona=%s',
+            (nombres, payload.apellido_paternoPersona, payload.apellido_maternoPer, payload.telefono_persona, payload.id_tipoPersona, ci, direccion, payload.tipo_cliente, payload.idRuta, id))
+        conn.commit()
+        cur2.close(); cursor.close(); conn.close()
+        
         return {**payload.dict(), 'id_persona': id}
     except HTTPException:
         raise
@@ -1248,40 +1310,89 @@ def list_roles(x_user_role: Optional[str] = Header(None), request: Request = Non
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         
-        # Filtrar superadmin si no es superadmin
         if role == 'superadmin':
-            cur.execute('SELECT idrole, name, description FROM role_O ORDER BY idrole')
+            # Superadmin ve todos los roles (globales y de todas las empresas)
+            cur.execute('''
+                SELECT r.idrole, r.name, r.description, r.id_empresa, e.nombre_empresa
+                FROM role_O r
+                LEFT JOIN empresa_O e ON r.id_empresa = e.id_empresa
+                ORDER BY r.id_empresa IS NULL DESC, e.nombre_empresa, r.idrole
+            ''')
         else:
-            cur.execute('SELECT idrole, name, description FROM role_O WHERE name != %s ORDER BY idrole', ('superadmin',))
+            # Admin solo ve roles globales (base) y los de su empresa
+            company_id = get_company_id_from_request(request)
+            if company_id is None:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+            
+            cur.execute('''
+                SELECT r.idrole, r.name, r.description, r.id_empresa, e.nombre_empresa
+                FROM role_O r
+                LEFT JOIN empresa_O e ON r.id_empresa = e.id_empresa
+                WHERE (r.id_empresa IS NULL AND r.name != 'superadmin') OR r.id_empresa = %s
+                ORDER BY r.id_empresa IS NULL DESC, r.idrole
+            ''', (company_id,))
         
         rows = cur.fetchall()
         cur.close()
         conn.close()
         return rows
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/roles', status_code=201)
-def create_role(payload, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
+def create_role(payload: RoleIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ['admin', 'superadmin']:
+        raise HTTPException(status_code=403, detail='Acceso denegado')
+    
     name = payload.name.strip().lower()
     if not name:
         raise HTTPException(status_code=400, detail='name required')
-    if name in ('admin','editor','viewer'):
+    if name in ('admin','editor','viewer','superadmin'):
         raise HTTPException(status_code=400, detail='Cannot create a built-in role')
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT idrole FROM role_O WHERE name = %s', (name,))
+        
+        # Determinar id_empresa
+        if role == 'superadmin':
+            # Superadmin puede crear roles globales (NULL) o para una empresa específica
+                id_empresa = payload.id_empresa
+        else:
+            # Admin solo puede crear roles para su propia empresa
+            id_empresa = get_company_id_from_request(request)
+            if id_empresa is None:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+        
+        # Verificar unicidad del nombre dentro del contexto (empresa o global)
+        if id_empresa:
+            cur.execute('SELECT idrole FROM role_O WHERE name = %s AND id_empresa = %s', (name, id_empresa))
+        else:
+            cur.execute('SELECT idrole FROM role_O WHERE name = %s AND id_empresa IS NULL', (name,))
+        
         if cur.fetchone():
-            cur.close(); conn.close()
-            raise HTTPException(status_code=400, detail='Role name already exists')
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Role name already exists in this context')
+        
         ins = conn.cursor()
-        ins.execute('INSERT INTO role_O (name, description) VALUES (%s,%s)', (name, payload.description))
-        conn.commit(); new_id = ins.lastrowid
-        ins.close(); cur.close(); conn.close()
-        return {'idrole': new_id, 'name': name, 'description': payload.description}
+        ins.execute('INSERT INTO role_O (name, description, id_empresa) VALUES (%s,%s,%s)', 
+                   (name, payload.description, id_empresa))
+        conn.commit()
+        new_id = ins.lastrowid
+        ins.close()
+        cur.close()
+        conn.close()
+        
+        return {'idrole': new_id, 'name': name, 'description': payload.description, 'id_empresa': id_empresa}
     except HTTPException:
         raise
     except Exception as e:
@@ -1290,32 +1401,69 @@ def create_role(payload, x_user_role: Optional[str] = Header(None), request: Req
 
 @app.put('/roles/{id}')
 def update_role(id: int, payload: RoleIn, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
+    role = get_role(x_user_role, request)
+    if role not in ['admin', 'superadmin']:
+        raise HTTPException(status_code=403, detail='Acceso denegado')
+    
     name = payload.name.strip().lower()
     if not name:
         raise HTTPException(status_code=400, detail='name required')
-    if name in ('admin','editor','viewer') and id not in (1,2,3):
+    if name in ('admin','editor','viewer','superadmin') and id not in (1,2,3,4):
         raise HTTPException(status_code=400, detail='Reserved role name')
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT idrole, name FROM role_O WHERE idrole = %s', (id,))
+        
+        # Obtener el rol existente
+        cur.execute('SELECT idrole, name, id_empresa FROM role_O WHERE idrole = %s', (id,))
         ex = cur.fetchone()
         if not ex:
-            cur.close(); conn.close();
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=404, detail='Role not found')
-        if ex['name'] in ('admin','editor','viewer') and ex['name'] != name:
-            cur.close(); conn.close();
+        
+        # Verificar permisos de acceso
+        if role != 'superadmin':
+            # Admin solo puede editar roles de su empresa
+            company_id = get_company_id_from_request(request)
+            if company_id is None:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+            
+            if ex['id_empresa'] != company_id:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=403, detail='No tiene permisos para editar este rol')
+        
+        # No permitir renombrar roles built-in
+        if ex['name'] in ('admin','editor','viewer','superadmin') and ex['name'] != name:
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=400, detail='Cannot rename built-in role')
-        # unique name check
-        cur.execute('SELECT idrole FROM role_O WHERE name = %s AND idrole <> %s', (name, id))
+        
+        # Verificar unicidad del nombre
+        if ex['id_empresa']:
+            cur.execute('SELECT idrole FROM role_O WHERE name = %s AND id_empresa = %s AND idrole <> %s', 
+                       (name, ex['id_empresa'], id))
+        else:
+            cur.execute('SELECT idrole FROM role_O WHERE name = %s AND id_empresa IS NULL AND idrole <> %s', 
+                       (name, id))
+        
         if cur.fetchone():
-            cur.close(); conn.close();
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=400, detail='Role name already exists')
+        
         up = conn.cursor()
         up.execute('UPDATE role_O SET name=%s, description=%s WHERE idrole=%s', (name, payload.description, id))
-        conn.commit(); up.close(); cur.close(); conn.close()
-        return {'idrole': id, 'name': name, 'description': payload.description}
+        conn.commit()
+        up.close()
+        cur.close()
+        conn.close()
+        
+        return {'idrole': id, 'name': name, 'description': payload.description, 'id_empresa': ex['id_empresa']}
     except HTTPException:
         raise
     except Exception as e:
@@ -1324,28 +1472,60 @@ def update_role(id: int, payload: RoleIn, x_user_role: Optional[str] = Header(No
 
 @app.delete('/roles/{id}', status_code=204)
 def delete_role(id, x_user_role: Optional[str] = Header(None), request: Request = None):
-    require_admin(x_user_role, request)
+    role = get_role(x_user_role, request)
+    if role not in ['admin', 'superadmin']:
+        raise HTTPException(status_code=403, detail='Acceso denegado')
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute('SELECT name FROM role_O WHERE idrole = %s', (id,))
+        
+        cur.execute('SELECT name, id_empresa FROM role_O WHERE idrole = %s', (id,))
         r = cur.fetchone()
         if not r:
-            cur.close(); conn.close();
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=404, detail='Role not found')
-        if r['name'] in ('admin','editor','viewer'):
-            cur.close(); conn.close();
+        
+        # No se pueden eliminar roles built-in
+        if r['name'] in ('admin','editor','viewer','superadmin'):
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=400, detail='Cannot delete built-in role')
-        # check assigned users
+        
+        # Verificar permisos de acceso
+        if role != 'superadmin':
+            company_id = get_company_id_from_request(request)
+            if company_id is None:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+            
+            if r['id_empresa'] != company_id:
+                cur.close()
+                conn.close()
+                raise HTTPException(status_code=403, detail='No tiene permisos para eliminar este rol')
+        
+        # Verificar usuarios asignados
         cur.execute('SELECT COUNT(1) AS cnt FROM user_O WHERE id_role = %s', (id,))
         cnt = cur.fetchone()
         if cnt and cnt['cnt'] > 0:
-            cur.close(); conn.close();
+            cur.close()
+            conn.close()
             raise HTTPException(status_code=400, detail='Role has assigned users')
-        # delete mapping then role
-        d1 = conn.cursor(); d1.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,)); d1.close()
-        d2 = conn.cursor(); d2.execute('DELETE FROM role_O WHERE idrole = %s', (id,)); conn.commit(); d2.close();
-        cur.close(); conn.close();
+        
+        # Eliminar permisos asociados y luego el rol
+        d1 = conn.cursor()
+        d1.execute('DELETE FROM role_permission_O WHERE role_id = %s', (id,))
+        d1.close()
+        
+        d2 = conn.cursor()
+        d2.execute('DELETE FROM role_O WHERE idrole = %s', (id,))
+        conn.commit()
+        d2.close()
+        
+        cur.close()
+        conn.close()
         return None
     except HTTPException:
         raise

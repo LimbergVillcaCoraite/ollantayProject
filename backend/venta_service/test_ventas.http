@@ -1,0 +1,25 @@
+### Test: Create sale with route-based price override
+POST http://localhost:8004/ventas
+Content-Type: application/json
+X-User-Role: admin
+
+{
+  "fechaVenta": "2025-11-02",
+  "idTipoVenta": 2,
+  "idTipoPago": 1,
+  "idCliente": 1,
+  "montoTotal": 32,
+  "estado": 1,
+  "observaciones": "test route price",
+  "detalles": [
+    { "idProducto": 15, "cantidad_caja": 1 }
+  ]
+}
+
+### Test: Persona endpoint should NOT expose route info
+GET http://localhost:8002/personas
+X-User-Role: admin
+
+### Optional: Get last inserted venta by ID (replace {{id}})
+GET http://localhost:8004/ventas/{{id}}
+X-User-Role: admin

@@ -131,6 +131,7 @@ class ProveedorOut(ProveedorIn):
     idProveedor: int
     idEmpresaProveedor: int
     nombreEmpresa: Optional[str] = None
+    codigoProveedor: Optional[str] = None
 
 
 # ========================
@@ -160,7 +161,7 @@ def list_proveedores(
 
         query = '''
             SELECT 
-                p.idProveedor, p.nombreComercial, p.contacto, p.telefono,
+                p.idProveedor, p.nombreComercial, p.codigoProveedor, p.contacto, p.telefono,
                 p.email, p.direccion, p.esEmpresa, p.idPersona,
                 p.estado, p.idEmpresaProveedor, e.nombre_empresa AS nombreEmpresa
             FROM proveedor_O p
@@ -213,7 +214,7 @@ def get_proveedor(id: int, x_user_role: str = Header(None), request: Request = N
 
         query = '''
             SELECT 
-                p.idProveedor, p.nombreComercial, p.contacto, p.telefono,
+                p.idProveedor, p.nombreComercial, p.codigoProveedor, p.contacto, p.telefono,
                 p.email, p.direccion, p.esEmpresa, p.idPersona,
                 p.estado, p.idEmpresaProveedor, e.nombre_empresa AS nombreEmpresa
             FROM proveedor_O p
@@ -342,12 +343,31 @@ def create_proveedor(payload: ProveedorIn, x_user_role: str = Header(None), requ
             target_company = pers['id_empresa']
             id_persona_final = payload.idPersona
 
-        # Insertar proveedor
+        # Generar codigoProveedor: EMPRESA-PRV-YYYY-MM-DD-NNN (por empresa destino)
+        cur.execute('SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s', (target_company,))
+        emp = cur.fetchone() or {}
+        nombre_empresa = (emp.get('nombre_empresa') or '').upper()
+        empresa_slug = ''.join(ch for ch in nombre_empresa if ch.isalnum())
+        from datetime import datetime
+        today = datetime.utcnow()
+        y, m, d = today.strftime('%Y'), today.strftime('%m'), today.strftime('%d')
+        abbr = 'PRV'
+        prefix = f"{empresa_slug}-{abbr}-{y}-{m}-{d}-"
+        cur.execute('''
+            SELECT MAX(CAST(SUBSTRING_INDEX(codigoProveedor, '-', -1) AS UNSIGNED)) AS max_seq
+            FROM proveedor_O
+            WHERE codigoProveedor LIKE %s
+        ''', (prefix + '%',))
+        row = cur.fetchone() or {}
+        next_seq = int(row.get('max_seq') or 0) + 1
+        codigo = f"{prefix}{next_seq:03d}"
+
+        # Insertar proveedor con código
         ins = conn.cursor()
         ins.execute('''
-            INSERT INTO proveedor_O (nombreComercial, contacto, telefono, email, direccion, esEmpresa, idPersona, estado, idEmpresaProveedor)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (nombre, payload.contacto, payload.telefono, payload.email, payload.direccion, 
+            INSERT INTO proveedor_O (nombreComercial, codigoProveedor, contacto, telefono, email, direccion, esEmpresa, idPersona, estado, idEmpresaProveedor)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (nombre, codigo, payload.contacto, payload.telefono, payload.email, payload.direccion, 
               payload.esEmpresa, id_persona_final, payload.estado, target_company))
         conn.commit()
         new_id = ins.lastrowid

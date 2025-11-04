@@ -8,13 +8,18 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
   const [empresas, setEmpresas] = useState([])
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selectedEmpresa, setSelectedEmpresa] = useState('')
+  const [selectedEmpresa, setSelectedEmpresa] = useState('all') // 'all' para ver todos
   const [editingRole, setEditingRole] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [viewMode, setViewMode] = useState('users') // 'users' or 'roles'
   const [searchTerm, setSearchTerm] = useState('')
   const [expandedUsers, setExpandedUsers] = useState(new Set())
+  const [selectedRoleFilter, setSelectedRoleFilter] = useState('all')
+  const [showCreateRole, setShowCreateRole] = useState(false)
+  const [newRoleName, setNewRoleName] = useState('')
+  const [newRoleDesc, setNewRoleDesc] = useState('')
+  const [newRoleEmpresa, setNewRoleEmpresa] = useState('all')
   const toast = useToast()
 
   // Cargar roles (excluyendo superadmin para no-superadmin)
@@ -165,10 +170,54 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
     loadData()
   }, [])
 
+  // Crear rol (multiempresa)
+  const createRole = async () => {
+    if (!newRoleName || newRoleName.trim().length < 3) {
+      toast.push('El nombre del rol debe tener al menos 3 caracteres', 'error')
+      return
+    }
+    try {
+      const payload = {
+        name: newRoleName.trim(),
+        description: newRoleDesc?.trim() || null
+      }
+      if (userRole === 'superadmin') {
+        // superadmin: puede crear global (id_empresa=null) o para una empresa específica
+        payload.id_empresa = (newRoleEmpresa && newRoleEmpresa !== 'all') ? Number(newRoleEmpresa) : null
+      }
+      const res = await fetch(`${API}/roles`, {
+        method: 'POST',
+        headers: {
+          'X-User-Role': userRole,
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.detail || `HTTP ${res.status}`)
+      }
+      toast.push('Rol creado', 'success')
+      setShowCreateRole(false)
+      setNewRoleName(''); setNewRoleDesc(''); setNewRoleEmpresa('all')
+      await loadRoles()
+    } catch (err) {
+      console.error('Error creando rol:', err)
+      toast.push(err.message || 'Error creando rol', 'error')
+    }
+  }
+
   // Guardar permisos de un rol
   const saveRolePermissions = async (roleId, permissionIds) => {
     setSaving(true)
     try {
+      // Build payload with multiempresa awareness
+      const body = { perm_ids: permissionIds.map(Number).filter(n => Number.isInteger(n)) }
+      if (userRole === 'superadmin') {
+        body.target_company_id = (selectedEmpresa && selectedEmpresa !== 'all') ? Number(selectedEmpresa) : null
+      }
+
       const res = await fetch(`${API}/roles/${roleId}/permissions`, {
         method: 'PUT',
         headers: { 
@@ -176,7 +225,7 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
           'Content-Type': 'application/json'
         },
         credentials: 'include',
-        body: JSON.stringify({ perm_ids: permissionIds })
+        body: JSON.stringify(body)
       })
       
       if (!res.ok) {
@@ -233,10 +282,18 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
     return acc
   }, {})
 
-  // Filtrar usuarios según empresa seleccionada y término de búsqueda
+  // Filtrar usuarios según empresa seleccionada, rol y término de búsqueda
   const filteredUsers = users.filter(user => {
-    // Filtrar por empresa (solo para superadmin)
-    if (userRole === 'superadmin' && selectedEmpresa && user.id_empresa !== parseInt(selectedEmpresa)) {
+    // Filtrar por empresa
+    if (userRole === 'superadmin') {
+      // Si es superadmin y seleccionó una empresa específica
+      if (selectedEmpresa !== 'all' && user.id_empresa !== parseInt(selectedEmpresa)) {
+        return false
+      }
+    }
+    
+    // Filtrar por rol seleccionado
+    if (selectedRoleFilter !== 'all' && user.role_name !== selectedRoleFilter) {
       return false
     }
     
@@ -380,7 +437,7 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
               onChange={(e) => setSelectedEmpresa(e.target.value)}
               className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100 min-w-[200px]"
             >
-              <option value="">🏢 Todas las empresas</option>
+              <option value="all">🏢 Todas las empresas</option>
               {empresas.map((empresa) => (
                 <option key={empresa.id_empresa} value={empresa.id_empresa}>
                   {empresa.nombre_empresa}
@@ -392,6 +449,28 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
               🏢 {empresas[0].nombre_empresa}
             </div>
           )}
+          
+          {/* Filtro por rol */}
+          <select
+            value={selectedRoleFilter}
+            onChange={(e) => setSelectedRoleFilter(e.target.value)}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100 min-w-[180px]"
+          >
+            <option value="all">🔑 Todos los roles</option>
+            {roles.map((role) => (
+              <option key={role.idrole} value={role.name}>
+                {role.display_name || role.name}
+              </option>
+            ))}
+          </select>
+
+          {/* Botón crear rol */}
+          <button
+            onClick={() => setShowCreateRole(v => !v)}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${showCreateRole ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
+          >
+            {showCreateRole ? 'Cancelar' : '➕ Nuevo rol'}
+          </button>
         </div>
 
         {/* Estadísticas rápidas */}
@@ -413,6 +492,74 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
             <div className="text-xl font-bold text-gray-900 dark:text-gray-100">{userRole === 'superadmin' ? empresas.length : 1}</div>
           </div>
         </div>
+
+        {/* Panel creación de rol */}
+        {showCreateRole && (
+          <div className="mt-6 bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-600">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+              Crear nuevo rol
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Nombre</label>
+                <input
+                  type="text"
+                  value={newRoleName}
+                  onChange={(e) => setNewRoleName(e.target.value)}
+                  placeholder="Ej: cajero, vendedor, auditor"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Descripción (opcional)</label>
+                <input
+                  type="text"
+                  value={newRoleDesc}
+                  onChange={(e) => setNewRoleDesc(e.target.value)}
+                  placeholder="Breve descripción del rol"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100"
+                />
+              </div>
+            </div>
+
+            {userRole === 'superadmin' && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div>
+                  <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Empresa</label>
+                  <select
+                    value={newRoleEmpresa}
+                    onChange={(e) => setNewRoleEmpresa(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100"
+                  >
+                    <option value="all">🌐 Global (todas)</option>
+                    {empresas.map((empresa) => (
+                      <option key={empresa.id_empresa} value={empresa.id_empresa}>
+                        {empresa.nombre_empresa}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setShowCreateRole(false)}
+                className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={createRole}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg"
+              >
+                Crear rol
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (

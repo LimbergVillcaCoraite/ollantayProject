@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
+import ReactDOM from 'react-dom'
 import { useToast } from '../ToastContext'
+import { designSystem, getButtonClass, getInputClass, getBadgeClass } from '../design-system'
 
 export default function Productos({ API, userRole = 'admin', permissions = [], clienteInfo = null }) {
   const has = (res, act) => permissions.includes(`${res}:${act}`)
@@ -16,13 +18,149 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [submitting, setSubmitting] = useState(false)
   const [searchQ, setSearchQ] = useState('')
   const [filterTipo, setFilterTipo] = useState('')
+  const [filterIdProducto, setFilterIdProducto] = useState('')
+  const [filterProveedor, setFilterProveedor] = useState('')
   const [showPrecios, setShowPrecios] = useState(null)
   const [validationErrors, setValidationErrors] = useState({})
   const [previewImage, setPreviewImage] = useState(null)
   const [showUSD, setShowUSD] = useState(false) // Toggle para mostrar USD
   const TASA_CAMBIO = 6.96 // 1 USD = 6.96 Bs (Bolivia)
-  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa din√°mica desde API
-  const [removeBg, setRemoveBg] = useState(false) // Opci√≥n para remover fondo localmente
+  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa din·mica desde API
+  const [removeBg, setRemoveBg] = useState(false) // OpciÛn para remover fondo localmente
+  const [lotesPorProducto, setLotesPorProducto] = useState({});
+  const [showCreateLote, setShowCreateLote] = useState({}); // { [idProducto]: true/false }
+  const [createLoteForm, setCreateLoteForm] = useState({}); // { [idProducto]: { idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas } }
+  const [lotesModalProductId, setLotesModalProductId] = useState(null); // producto para modal
+  const [editingLoteId, setEditingLoteId] = useState(null) // ID del lote siendo editado
+  const [editLotePrices, setEditLotePrices] = useState({}) // { minorista, mayorista, especial }
+  const [selectedLoteId, setSelectedLoteId] = useState({}) // { [idProducto]: idLote } - lote seleccionado por producto
+  // Cargar/alternar lotes para un producto
+  const loadLotesForProducto = async (idProducto) => {
+    // Alternar: si ya est·n cargados, ocultar
+    if (lotesPorProducto[idProducto]) {
+      setLotesPorProducto(prev => {
+        const next = { ...prev }
+        delete next[idProducto]
+        return next
+      })
+      return
+    }
+    try {
+      const url = `${API}/lotes?idProducto=${encodeURIComponent(idProducto)}`
+      const res = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} });
+      if (!res.ok) throw new Error('No se pudieron cargar los lotes');
+      const data = await res.json();
+      setLotesPorProducto(prev => ({ ...prev, [idProducto]: Array.isArray(data) ? data : [] }));
+    } catch (e) {
+      toast.push('Error al cargar lotes: ' + e.message, 'error');
+    }
+  };
+
+  // Abrir modal (cargar si no est· cargado)
+  const openLotesModal = async (idProducto) => {
+    if (!lotesPorProducto[idProducto]) {
+      await loadLotesForProducto(idProducto)
+    }
+    setLotesModalProductId(idProducto)
+  }
+  const closeLotesModal = () => setLotesModalProductId(null)
+
+  // Crear lote para un producto
+  const handleCreateLote = async (idProducto) => {
+    const f = createLoteForm[idProducto] || {}
+    // ValidaciÛn mÌnima
+    if (!f || !f.fechaCompra || !f.precioCompra || !f.cantidadCajas) {
+      toast.push('Complete fecha de compra, precio y cantidad', 'error')
+      return
+    }
+    try {
+      const fd = new FormData()
+      fd.append('idProducto', String(idProducto))
+      if (f.idProveedor) fd.append('idProveedor', String(f.idProveedor))
+      fd.append('fechaCompra', f.fechaCompra)
+      if (f.fechaVencimiento) fd.append('fechaVencimiento', f.fechaVencimiento)
+      fd.append('precioCompra', String(f.precioCompra))
+      fd.append('cantidadCajas', String(f.cantidadCajas))
+      
+      // Agregar precios de venta si fueron proporcionados
+      if (f.precio_minorista) fd.append('precio_minorista', String(f.precio_minorista))
+      if (f.precio_mayorista) fd.append('precio_mayorista', String(f.precio_mayorista))
+      if (f.precio_especial) fd.append('precio_especial', String(f.precio_especial))
+      
+      const res = await fetch(`${API}/lotes`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: userRole ? { 'X-User-Role': userRole } : {},
+        body: fd
+      })
+      if (!res.ok) {
+        const t = await res.text().catch(()=> '')
+        throw new Error(t || `HTTP ${res.status}`)
+      }
+      toast.push('Lote creado', 'success')
+      // Refrescar lista de lotes
+      await loadLotesForProducto(idProducto)
+      // Limpiar formulario y ocultar
+      setCreateLoteForm(prev => ({ ...prev, [idProducto]: undefined }))
+      setShowCreateLote(prev => ({ ...prev, [idProducto]: false }))
+    } catch (e) {
+      console.error(e)
+      toast.push('No se pudo crear el lote: ' + e.message, 'error')
+    }
+  }
+
+  // Guardar precios editados de un lote
+  const handleSaveLotePrices = async (idLote) => {
+    try {
+      const prices = editLotePrices
+      if (!prices.minorista && !prices.mayorista && !prices.especial) {
+        toast.push('Ingrese al menos un precio', 'error')
+        return
+      }
+      const fd = new FormData()
+      if (prices.minorista) fd.append('precio_minorista', String(prices.minorista))
+      if (prices.mayorista) fd.append('precio_mayorista', String(prices.mayorista))
+      if (prices.especial) fd.append('precio_especial', String(prices.especial))
+      
+      const res = await fetch(`${API}/lotes/${idLote}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: userRole ? { 'X-User-Role': userRole } : {},
+        body: fd
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      toast.push('Precios del lote actualizados', 'success')
+      setEditingLoteId(null)
+      setEditLotePrices({})
+      
+      // Refrescar lotes: buscar el idProducto del lote editado
+      const loteEditado = Object.values(lotesPorProducto)
+        .flat()
+        .find(l => l.idLote === idLote)
+      
+      if (loteEditado && loteEditado.idProducto) {
+        const url = `${API}/lotes?idProducto=${encodeURIComponent(loteEditado.idProducto)}`
+        const r2 = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+        if (r2.ok) {
+          const data = await r2.json()
+          setLotesPorProducto(prev => ({ ...prev, [loteEditado.idProducto]: Array.isArray(data) ? data : [] }))
+        }
+      }
+      
+      // TambiÈn refrescar si hay modal abierto
+      if (lotesModalProductId) {
+        const url = `${API}/lotes?idProducto=${encodeURIComponent(lotesModalProductId)}`
+        const r2 = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+        if (r2.ok) {
+          const data = await r2.json()
+          setLotesPorProducto(prev => ({ ...prev, [lotesModalProductId]: Array.isArray(data) ? data : [] }))
+        }
+      }
+    } catch (e) {
+      console.error(e)
+      toast.push('No se pudo actualizar: ' + e.message, 'error')
+    }
+  }
 
   const [form, setForm] = useState({
     nombreProducto: '',
@@ -48,9 +186,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     } else if (form.nombreProducto.trim().length < 2) {
       errors.nombreProducto = 'El nombre debe tener al menos 2 caracteres'
     } else if (form.nombreProducto.trim().length > 100) {
-      errors.nombreProducto = 'El nombre no puede tener m√°s de 100 caracteres'
-    } else if (!/^[a-zA-Z√±√ë√°√©√≠√≥√∫√Å√â√ç√ì√ö0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
-      errors.nombreProducto = 'El nombre contiene caracteres no v√°lidos'
+      errors.nombreProducto = 'El nombre no puede tener m·s de 100 caracteres'
+    } else if (!/^[a-zA-ZÒ—·ÈÌÛ˙¡…Õ”⁄0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
+      errors.nombreProducto = 'El nombre contiene caracteres no v·lidos'
     }
     
     // Validar duplicados de nombre (solo si no estamos editando)
@@ -89,7 +227,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       if (precio && precio.trim()) {
         const num = parseFloat(precio)
         if (isNaN(num) || num < 0) {
-          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un n√∫mero v√°lido mayor o igual a 0`
+          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un n˙mero v·lido mayor o igual a 0`
         } else if (num > 999999.99) {
           errors[`precio_${tipo}`] = `El precio ${tipo} es demasiado alto`
         } else {
@@ -98,7 +236,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       }
     })
     
-    // Validar l√≥gica de precios (mayorista < minorista)
+    // Validar lÛgica de precios (mayorista < minorista)
     if (preciosNumericos.mayorista && preciosNumericos.minorista && 
         preciosNumericos.mayorista >= preciosNumericos.minorista) {
       errors.precio_mayorista = 'El precio mayorista debe ser menor al precio minorista'
@@ -109,7 +247,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       const file = form.imagen_producto
       const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
       if (!validTypes.includes(file.type)) {
-        errors.imagen_producto = 'Solo se permiten im√°genes (JPG, PNG, GIF, WebP)'
+        errors.imagen_producto = 'Solo se permiten im·genes (JPG, PNG, GIF, WebP)'
       } else if (file.size > 5 * 1024 * 1024) { // 5MB
         errors.imagen_producto = 'La imagen no puede ser mayor a 5MB'
       }
@@ -119,7 +257,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     return Object.keys(errors).length === 0
   }
 
-  // Limpiar errores de validaci√≥n cuando cambie el campo
+  // Limpiar errores de validaciÛn cuando cambie el campo
   const clearFieldError = (fieldName) => {
     if (validationErrors[fieldName]) {
       setValidationErrors(prev => {
@@ -130,13 +268,20 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // Filtrado y b√∫squeda
+  // Filtrado y b˙squeda
   React.useEffect(() => {
     const t = setTimeout(() => {
       const q = (searchQ || '').trim().toLowerCase()
+      const idQ = (filterIdProducto || '').trim()
       const list = productos.filter(p => {
         const inTipo = filterTipo ? String(p.idTipoBotella) === filterTipo : true
         if (!inTipo) return false
+
+        // Filtro por ID de producto (coincidencia exacta o parcial)
+        if (idQ && !String(p.idProducto).includes(idQ)) return false
+
+        // Filtro por proveedor
+        if (filterProveedor && String(p.idProveedor) !== filterProveedor) return false
 
         if (!q) return true
         const nombre = (p.nombreProducto || '').toLowerCase()
@@ -148,7 +293,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       setFilteredProductos(list)
     }, 180)
     return () => clearTimeout(t)
-  }, [searchQ, filterTipo, productos])
+  }, [searchQ, filterTipo, filterIdProducto, filterProveedor, productos])
 
   const loadProductos = async () => {
     setLoading(true)
@@ -165,7 +310,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       
       if (!res.ok) {
         if (res.status === 401) {
-          // Sesi√≥n expirada, recargar p√°gina para ir al login
+          // SesiÛn expirada, recargar p·gina para ir al login
           window.location.reload()
           return
         }
@@ -246,13 +391,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
   const loadTasaCambio = async () => {
     try {
-      // Intentar primero con exchangerate.host (m√°s actualizado y confiable)
+      // Intentar primero con exchangerate.host (m·s actualizado y confiable)
       let res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=BOB')
       if (res.ok) {
         const data = await res.json()
         if (data.rates && data.rates.BOB) {
           setTasaCambio(data.rates.BOB)
-          console.log(`üí± Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate.host)`)
+          console.log(`?? Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate.host)`)
           return
         }
       }
@@ -263,13 +408,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         const data = await res.json()
         if (data.rates && data.rates.BOB) {
           setTasaCambio(data.rates.BOB)
-          console.log(`üí± Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate-api.com)`)
+          console.log(`?? Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate-api.com)`)
           return
         }
       }
       
       // Si ambas fallan, usar tasa fija
-      console.warn('‚ö†Ô∏è No se pudo obtener tasa de cambio de APIs externas, usando tasa fija 6.96')
+      console.warn('?? No se pudo obtener tasa de cambio de APIs externas, usando tasa fija 6.96')
       setTasaCambio(6.96)
     } catch (err) {
       console.error('Error loading tasa de cambio:', err)
@@ -289,7 +434,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     e.preventDefault()
     setError(null)
     
-    // Validaci√≥n avanzada
+    // ValidaciÛn avanzada
     if (!validateForm()) {
       setError('Por favor corrige los errores en el formulario')
       return
@@ -317,7 +462,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
       const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
-      // No establecer Content-Type para FormData - el navegador lo hace autom√°ticamente
+      // No establecer Content-Type para FormData - el navegador lo hace autom·ticamente
 
       const url = editingId ? `${API}/productos/${editingId}` : `${API}/productos`
       const method = editingId ? 'PUT' : 'POST'
@@ -336,9 +481,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         throw new Error(errorData.detail || `HTTP ${res.status}`)
       }
 
-      await loadProductos()
-      resetForm()
-      toast.showToast(editingId ? 'Producto actualizado' : 'Producto creado', 'success')
+  await loadProductos()
+  resetForm()
+  toast.push(editingId ? 'Producto actualizado' : 'Producto creado', 'success')
     } catch (err) {
       console.error('Error saving producto:', err)
       setError('Error guardando: ' + err.message)
@@ -347,7 +492,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // Manejar cambio de imagen con previsualizaci√≥n
+  // Manejar cambio de imagen con previsualizaciÛn
   const handleImageChange = (e) => {
     const file = e.target.files[0]
     setForm({ ...form, imagen_producto: file })
@@ -362,7 +507,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // Funci√≥n simple para hacer el fondo m√°s transparente (simulaci√≥n b√°sica)
+  // FunciÛn simple para hacer el fondo m·s transparente (simulaciÛn b·sica)
   const removeBackground = (imageDataUrl) => {
     return new Promise((resolve) => {
       const img = new Image()
@@ -376,13 +521,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         const data = imageData.data
         
-        // Algoritmo simple: hacer p√≠xeles blancos/claros transparentes
+        // Algoritmo simple: hacer pÌxeles blancos/claros transparentes
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i]
           const g = data[i + 1]
           const b = data[i + 2]
           
-          // Si el p√≠xel es muy claro (cercano a blanco), hacerlo transparente
+          // Si el pÌxel es muy claro (cercano a blanco), hacerlo transparente
           const brightness = (r + g + b) / 3
           if (brightness > 240) {
             data[i + 3] = 0 // Alpha = 0 (transparente)
@@ -460,9 +605,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   const startEdit = (producto) => {
-    // Permiso: cualquier admin o superadmin (el backend valida empresa)
-    if (!(userRole === 'admin' || userRole === 'superadmin')) {
-      toast.showToast('Solo administradores pueden editar productos', 'error')
+    // Permiso: admin, editor o superadmin (el backend valida empresa)
+    if (!(['admin','editor','superadmin'].includes(userRole))) {
+      toast.push('Solo administradores o editores pueden editar productos', 'error')
       return
     }
     
@@ -474,9 +619,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       idTipoBotella: producto.idTipoBotella ? String(producto.idTipoBotella) : '',
       idProveedor: producto.idProveedor ? String(producto.idProveedor) : '',
       precios: {
-        minorista: producto.precio_minorista || '',
-        mayorista: producto.precio_mayorista || '',
-        especial: producto.precio_especial || ''
+        minorista: (producto.precio_minorista ?? ''),
+        mayorista: (producto.precio_mayorista ?? ''),
+        especial: (producto.precio_especial ?? '')
       }
     })
     setEditingId(producto.idProducto)
@@ -486,13 +631,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   const deleteProducto = async (id) => {
-    if (!confirm('¬øEst√° seguro de eliminar este producto? Esta acci√≥n no se puede deshacer.')) return
+    if (!confirm('øEst· seguro de eliminar este producto? Esta acciÛn no se puede deshacer.')) return
     
     try {
       const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
 
-      console.log(`üóëÔ∏è Eliminando producto ${id} con rol: ${userRole}`) // Debug
+      console.log(`??? Eliminando producto ${id} con rol: ${userRole}`) // Debug
 
       const res = await fetch(`${API}/productos/${id}`, {
         method: 'DELETE',
@@ -507,13 +652,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       }
 
       const result = await res.json()
-      console.log('‚úÖ Producto eliminado:', result)
+      console.log('? Producto eliminado:', result)
       
-      await loadProductos()
-      toast.showToast('Producto eliminado correctamente', 'success')
+  await loadProductos()
+  toast.push('Producto eliminado correctamente', 'success')
     } catch (err) {
-      console.error('Error deleting producto:', err)
-      toast.showToast('Error al eliminar: ' + err.message, 'error')
+  console.error('Error deleting producto:', err)
+  toast.push('Error al eliminar: ' + err.message, 'error')
     }
   }
 
@@ -521,7 +666,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     setShowPrecios(showPrecios === productoId ? null : productoId)
   }
 
-  // Funci√≥n para formatear precios con conversi√≥n a USD
+  // FunciÛn para formatear precios con conversiÛn a USD
   const formatPrecio = (precio) => {
     if (!precio) return 'N/A'
     const precioNum = parseFloat(precio)
@@ -559,7 +704,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Cat√°logo de Productos
+            Cat·logo de Productos
           </h2>
           <div className="flex items-center mt-2 space-x-4">
             <span className="text-sm bg-blue-100 dark:bg-blue-900 px-2 py-1 rounded-full">
@@ -604,16 +749,16 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           </div>
         )}
 
-        {/* Cat√°logo de productos para clientes */}
+        {/* Cat·logo de productos para clientes */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredProductos.length === 0 ? (
             <div className="col-span-full text-center py-12 text-gray-500 dark:text-gray-400">
-              <div className="text-6xl mb-4">üõçÔ∏è</div>
+              <div className="text-6xl mb-4">???</div>
               <p>No se encontraron productos</p>
             </div>
           ) : (
             filteredProductos.map((producto) => {
-              // Determinar precio seg√∫n tipo de cliente
+              // Determinar precio seg˙n tipo de cliente
               let precio = null
               let tipoPrecio = ''
               
@@ -631,12 +776,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               return (
                 <div key={producto.idProducto} className="bg-gradient-to-b from-gray-50 to-white dark:from-gray-700 dark:to-gray-800 rounded-xl border border-gray-200 dark:border-gray-600 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden">
                   {/* Imagen del producto */}
-                  <div className="h-48 bg-gray-100 dark:bg-gray-600 overflow-hidden">
+                  <div className="h-64 bg-white dark:bg-gray-700 overflow-hidden flex items-center justify-center">
                     {producto.imagen_producto ? (
                       <img
                         src={`${API}${producto.imagen_producto}`}
                         alt={producto.nombreProducto}
-                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        className="max-h-full w-auto object-contain"
                         onError={(e) => {
                           e.target.style.display = 'none'
                           e.target.nextElementSibling.style.display = 'flex'
@@ -648,13 +793,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
                     >
                       <div className="text-center">
-                        <div className="text-4xl mb-2">üì¶</div>
+                        <div className="text-4xl mb-2">??</div>
                         <div className="text-sm">Sin imagen</div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Informaci√≥n del producto */}
+                  {/* InformaciÛn del producto */}
                   <div className="p-4">
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2 line-clamp-2">
                       {producto.nombreProducto}
@@ -709,7 +854,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         </div>
                         {showUSD && (
                           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            ‚âà Bs {parseFloat(precio).toFixed(2)}
+                            ò Bs {parseFloat(precio).toFixed(2)}
                           </div>
                         )}
                       </div>
@@ -721,7 +866,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       </div>
                     )}
 
-                    {/* Bot√≥n de acci√≥n */}
+                    {/* BotÛn de acciÛn */}
                     <button className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors duration-200 hover:shadow-md">
                       Ver Detalles
                     </button>
@@ -746,7 +891,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           <button
             onClick={toggleMoneda}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors shadow-sm"
-            title={showUSD ? 'Mostrar en Bolivianos' : 'Mostrar en D√≥lares'}
+            title={showUSD ? 'Mostrar en Bolivianos' : 'Mostrar en DÛlares'}
           >
             <span className="text-lg">{showUSD ? '$us' : 'Bs'}</span>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -768,9 +913,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       </div>
 
       {/* Filtros */}
-      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <label className={designSystem.typography.label + ' block mb-1'}>
             Buscar
           </label>
           <input
@@ -778,22 +923,51 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
             placeholder="Nombre del producto..."
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-gray-100"
+            className={getInputClass()}
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <label className={designSystem.typography.label + ' block mb-1'}>
+            ID Producto
+          </label>
+          <input
+            type="text"
+            placeholder="Buscar por ID..."
+            value={filterIdProducto}
+            onChange={(e) => setFilterIdProducto(e.target.value)}
+            className={getInputClass()}
+          />
+        </div>
+        <div>
+          <label className={designSystem.typography.label + ' block mb-1'}>
             Tipo de Botella
           </label>
           <select
             value={filterTipo}
             onChange={(e) => setFilterTipo(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-gray-100"
+            className={getInputClass()}
           >
             <option value="">Todos</option>
             {tipos.map((tipo) => (
               <option key={tipo.idTipoBotella} value={tipo.idTipoBotella}>
                 {tipo.tipoBotella}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={designSystem.typography.label + ' block mb-1'}>
+            Proveedor
+          </label>
+          <select
+            value={filterProveedor}
+            onChange={(e) => setFilterProveedor(e.target.value)}
+            className={getInputClass()}
+          >
+            <option value="">Todos los proveedores</option>
+            {proveedores.map((prov) => (
+              <option key={prov.idProveedor} value={prov.idProveedor}>
+                {prov.nombreProveedor || prov.nombre}
               </option>
             ))}
           </select>
@@ -818,12 +992,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               onClick={resetForm}
               className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
             >
-              ‚úï
+              ?
             </button>
           </div>
           
           <form onSubmit={submit} className="space-y-6">
-            {/* Informaci√≥n b√°sica */}
+            {/* InformaciÛn b·sica */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -927,7 +1101,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  Nota: el proveedor est√° ligado a cada lote de compra, no al producto en s√≠.
+                  Nota: el proveedor est· ligado a cada lote de compra, no al producto en sÌ.
                 </p>
               </div>
               
@@ -978,7 +1152,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                 />
                 <label htmlFor="removeBg" className="text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
-                  üé® Remover fondo autom√°ticamente (solo fondos blancos/claros)
+                  ?? Remover fondo autom·ticamente (solo fondos blancos/claros)
                 </label>
               </div>
               
@@ -995,15 +1169,15 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                     }`}
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Formatos: JPG, PNG, GIF, WebP. M√°ximo 5MB
-                    {removeBg && <span className="text-blue-600 dark:text-blue-400"> ‚Ä¢ Procesando con remoci√≥n de fondo</span>}
+                    Formatos: JPG, PNG, GIF, WebP. M·ximo 5MB
+                    {removeBg && <span className="text-blue-600 dark:text-blue-400"> ï Procesando con remociÛn de fondo</span>}
                   </p>
                   {validationErrors.imagen_producto && (
                     <p className="text-red-500 text-xs mt-1">{validationErrors.imagen_producto}</p>
                   )}
                 </div>
                 
-                {/* Previsualizaci√≥n */}
+                {/* PrevisualizaciÛn */}
                 {previewImage && (
                   <div className="w-24 h-24 border-2 border-gray-300 dark:border-gray-600 rounded-md overflow-hidden bg-gray-50 dark:bg-gray-700 bg-checkered">
                     <img 
@@ -1016,27 +1190,27 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               </div>
             </div>
 
-            {/* Configuraci√≥n de precios con validaciones */
+            {/* ConfiguraciÛn de precios con validaciones */
             }
             <div className="border-t pt-4 space-y-4">
               <div className="flex items-center space-x-2">
                 <h4 className="text-md font-medium text-gray-900 dark:text-gray-100">
-                  Configuraci√≥n de Precios
+                  ConfiguraciÛn de Precios
                 </h4>
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   (Opcionales - Mayorista debe ser menor que Minorista)
                 </span>
               </div>
               {editingId && (
-                <div className="bg-amber-50 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-200 px-3 py-2 rounded">
-                  Los precios se gestionan por lotes de compra. Para modificar precios, agregue o edite un lote en la secci√≥n de Lotes.
+                <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 px-3 py-2 rounded">
+                  Puede configurar precios manuales aquÌ. Si los deja en blanco, el sistema usar· los precios calculados a partir de los lotes y m·rgenes.
                 </div>
               )}
               
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    üí∞ Precio Minorista
+                    ?? Precio Minorista
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
@@ -1052,12 +1226,11 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, minorista: e.target.value } })
                         clearFieldError('precio_minorista')
                       }}
-                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_minorista 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        }`}
                       placeholder="0.00"
                     />
                   </div>
@@ -1068,7 +1241,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    üè¢ Precio Mayorista
+                    ?? Precio Mayorista
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
@@ -1084,12 +1257,11 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, mayorista: e.target.value } })
                         clearFieldError('precio_mayorista')
                       }}
-                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_mayorista 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        }`}
                       placeholder="0.00"
                     />
                   </div>
@@ -1100,7 +1272,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    ‚≠ê Precio Especial
+                    ? Precio Especial
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
@@ -1116,12 +1288,11 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         setForm({ ...form, precios: { ...form.precios, especial: e.target.value } })
                         clearFieldError('precio_especial')
                       }}
-                      disabled={!!editingId}
                       className={`w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-600 dark:text-gray-100 ${
                         validationErrors.precio_especial 
                           ? 'border-red-500 dark:border-red-400' 
                           : 'border-gray-300 dark:border-gray-600'
-                      } ${editingId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        }`}
                       placeholder="0.00"
                     />
                   </div>
@@ -1135,7 +1306,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               {(form.precios.minorista || form.precios.mayorista || form.precios.especial) && (
                 <div className="bg-blue-50 dark:bg-blue-900 p-3 rounded-md">
                   <p className="text-sm text-blue-800 dark:text-blue-200">
-                    üí° <strong>Resumen de precios:</strong>
+                    ?? <strong>Resumen de precios:</strong>
                     {form.precios.minorista && ` Minorista: Bs. ${form.precios.minorista}`}
                     {form.precios.mayorista && ` | Mayorista: Bs. ${form.precios.mayorista}`}
                     {form.precios.especial && ` | Especial: Bs. ${form.precios.especial}`}
@@ -1144,7 +1315,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               )}
             </div>
 
-            {/* Botones de acci√≥n */}
+            {/* Botones de acciÛn */}
             <div className="flex justify-between items-center pt-4">
               <div className="text-sm text-gray-500 dark:text-gray-400">
                 Los campos marcados con * son obligatorios
@@ -1171,7 +1342,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       <span>Guardando...</span>
                     </>
                   ) : (
-                    <span>{editingId ? '‚úèÔ∏è Actualizar Producto' : '‚ûï Crear Producto'}</span>
+                    <span>{editingId ? '?? Actualizar Producto' : '? Crear Producto'}</span>
                   )}
                 </button>
               </div>
@@ -1188,14 +1359,14 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           </div>
         ) : (
           filteredProductos.map((producto) => (
-            <div key={producto.idProducto} className="bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 p-4">
+            <div key={producto.idProducto} className={designSystem.cards.item}>
               {/* Imagen del producto */}
-              <div className="mb-3 h-32 bg-gray-100 dark:bg-gray-600 rounded-lg overflow-hidden">
+              <div className="mb-3 h-40 bg-white dark:bg-gray-700 rounded-lg overflow-hidden flex items-center justify-center">
                 {producto.imagen_producto ? (
                   <img
                     src={`${API}${producto.imagen_producto}`}
                     alt={producto.nombreProducto}
-                    className="w-full h-full object-cover"
+                    className="max-h-full w-auto object-contain"
                     onError={(e) => {
                       e.target.style.display = 'none'
                       e.target.nextElementSibling.style.display = 'flex'
@@ -1206,86 +1377,499 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   className="w-full h-full flex items-center justify-center text-gray-400"
                   style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
                 >
-                  <span className="text-4xl">üì¶</span>
+                  <span className="text-4xl">??</span>
                 </div>
               </div>
-              
               <div className="mb-3">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                {/* ID del producto destacado */}
+                <div className="flex items-center justify-between mb-2">
+                  <span className={getBadgeClass('primary') + ' font-mono'}>
+                    ID: {producto.idProducto}
+                  </span>
+                  {producto.nombreProveedor && (
+                    <span className={designSystem.typography.caption}>
+                      {producto.nombreProveedor}
+                    </span>
+                  )}
+                </div>
+                <h3 className={designSystem.typography.h4 + ' mb-1'}>
                   {producto.nombreProducto}
                 </h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <p className={designSystem.typography.small}>
                   Stock: {producto.stockCaja} cajas
                 </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <p className={designSystem.typography.small}>
                   Tipo: {producto.tipoBotella}
                 </p>
+                {producto.fecha_vencimiento_proxima && (
+                  <p className={`${designSystem.typography.caption} ${
+                    new Date(producto.fecha_vencimiento_proxima) < new Date(Date.now() + 30*24*60*60*1000)
+                      ? 'text-red-600 dark:text-red-400 font-semibold'
+                      : 'text-gray-500 dark:text-gray-400'
+                  }`}>
+                    ?? Vence: {new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}
+                  </p>
+                )}
               </div>
-
-              {/* Precios */}
+              {/* Precios - expandibles con clic */}
               <div className="mb-3">
                 <button
-                  onClick={() => togglePrecios(producto.idProducto)}
-                  className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                  onClick={() => {
+                    togglePrecios(producto.idProducto)
+                    // Cargar lotes autom·ticamente si no est·n cargados
+                    if (showPrecios !== producto.idProducto && !lotesPorProducto[producto.idProducto]) {
+                      loadLotesForProducto(producto.idProducto)
+                    }
+                  }}
+                  className={getButtonClass('ghost', 'sm') + ' w-full justify-between flex items-center'}
                 >
-                  {showPrecios === producto.idProducto ? 'Ocultar precios' : 'Ver precios'}
+                  <span>?? {showPrecios === producto.idProducto ? 'Ocultar precios' : 'Ver precios'}</span>
+                  <svg 
+                    className={`w-4 h-4 transition-transform duration-200 ${showPrecios === producto.idProducto ? 'rotate-180' : ''}`} 
+                    fill="none" 
+                    stroke="currentColor" 
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
                 </button>
-                
                 {showPrecios === producto.idProducto && (
-                  <div className="mt-2 space-y-1 text-sm">
-                    {producto.precio_minorista && (
-                      <div className="flex justify-between items-center">
-                        <span>Minorista:</span>
-                        <span className="font-semibold">{formatPrecio(producto.precio_minorista)}</span>
-                      </div>
-                    )}
-                    {producto.precio_mayorista && (
-                      <div className="flex justify-between items-center">
-                        <span>Mayorista:</span>
-                        <span className="font-semibold">{formatPrecio(producto.precio_mayorista)}</span>
-                      </div>
-                    )}
-                    {producto.precio_especial && (
-                      <div className="flex justify-between items-center">
-                        <span>Especial:</span>
-                        <span className="font-semibold">{formatPrecio(producto.precio_especial)}</span>
-                      </div>
-                    )}
+                  <div className="mt-2 bg-white dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-600 space-y-2 animate-fadeIn">
                     {showUSD && (
-                      <div className="text-xs text-gray-500 dark:text-gray-400 pt-1 border-t border-gray-200 dark:border-gray-600">
-                        Tasa de cambio: 1 $us = {TASA_CAMBIO} Bs
+                      <div className={designSystem.typography.caption + ' text-center pb-2 border-b border-gray-200 dark:border-gray-600'}>
+                        ?? Tasa: 1$ = {tasaCambio.toFixed(2)} Bs
                       </div>
                     )}
+                    
+                    {/* Selector de Lote */}
+                    {lotesPorProducto[producto.idProducto] && lotesPorProducto[producto.idProducto].length > 0 && (
+                      <div className="pb-2 mb-2 border-b border-gray-200 dark:border-gray-600">
+                        <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">
+                          ?? Seleccionar Lote:
+                        </label>
+                        <select
+                          value={selectedLoteId[producto.idProducto] || ''}
+                          onChange={(e) => {
+                            const loteId = e.target.value
+                            setSelectedLoteId(prev => ({
+                              ...prev,
+                              [producto.idProducto]: loteId ? parseInt(loteId) : null
+                            }))
+                          }}
+                          className="w-full border rounded px-2 py-1 text-sm dark:bg-gray-900 dark:border-gray-700"
+                        >
+                          <option value="">Precios generales del producto</option>
+                          {lotesPorProducto[producto.idProducto].map(lote => (
+                            <option key={lote.idLote} value={lote.idLote}>
+                              {lote.codigoLote || `Lote #${lote.idLote}`} - 
+                              Stock: {lote.stockActual} - 
+                              {lote.fechaVencimiento ? ` Vence: ${lote.fechaVencimiento}` : ' Sin vencimiento'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {(() => {
+                      // Si hay un lote seleccionado, mostrar sus precios
+                      const loteSeleccionado = selectedLoteId[producto.idProducto] && lotesPorProducto[producto.idProducto]
+                        ? lotesPorProducto[producto.idProducto].find(l => l.idLote === selectedLoteId[producto.idProducto])
+                        : null
+                      
+                      // Usar precios del lote seleccionado o del producto
+                      const precioMinorista = loteSeleccionado?.precio_minorista || producto.precio_minorista
+                      const precioMayorista = loteSeleccionado?.precio_mayorista || producto.precio_mayorista
+                      const precioEspecial = loteSeleccionado?.precio_especial || producto.precio_especial
+                      
+                      return (
+                        <>
+                          {loteSeleccionado && (
+                            <div className="text-xs bg-blue-50 dark:bg-blue-900/20 p-2 rounded mb-2">
+                              <strong>Lote seleccionado:</strong> {loteSeleccionado.codigoLote || `#${loteSeleccionado.idLote}`}
+                              {loteSeleccionado.nombreProveedor && ` - ${loteSeleccionado.nombreProveedor}`}
+                            </div>
+                          )}
+                          
+                          {precioMinorista ? (
+                            <div className="flex justify-between items-center">
+                              <span className={designSystem.typography.small}>?? Minorista:</span>
+                              <span className={designSystem.typography.bodyBold + ' text-green-600 dark:text-green-400'}>
+                                {formatPrecio(precioMinorista)}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className={designSystem.typography.caption + ' text-center'}>
+                              Sin precio minorista configurado
+                            </div>
+                          )}
+                          
+                          {precioMayorista ? (
+                            <div className="flex justify-between items-center">
+                              <span className={designSystem.typography.small}>?? Mayorista:</span>
+                              <span className={designSystem.typography.bodyBold + ' text-blue-600 dark:text-blue-400'}>
+                                {formatPrecio(precioMayorista)}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className={designSystem.typography.caption + ' text-center'}>
+                              Sin precio mayorista configurado
+                            </div>
+                          )}
+                          
+                          {precioEspecial && (
+                            <div className="flex justify-between items-center">
+                              <span className={designSystem.typography.small}>? Especial:</span>
+                              <span className={designSystem.typography.bodyBold + ' text-purple-600 dark:text-purple-400'}>
+                                {formatPrecio(precioEspecial)}
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      )
+                    })()}
+                    
+                    {producto.fecha_vencimiento_proxima && (
+                      <div className="pt-2 border-t border-gray-200 dark:border-gray-600">
+                        <div className={`flex items-center justify-between text-xs ${
+                          new Date(producto.fecha_vencimiento_proxima) < new Date(Date.now() + 30*24*60*60*1000)
+                            ? 'text-red-600 dark:text-red-400 font-semibold'
+                            : 'text-gray-600 dark:text-gray-400'
+                        }`}>
+                          <span>?? Vencimiento:</span>
+                          <span>{new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}</span>
+                        </div>
+                      </div>
+                    )}
+                    {/* Lotes visualization */}
+                    <div className="mt-4">
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        <button
+                          type="button"
+                          className={getButtonClass('primary', 'xs')}
+                          onClick={() => openLotesModal(producto.idProducto)}
+                        >
+                          ?? Ver lotes del producto
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        className={getButtonClass('ghost', 'xs') + ' mb-2 ml-2'}
+                        onClick={() => {
+                          setShowCreateLote(prev => {
+                            const nextOpen = !prev[producto.idProducto]
+                            // Pre-cargar valores por defecto al abrir
+                            if (nextOpen) {
+                              setCreateLoteForm(curr => ({
+                                ...curr,
+                                [producto.idProducto]: {
+                                  idProveedor: (curr[producto.idProducto]?.idProveedor) || '',
+                                  fechaCompra: (curr[producto.idProducto]?.fechaCompra) || new Date().toISOString().slice(0,10),
+                                  fechaVencimiento: curr[producto.idProducto]?.fechaVencimiento || '',
+                                  precioCompra: curr[producto.idProducto]?.precioCompra || '',
+                                  cantidadCajas: curr[producto.idProducto]?.cantidadCajas || ''
+                                }
+                              }))
+                            }
+                            return { ...prev, [producto.idProducto]: nextOpen }
+                          })
+                        }}
+                      >
+                        {showCreateLote[producto.idProducto] ? 'Cancelar nuevo lote' : 'Agregar lote'}
+                      </button>
+                      {showCreateLote[producto.idProducto] && (
+                        <div className="bg-yellow-50 dark:bg-yellow-900/10 p-3 rounded-lg border border-yellow-200 dark:border-yellow-700 mt-2">
+                          <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+                            <div>
+                              <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Proveedor</label>
+                              <select
+                                value={(createLoteForm[producto.idProducto]?.idProveedor) || ''}
+                                onChange={(e)=> setCreateLoteForm(prev => ({
+                                  ...prev,
+                                  [producto.idProducto]: { ...(prev[producto.idProducto]||{}), idProveedor: e.target.value }
+                                }))}
+                                className="w-full border rounded px-2 py-1 text-sm dark:bg-gray-900 dark:border-gray-700"
+                              >
+                                <option value="">Sin proveedor</option>
+                                {proveedores.map(p => (
+                                  <option key={p.idProveedor} value={p.idProveedor}>{p.nombreProveedor || p.nombre || p.nombreComercial}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Fecha compra</label>
+                              <input
+                                type="date"
+                                value={(createLoteForm[producto.idProducto]?.fechaCompra) || new Date().toISOString().slice(0,10)}
+                                onChange={(e)=> setCreateLoteForm(prev => ({
+                                  ...prev,
+                                  [producto.idProducto]: { ...(prev[producto.idProducto]||{}), fechaCompra: e.target.value }
+                                }))}
+                                className="w-full border rounded px-2 py-1 text-sm dark:bg-gray-900 dark:border-gray-700"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Fecha venc.</label>
+                              <input
+                                type="date"
+                                value={(createLoteForm[producto.idProducto]?.fechaVencimiento) || ''}
+                                onChange={(e)=> setCreateLoteForm(prev => ({
+                                  ...prev,
+                                  [producto.idProducto]: { ...(prev[producto.idProducto]||{}), fechaVencimiento: e.target.value }
+                                }))}
+                                className="w-full border rounded px-2 py-1 text-sm dark:bg-gray-900 dark:border-gray-700"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Precio compra (Bs)</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={(createLoteForm[producto.idProducto]?.precioCompra) || ''}
+                                onChange={(e)=> setCreateLoteForm(prev => ({
+                                  ...prev,
+                                  [producto.idProducto]: { ...(prev[producto.idProducto]||{}), precioCompra: e.target.value }
+                                }))}
+                                className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Cantidad (cajas)</label>
+                              <input
+                                type="number"
+                                step="1"
+                                min="1"
+                                value={(createLoteForm[producto.idProducto]?.cantidadCajas) || ''}
+                                onChange={(e)=> setCreateLoteForm(prev => ({
+                                  ...prev,
+                                  [producto.idProducto]: { ...(prev[producto.idProducto]||{}), cantidadCajas: e.target.value }
+                                }))}
+                                className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                placeholder="1"
+                              />
+                            </div>
+                          </div>
+                          
+                          {/* Precios de venta (opcional) */}
+                          <div className="mt-3 pt-3 border-t border-yellow-300 dark:border-yellow-700">
+                            <div className="text-xs text-gray-600 dark:text-gray-400 mb-2">
+                              ?? Precios de venta (opcional - dejar vacÌo para usar precios del producto)
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                              <div>
+                                <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Precio Minorista (Bs)</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={(createLoteForm[producto.idProducto]?.precio_minorista) || ''}
+                                  onChange={(e)=> setCreateLoteForm(prev => ({
+                                    ...prev,
+                                    [producto.idProducto]: { ...(prev[producto.idProducto]||{}), precio_minorista: e.target.value }
+                                  }))}
+                                  className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                  placeholder="Opcional"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Precio Mayorista (Bs)</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={(createLoteForm[producto.idProducto]?.precio_mayorista) || ''}
+                                  onChange={(e)=> setCreateLoteForm(prev => ({
+                                    ...prev,
+                                    [producto.idProducto]: { ...(prev[producto.idProducto]||{}), precio_mayorista: e.target.value }
+                                  }))}
+                                  className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                  placeholder="Opcional"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] text-gray-600 dark:text-gray-300 mb-1">Precio Especial (Bs)</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={(createLoteForm[producto.idProducto]?.precio_especial) || ''}
+                                  onChange={(e)=> setCreateLoteForm(prev => ({
+                                    ...prev,
+                                    [producto.idProducto]: { ...(prev[producto.idProducto]||{}), precio_especial: e.target.value }
+                                  }))}
+                                  className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                  placeholder="Opcional"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="mt-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => handleCreateLote(producto.idProducto)}
+                              className={getButtonClass('primary', 'xs')}
+                            >
+                              Guardar lote
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
-
               {/* Acciones */}
-              {(has('productos', 'edit') || has('productos', 'delete')) && (
+              {['admin','editor','superadmin'].includes(userRole) && (
                 <div className="flex space-x-2">
-                  {has('productos', 'edit') && (userRole === 'admin' || userRole === 'superadmin') && (
-                    <button
-                      onClick={() => startEdit(producto)}
-                      className="flex-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded font-medium transition-colors"
-                      title={'Editar producto'}
-                    >
-                      Editar
-                    </button>
-                  )}
-                  {has('productos', 'delete') && (
-                    <button
-                      onClick={() => deleteProducto(producto.idProducto)}
-                      className="flex-1 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded font-medium transition-colors"
-                    >
-                      Eliminar
-                    </button>
-                  )}
+                  <button
+                    onClick={() => startEdit(producto)}
+                    className={getButtonClass('primary', 'sm') + ' flex-1'}
+                    title={'Editar producto'}
+                  >
+                    ?? Editar
+                  </button>
+                  <button
+                    onClick={() => deleteProducto(producto.idProducto)}
+                    className={getButtonClass('danger', 'sm') + ' flex-1'}
+                    title={'Eliminar producto'}
+                  >
+                    ??? Eliminar
+                  </button>
                 </div>
               )}
             </div>
           ))
         )}
       </div>
+
+      {/* Modal de lotes ampliado */}
+      {lotesModalProductId && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={closeLotesModal} />
+          <div className="relative bg-white dark:bg-gray-800 w-[95vw] max-w-5xl max-h-[85vh] rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-sm sm:text-base font-semibold text-indigo-900 dark:text-indigo-200">
+                Lotes del producto #{lotesModalProductId}
+              </h3>
+              <button onClick={closeLotesModal} className="px-2 py-1 text-sm rounded border dark:border-gray-600">Cerrar</button>
+            </div>
+            <div className="p-3 overflow-auto" style={{ maxHeight: 'calc(85vh - 52px)' }}>
+              {(() => {
+                const rows = lotesPorProducto[lotesModalProductId] || []
+                if (rows.length === 0) {
+                  return <div className="text-sm text-gray-600 dark:text-gray-300">No hay lotes registrados</div>
+                }
+                return (
+                  <table className="min-w-full text-xs sm:text-sm border dark:border-gray-700">
+                    <thead className="sticky top-0 bg-indigo-100 dark:bg-indigo-900/60">
+                      <tr>
+                        <th className="p-2 text-left">CÛdigo</th>
+                        <th className="p-2 text-left">Producto</th>
+                        <th className="p-2 text-left">Proveedor</th>
+                        <th className="p-2 text-right">Precio Compra</th>
+                        <th className="p-2 text-right">Cant. Inicial</th>
+                        <th className="p-2 text-right">Stock Actual</th>
+                        <th className="p-2 text-left">Fecha Compra</th>
+                        <th className="p-2 text-left">Fecha Venc.</th>
+                        <th className="p-2">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(lote => (
+                        <React.Fragment key={lote.idLote}>
+                          <tr className="border-t dark:border-gray-700">
+                            <td className="p-2 font-mono">{lote.codigoLote || `#${lote.idLote}`}</td>
+                            <td className="p-2">{lote.nombreProducto}</td>
+                            <td className="p-2">{lote.nombreProveedor || `Proveedor ${lote.idProveedor || 'N/A'}`}</td>
+                            <td className="p-2 text-right">{Number(lote.precioCompra || 0).toFixed(2)}</td>
+                            <td className="p-2 text-right">{lote.cantidadCajas || 0}</td>
+                            <td className="p-2 text-right font-semibold text-green-600 dark:text-green-400">{lote.stockActual || 0}</td>
+                            <td className="p-2">{lote.fechaCompra}</td>
+                            <td className="p-2 text-sm">
+                              {lote.fechaVencimiento ? (
+                                <span className={
+                                  new Date(lote.fechaVencimiento) < new Date(Date.now() + 30*24*60*60*1000)
+                                    ? 'text-red-600 dark:text-red-400 font-semibold'
+                                    : ''
+                                }>
+                                  {lote.fechaVencimiento}
+                                </span>
+                              ) : 'N/A'}
+                            </td>
+                            <td className="p-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditingLoteId(editingLoteId === lote.idLote ? null : lote.idLote)}
+                                className="text-blue-600 dark:text-blue-400 hover:underline text-xs"
+                              >
+                                {editingLoteId === lote.idLote ? 'Cancelar' : 'Editar precios'}
+                              </button>
+                            </td>
+                          </tr>
+                          {editingLoteId === lote.idLote && (
+                            <tr className="bg-yellow-50 dark:bg-yellow-900/10">
+                              <td colSpan="9" className="p-3">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                  <div>
+                                    <label className="block text-xs mb-1">Precio Minorista (Bs)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      placeholder={lote.precio_minorista || 'N/A'}
+                                      value={editLotePrices.minorista || ''}
+                                      onChange={(e)=> setEditLotePrices(prev => ({ ...prev, minorista: e.target.value }))}
+                                      className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs mb-1">Precio Mayorista (Bs)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      placeholder={lote.precio_mayorista || 'N/A'}
+                                      value={editLotePrices.mayorista || ''}
+                                      onChange={(e)=> setEditLotePrices(prev => ({ ...prev, mayorista: e.target.value }))}
+                                      className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs mb-1">Precio Especial (Bs)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      placeholder={lote.precio_especial || 'N/A'}
+                                      value={editLotePrices.especial || ''}
+                                      onChange={(e)=> setEditLotePrices(prev => ({ ...prev, especial: e.target.value }))}
+                                      className="w-full border rounded px-2 py-1 text-sm text-right dark:bg-gray-900 dark:border-gray-700"
+                                    />
+                                  </div>
+                                  <div className="flex items-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveLotePrices(lote.idLote)}
+                                      className={getButtonClass('primary', 'sm')}
+                                    >
+                                      Guardar
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }
+

@@ -213,17 +213,13 @@ export default function SuperAdmin({ API, userRole = 'admin' }) {
         <div className="flex gap-2">
           <button 
             onClick={() => setShowCreateEmpresa(s => !s)}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              showCreateEmpresa ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
-            } text-white`}
+            className={`btn ${showCreateEmpresa ? 'btn-danger' : 'btn-green'}`}
           >
             {showCreateEmpresa ? 'Cancelar' : '+ Nueva Empresa'}
           </button>
           <button 
             onClick={() => setShowCreateUser(s => !s)}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              showCreateUser ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'
-            } text-white`}
+            className={`btn ${showCreateUser ? 'btn-danger' : 'btn-blue'}`}
           >
             {showCreateUser ? 'Cancelar' : '+ Nuevo Usuario'}
           </button>
@@ -256,7 +252,7 @@ export default function SuperAdmin({ API, userRole = 'admin' }) {
             <div className="sm:col-span-2 flex justify-end">
               <button 
                 disabled={submitting} 
-                className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                className="btn btn-green disabled:opacity-50"
               >
                 {submitting ? 'Creando...' : 'Crear Empresa'}
               </button>
@@ -391,7 +387,7 @@ export default function SuperAdmin({ API, userRole = 'admin' }) {
             <div className="sm:col-span-2 flex justify-end">
               <button 
                 disabled={submitting} 
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                className="btn btn-blue disabled:opacity-50"
               >
                 {submitting ? 'Creando...' : 'Crear Usuario'}
               </button>
@@ -401,34 +397,56 @@ export default function SuperAdmin({ API, userRole = 'admin' }) {
       )}
 
       {/* Users Table */}
-      <div className="bg-white dark:bg-gray-700 rounded shadow overflow-x-auto">
+      <div className="bg-white dark:bg-gray-700 rounded shadow">
         <h3 className="text-lg font-semibold p-4 border-b dark:border-gray-600 text-gray-900 dark:text-gray-100">
           Usuarios de Todas las Empresas
         </h3>
-        <table className="min-w-full table-auto text-sm">
-          <thead className="bg-gray-50 dark:bg-gray-800">
-            <tr>
-              <th className="px-4 py-2 text-left">Usuario</th>
-              <th className="px-4 py-2 text-left">Nombre</th>
-              <th className="px-4 py-2 text-left">CI</th>
-              <th className="px-4 py-2 text-left">Empresa</th>
-              <th className="px-4 py-2 text-left">Rol</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(user => (
-              <tr key={user.id_user} className="border-b dark:border-gray-600">
-                <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.username}</td>
-                <td className="px-4 py-2 text-gray-900 dark:text-gray-100">
-                  {user.nombres_persona} {user.apellido_paternoPersona}
-                </td>
-                <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.ci_persona}</td>
-                <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.nombre_empresa}</td>
-                <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.role_name}</td>
+        {/* Desktop table */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="min-w-full table-auto text-sm">
+            <thead className="bg-gray-50 dark:bg-gray-800">
+              <tr>
+                <th className="px-4 py-2 text-left">Usuario</th>
+                <th className="px-4 py-2 text-left">Nombre</th>
+                <th className="px-4 py-2 text-left">CI</th>
+                <th className="px-4 py-2 text-left">Empresa</th>
+                <th className="px-4 py-2 text-left">Rol</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.map(user => (
+                <tr key={user.id_user} className="border-b dark:border-gray-600">
+                  <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.username}</td>
+                  <td className="px-4 py-2 text-gray-900 dark:text-gray-100">
+                    {user.nombres_persona} {user.apellido_paternoPersona}
+                  </td>
+                  <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.ci_persona}</td>
+                  <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.nombre_empresa}</td>
+                  <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{user.role_name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile cards */}
+        <div className="md:hidden p-4 space-y-3">
+          {users.map(user => (
+            <div key={user.id_user} className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-sm text-gray-500 dark:text-gray-400">@{user.username}</div>
+                  <div className="text-base font-semibold text-gray-900 dark:text-white">{user.nombres_persona} {user.apellido_paternoPersona}</div>
+                </div>
+                <span className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">{user.role_name}</span>
+              </div>
+              <div className="text-sm text-gray-600 dark:text-gray-300 mt-2">
+                <div><span className="font-medium">CI:</span> {user.ci_persona}</div>
+                <div><span className="font-medium">Empresa:</span> {user.nombre_empresa}</div>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

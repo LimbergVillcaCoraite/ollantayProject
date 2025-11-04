@@ -10,7 +10,9 @@ export function ToastProvider({children}){
     setTimeout(()=>{ setToasts(t => t.filter(x=>x.id !== id)) }, timeout)
   }, [])
   const remove = useCallback((id)=> setToasts(t => t.filter(x=>x.id !== id)), [])
-  const value = { push }
+  // Backwards compatibility alias: some components may call toast.showToast
+  const showToast = useCallback((message, type='info', timeout=3500)=> push(message, type, timeout), [push])
+  const value = { push, showToast }
   const bgFor = (type) => type === 'error' ? 'bg-red-600' : (type === 'success' ? 'bg-emerald-600' : 'bg-sky-600')
   const iconFor = (type) => {
     if(type === 'error') return (<svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-white" viewBox="0 0 20 20" fill="currentColor" aria-hidden><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.68-1.36 3.445 0l6.518 11.588C19.8 16.545 18.53 18 17.02 18H2.98c-1.51 0-2.78-1.455-1.2-3.313L8.257 3.1zM11 9a1 1 0 10-2 0v3a1 1 0 102 0V9zm-1 6a1.25 1.25 0 100-2.5A1.25 1.25 0 0010 15z" clipRule="evenodd"/></svg>)

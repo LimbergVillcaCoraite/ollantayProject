@@ -9,11 +9,12 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   const [filteredPersons, setFilteredPersons] = useState([])
   const [types, setTypes] = useState([])
   const [empresas, setEmpresas] = useState([])
+  const [rutas, setRutas] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadingTypes, setLoadingTypes] = useState(true)
   const [error, setError] = useState(null)
 
-  const [form, setForm] = useState({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:''})
+  const [form, setForm] = useState({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:'', tipo_cliente:'minorista', idRuta:''})
   const [foto, setFoto] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editingLoading, setEditingLoading] = useState(false)
@@ -54,8 +55,6 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   const res = await fetch(url.toString(), { headers: { 'X-User-Role': userRole }, credentials: 'include' })
       if(!res.ok) throw new Error('Error fetching persons')
       const data = await res.json()
-      console.log('Personas cargadas:', data) // DEBUG
-      console.log('Primera persona fotoPersona:', data[0]?.fotoPersona) // DEBUG
       setPersons(data)
       setFilteredPersons(data)
     }catch(err){ setError(err.message) }
@@ -81,25 +80,33 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   }
 
   const loadEmpresas = async () => {
-    console.log('DEBUG: loadEmpresas - userRole:', userRole)
     if (userRole !== 'superadmin') {
-      console.log('DEBUG: Not superadmin, skipping empresas load')
       return setEmpresas([])
     }
     try {
-      console.log('DEBUG: Loading empresas for superadmin')
       const res = await fetch(`${API}/empresas`, { headers: { 'X-User-Role': userRole } })
       if (!res.ok) throw new Error('Error fetching empresas')
       const data = await res.json()
-      console.log('DEBUG: Empresas loaded:', data)
       setEmpresas(Array.isArray(data) ? data : [])
     } catch (err) {
-      console.error('DEBUG: Error loading empresas:', err)
+      console.error('Error loading empresas:', err)
       setEmpresas([])
     }
   }
 
-  useEffect(()=>{ loadTypes(); loadEmpresas(); loadPersons() }, [API, API_TYPES, companyFilter, userRole])
+  const loadRutas = async () => {
+    try {
+      const res = await fetch(`/api/rutas/rutas`, { credentials: 'include' })
+      if (!res.ok) throw new Error('Error fetching rutas')
+      const data = await res.json()
+      setRutas(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.error('Error loading rutas:', err)
+      setRutas([])
+    }
+  }
+
+  useEffect(()=>{ loadTypes(); loadEmpresas(); loadRutas(); loadPersons() }, [API, API_TYPES, companyFilter, userRole])
 
   const submit = async (e)=>{
     e.preventDefault()
@@ -120,11 +127,47 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     try{
       let res
       
+      // Prepare clean payload
+      const cleanPayload = {
+        ...form,
+        id_tipoPersona: Number(form.id_tipoPersona),
+        idRuta: (form.idRuta && form.idRuta !== '') ? Number(form.idRuta) : null,
+        id_empresa: (form.id_empresa && form.id_empresa !== '') ? Number(form.id_empresa) : null
+      }
+      
+      // Debug: log what we're sending
+      console.log('DEBUG submit cleanPayload:', cleanPayload)
+      
       if(foto) {
         // Use multipart/form-data when there's a photo
         const formData = new FormData()
-        Object.entries({...form, id_tipoPersona: Number(form.id_tipoPersona)}).forEach(([k,v])=>formData.append(k,v))
+        
+        // Append only non-null values
+        formData.append('nombres_persona', cleanPayload.nombres_persona)
+        formData.append('apellido_paternoPersona', cleanPayload.apellido_paternoPersona)
+        formData.append('apellido_maternoPer', cleanPayload.apellido_maternoPer)
+        formData.append('telefono_persona', cleanPayload.telefono_persona)
+        formData.append('id_tipoPersona', cleanPayload.id_tipoPersona)
+        formData.append('ci_persona', cleanPayload.ci_persona)
+        formData.append('direccion_persona', cleanPayload.direccion_persona)
+        formData.append('tipo_cliente', cleanPayload.tipo_cliente)
+        
+        // Only append optional fields if they have a value
+        if (cleanPayload.idRuta !== null) {
+          formData.append('idRuta', cleanPayload.idRuta)
+        }
+        if (cleanPayload.id_empresa !== null) {
+          formData.append('id_empresa', cleanPayload.id_empresa)
+        }
+        
         formData.append('foto', foto)
+        
+        // Debug: log FormData contents
+        console.log('DEBUG FormData contents:')
+        for (let [key, value] of formData.entries()) {
+          console.log(`  ${key}: ${value} (${typeof value})`)
+        }
+        
         if(editingId){
           res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'X-User-Role': userRole}, credentials: 'include', body: formData})
         } else {
@@ -132,11 +175,10 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
         }
       } else {
         // Use JSON when no photo
-        const payload = {...form, id_tipoPersona: Number(form.id_tipoPersona)}
         if(editingId){
-          res = await fetch(`${API}/persons/${editingId}`, {method:'PUT', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+          res = await fetch(`${API}/persons-json/${editingId}`, {method:'PUT', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(cleanPayload)})
         } else {
-          res = await fetch(`${API}/persons-json`, {method:'POST', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(payload)})
+          res = await fetch(`${API}/persons-json`, {method:'POST', headers:{'Content-Type': 'application/json', 'X-User-Role': userRole}, credentials: 'include', body: JSON.stringify(cleanPayload)})
         }
       }
       if(!res.ok){
@@ -144,7 +186,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
         try { j = await res.json() } catch {}
         throw new Error(j?.detail || res.statusText || 'Error de red')
       }
-      setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:''})
+      setForm({nombres_persona:'', apellido_paternoPersona:'', apellido_maternoPer:'', telefono_persona:'', id_tipoPersona:'', ci_persona:'', direccion_persona:'', id_empresa:'', tipo_cliente:'minorista', idRuta:''})
       setFoto(null)
       setEditingId(null)
       loadPersons()
@@ -160,7 +202,18 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
     setEditingLoading(true)
     setTimeout(()=>{
       setEditingId(p.id_persona)
-      setForm({nombres_persona:p.nombres_persona, apellido_paternoPersona:p.apellido_paternoPersona || '', apellido_maternoPer:p.apellido_maternoPer || '', telefono_persona:p.telefono_persona || '', id_tipoPersona:String(p.id_tipoPersona), ci_persona:p.ci_persona, direccion_persona:p.direccion_persona, id_empresa: String(p.id_empresa || '')})
+      setForm({
+        nombres_persona:p.nombres_persona, 
+        apellido_paternoPersona:p.apellido_paternoPersona || '', 
+        apellido_maternoPer:p.apellido_maternoPer || '', 
+        telefono_persona:p.telefono_persona || '', 
+        id_tipoPersona:String(p.id_tipoPersona), 
+        ci_persona:p.ci_persona, 
+        direccion_persona:p.direccion_persona, 
+        id_empresa: String(p.id_empresa || ''),
+        tipo_cliente: p.tipo_cliente || 'minorista',
+        idRuta: p.idRuta || ''
+      })
       setFoto(null)
       setShowCreate(true)
       setEditingLoading(false)
@@ -232,12 +285,12 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
           <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">{editingId ? 'Editar Persona' : 'Nueva Persona'}</h3>
           <form onSubmit={submit} className="grid grid-cols-1 gap-4 sm:grid-cols-2" encType="multipart/form-data">
             <div>
-              <label className="block text-sm text-gray-700 mb-1">Nombres</label>
-              <input className="p-2 border w-full" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Nombres</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="Nombres" value={form.nombres_persona} onChange={e=>setForm({...form, nombres_persona:e.target.value})} />
             </div>
             <div>
-              <label className="block text-sm text-gray-700 mb-1">Tipo</label>
-              <select value={form.id_tipoPersona} onChange={e=>setForm({...form, id_tipoPersona: e.target.value})} className="p-2 border w-full" disabled={loadingTypes}>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo</label>
+              <select value={form.id_tipoPersona} onChange={e=>setForm({...form, id_tipoPersona: e.target.value})} className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" disabled={loadingTypes}>
                 <option value="">{loadingTypes ? 'Cargando tipos...' : 'Seleccionar tipo'}</option>
                 {types.map((t, idx) => (
                   <option key={t.id_tipoPersona ?? `tipo-${idx}`} value={t.id_tipoPersona ?? ''}>{t.nombre_tipoPersona ?? (`Tipo ${t.id_tipoPersona ?? idx}`)}</option>
@@ -249,8 +302,8 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
               return userRole === 'superadmin'
             })() && (
               <div>
-                <label className="block text-sm text-gray-700 mb-1">Empresa ({empresas.length} disponibles)</label>
-                <select value={form.id_empresa} onChange={e=>setForm({...form, id_empresa: e.target.value})} className="p-2 border w-full">
+                <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Empresa ({empresas.length} disponibles)</label>
+                <select value={form.id_empresa} onChange={e=>setForm({...form, id_empresa: e.target.value})} className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full">
                   <option value="">Seleccionar empresa</option>
                   {empresas.map((empresa) => (
                     <option key={empresa.id_empresa} value={empresa.id_empresa}>
@@ -261,28 +314,51 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
               </div>
             )}
             <div>
-              <label className="block text-sm text-gray-700 mb-1">Apellido paterno</label>
-              <input className="p-2 border w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Apellido paterno</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="Apellido paterno" value={form.apellido_paternoPersona} onChange={e=>setForm({...form, apellido_paternoPersona:e.target.value})} />
             </div>
             <div>
-              <label className="block text-sm text-gray-700 mb-1">Apellido materno</label>
-              <input className="p-2 border w-full" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Apellido materno</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="Apellido materno" value={form.apellido_maternoPer} onChange={e=>setForm({...form, apellido_maternoPer:e.target.value})} />
             </div>
             <div>
-              <label className="block text-sm text-gray-700 mb-1">Teléfono</label>
-              <input className="p-2 border w-full" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Teléfono</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="Teléfono" value={form.telefono_persona} onChange={e=>setForm({...form, telefono_persona:e.target.value})} />
             </div>
             <div>
-              <label className="block text-sm text-gray-700 mb-1">CI</label>
-              <input className="p-2 border w-full" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">CI</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="CI" value={form.ci_persona} onChange={e=>setForm({...form, ci_persona:e.target.value})} />
             </div>
             <div className="md:col-span-2">
-              <label className="block text-sm text-gray-700 mb-1">Dirección</label>
-              <input className="p-2 border w-full" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Dirección</label>
+              <input className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" placeholder="Dirección" value={form.direccion_persona} onChange={e=>setForm({...form, direccion_persona:e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Tipo de Cliente</label>
+              <select value={form.tipo_cliente} onChange={e=>setForm({...form, tipo_cliente: e.target.value})} className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full">
+                <option value="minorista">Minorista</option>
+                <option value="mayorista">Mayorista</option>
+                <option value="especial">Especial</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Ruta (Opcional)</label>
+              <select 
+                value={form.idRuta || ''} 
+                onChange={e => setForm({...form, idRuta: e.target.value ? e.target.value : ''})} 
+                className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full"
+              >
+                <option value="">Sin ruta asignada</option>
+                {rutas.map((ruta) => (
+                  <option key={ruta.idRuta} value={ruta.idRuta}>
+                    {ruta.nombreRuta}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="md:col-span-2">
-              <label className="block text-sm text-gray-700 mb-1">Foto de perfil</label>
-              <input type="file" accept="image/*" className="p-2 border w-full" onChange={e=>setFoto(e.target.files[0])} />
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Foto de perfil</label>
+              <input type="file" accept="image/*" className="p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full" onChange={e=>setFoto(e.target.files[0])} />
               {/* Mostrar foto actual si está editando y existe fotoPersona */}
               {editingId && persons.length > 0 && (()=>{
                 const persona = persons.find(p=>p.id_persona===editingId)

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, Response
+﻿from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -102,6 +102,8 @@ class DetalleCompraIn(BaseModel):
     precio_unitario: Decimal = Field(ge=0)
     subtotal: Decimal = Field(ge=0)
     fechaVencimiento: Optional[str] = None  # ISO date (YYYY-MM-DD)
+    botellas_por_caja: Optional[int] = Field(default=None, ge=1)
+    precio_por_botella: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class DetalleCompraOut(DetalleCompraIn):
@@ -147,6 +149,7 @@ def list_compras(
     fecha_fin: Optional[str] = None,
     idProveedor: Optional[int] = None,
     idTipoPago: Optional[int] = None,
+    idProducto: Optional[int] = None,
     estado: Optional[int] = None,
     offset: int = 0,
     limit: int = 100,
@@ -154,7 +157,7 @@ def list_compras(
     request: Request = None,
     response: Response = None
 ):
-    """Listar compras. Superadmin ve todas, admin solo de su empresa."""
+    """Listar compras. Superadmin ve todas, admin solo de su empresa. Filtro opcional por idProducto."""
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
@@ -193,6 +196,9 @@ def list_compras(
         if idTipoPago is not None:
             where.append('c.idTipoPago = %s')
             params.append(idTipoPago)
+        if idProducto is not None:
+            where.append('EXISTS (SELECT 1 FROM detalle_compra_O dc WHERE dc.idCompra = c.idCompra AND dc.idProducto = %s)')
+            params.append(idProducto)
         if estado is not None:
             where.append('c.estado = %s')
             params.append(estado)
@@ -224,7 +230,8 @@ def list_compras(
             cur.execute('''
                 SELECT 
                     dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
-                    dc.precio_unitario, dc.subtotal, pr.nombreProducto
+                    dc.precio_unitario, dc.subtotal, pr.nombreProducto,
+                    dc.precio_paquete, dc.botellas_por_caja, dc.precio_por_botella
                 FROM detalle_compra_O dc
                 LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
                 WHERE dc.idCompra = %s
@@ -237,6 +244,16 @@ def list_compras(
             for d in detalles:
                 d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
                 d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
+                if 'precio_paquete' in d:
+                    try:
+                        d['precio_paquete'] = float(d['precio_paquete']) if d.get('precio_paquete') is not None else None
+                    except Exception:
+                        d['precio_paquete'] = None
+                if 'precio_por_botella' in d:
+                    try:
+                        d['precio_por_botella'] = float(d['precio_por_botella']) if d.get('precio_por_botella') is not None else None
+                    except Exception:
+                        d['precio_por_botella'] = None
             
             c['detalles'] = detalles
 
@@ -294,7 +311,8 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
         cur.execute('''
             SELECT 
                 dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
-                dc.precio_unitario, dc.subtotal, pr.nombreProducto
+                dc.precio_unitario, dc.subtotal, pr.nombreProducto,
+                dc.precio_paquete, dc.botellas_por_caja, dc.precio_por_botella
             FROM detalle_compra_O dc
             LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
             WHERE dc.idCompra = %s
@@ -307,6 +325,17 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
         for d in detalles:
             d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
             d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
+            
+            if 'precio_paquete' in d:
+                try:
+                    d['precio_paquete'] = float(d['precio_paquete']) if d.get('precio_paquete') is not None else None
+                except Exception:
+                    d['precio_paquete'] = None
+            if 'precio_por_botella' in d:
+                try:
+                    d['precio_por_botella'] = float(d['precio_por_botella']) if d.get('precio_por_botella') is not None else None
+                except Exception:
+                    d['precio_por_botella'] = None
         
         compra['detalles'] = detalles
 
@@ -384,7 +413,7 @@ async def upload_comprobantes(id: int, request: Request, x_user_role: str = Head
 
 @app.delete('/compras/{id}/comprobantes/{comprobante_id}', status_code=204)
 def delete_comprobante(id: int, comprobante_id: int, x_user_role: str = Header(None), request: Request = None):
-    """Elimina un comprobante específico de una compra (borra archivo y registro)."""
+    """Elimina un comprobante espec├¡fico de una compra (borra archivo y registro)."""
     role = get_role(x_user_role, request)
     if role not in ('admin', 'superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
@@ -498,35 +527,81 @@ def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: R
 
         fechaCompra = payload.fechaCompra or date.today().isoformat()
         
-        # Parse date to get year and month
+        # Parse date to get year, month, day
         fecha_obj = date.fromisoformat(fechaCompra)
         anio = fecha_obj.year
         mes = fecha_obj.month
+        dia = fecha_obj.day
 
-        # Generate numeroCompra in format CMP-YYYY-MM-NNN
-        # Find the next available number for this month and year
-        numero_del_mes = 1
+        # Get empresa name for numeroCompra format: ACRONIMO-COMP-YYYY-MM-DD-NNN
+        cur.execute('SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s', (target_company,))
+        empresa_row = cur.fetchone()
+        if not empresa_row:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Empresa no encontrada')
+        
+        # Generate acronym from empresa name (first letters of each word, uppercase)
+        nombre_empresa = empresa_row['nombre_empresa']
+        palabras = nombre_empresa.strip().split()
+        if len(palabras) > 0:
+            acronimo = ''.join([p[0] for p in palabras if p]).upper()[:5]  # Max 5 chars
+        else:
+            acronimo = nombre_empresa[:3].upper()  # Fallback to first 3 chars
+        
+        # Generate numeroCompra in format: ACRONIMO-COMP-YYYY-MM-DD-NNN
+        # Find the next available number for this date
+        numero_del_dia = 1
         while True:
-            numero_compra = f"CMP-{anio}-{mes:02d}-{numero_del_mes:03d}"
+            numero_compra = f"{acronimo}-COMP-{anio}-{mes:02d}-{dia:02d}-{numero_del_dia:03d}"
             cur.execute('SELECT COUNT(*) as existe FROM compra_O WHERE numeroCompra = %s', (numero_compra,))
             existe = cur.fetchone()
             if existe and existe.get('existe', 0) > 0:
-                numero_del_mes += 1
+                numero_del_dia += 1
             else:
                 break
             # Safety check to avoid infinite loop
-            if numero_del_mes > 999:
+            if numero_del_dia > 999:
                 raise HTTPException(status_code=500, detail='No se pudo generar número de compra único')
 
         # Insertar compra
         idUsuario = get_user_id_from_request(request) or 1  # Fallback to user 1 if not found
         print(f"DEBUG: Creating compra - idUsuario from JWT: {idUsuario}, role: {role}")
         ins = conn.cursor()
-        ins.execute('''
-            INSERT INTO compra_O (numeroCompra, fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (numero_compra, fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
-              float(payload.montoTotal), payload.estado, payload.observaciones, idUsuario))
+        try:
+            ins.execute('''
+                INSERT INTO compra_O (numeroCompra, fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (numero_compra, fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
+                  float(payload.montoTotal), payload.estado, payload.observaciones, idUsuario))
+        except mysql_errors.DataError as de:
+            # Manejar error por longitud insuficiente de la columna numeroCompra
+            if 'Data too long for column' in str(de) and 'numeroCompra' in str(de):
+                try:
+                    print('WARN: numeroCompra demasiado corto. Intentando ampliar columna a VARCHAR(64)')
+                    alt = conn.cursor()
+                    alt.execute("""
+                        ALTER TABLE compra_O
+                        MODIFY COLUMN numeroCompra VARCHAR(64) NOT NULL
+                    """)
+                    conn.commit()
+                    alt.close()
+                    # Reintentar inserción
+                    ins.execute('''
+                        INSERT INTO compra_O (numeroCompra, fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (numero_compra, fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
+                          float(payload.montoTotal), payload.estado, payload.observaciones, idUsuario))
+                except Exception:
+                    # Si por alguna razón no podemos alterar, acortar el código como último recurso
+                    fallback_numero = numero_compra[:30]
+                    ins.execute('''
+                        INSERT INTO compra_O (numeroCompra, fechaCompra, idProveedor, idTipoPago, idEmpresa, montoTotal, estado, observaciones, idUsuario)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (fallback_numero, fechaCompra, payload.idProveedor, payload.idTipoPago, target_company, 
+                          float(payload.montoTotal), payload.estado, payload.observaciones, idUsuario))
+            else:
+                raise
         conn.commit()
         new_id = ins.lastrowid
         ins.close()
@@ -535,46 +610,178 @@ def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: R
         for det in payload.detalles:
             ins2 = conn.cursor()
             # subtotal es una columna generada (cantidad_caja * precio_unitario), no se debe insertar explícitamente
-            ins2.execute('''
-                INSERT INTO detalle_compra_O (idCompra, idProducto, cantidad_caja, precio_unitario)
-                VALUES (%s, %s, %s, %s)
-            ''', (new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario)))
+            # precio_paquete: guardar precio por paquete (caja) como copia explícita del precio_unitario
+            # botellas_por_caja y precio_por_botella: guardar si vienen en el payload (opcional)
+            # fechaVencimiento: fecha de vencimiento del producto
+            fechaVenc = det.fechaVencimiento if det.fechaVencimiento else None
+            try:
+                ins2.execute('''
+                    INSERT INTO detalle_compra_O (
+                        idCompra, idProducto, cantidad_caja, precio_unitario, precio_paquete,
+                        botellas_por_caja, precio_por_botella, fechaVencimiento
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), float(det.precio_unitario),
+                    int(det.botellas_por_caja) if det.botellas_por_caja is not None else None,
+                    float(det.precio_por_botella) if det.precio_por_botella is not None else None,
+                    fechaVenc
+                ))
+            except mysql_errors.ProgrammingError as pe:
+                # Si alguna columna no existe, crearla y reintentar
+                if 'Unknown column' in str(pe):
+                    try:
+                        alt = conn.cursor()
+                        # Crear columnas que falten de manera idempotente
+                        try:
+                            alt.execute("""
+                                ALTER TABLE detalle_compra_O
+                                ADD COLUMN IF NOT EXISTS precio_paquete DECIMAL(10,2) NULL AFTER precio_unitario
+                            """)
+                        except Exception:
+                            pass
+                        try:
+                            alt.execute("""
+                                ALTER TABLE detalle_compra_O
+                                ADD COLUMN IF NOT EXISTS botellas_por_caja INT NULL AFTER cantidad_caja
+                            """)
+                        except Exception:
+                            pass
+                        try:
+                            alt.execute("""
+                                ALTER TABLE detalle_compra_O
+                                ADD COLUMN IF NOT EXISTS precio_por_botella DECIMAL(10,4) NULL AFTER precio_paquete
+                            """)
+                        except Exception:
+                            pass
+                        conn.commit()
+                        alt.close()
+                        # Reintentar inserción con columnas nuevas
+                        ins2.execute('''
+                            INSERT INTO detalle_compra_O (
+                                idCompra, idProducto, cantidad_caja, precio_unitario, precio_paquete,
+                                botellas_por_caja, precio_por_botella, fechaVencimiento
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ''', (
+                            new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), float(det.precio_unitario),
+                            int(det.botellas_por_caja) if det.botellas_por_caja is not None else None,
+                            float(det.precio_por_botella) if det.precio_por_botella is not None else None,
+                            fechaVenc
+                        ))
+                    except Exception:
+                        # Fallback final: insertar sin columnas opcionales
+                        ins2.execute('''
+                            INSERT INTO detalle_compra_O (idCompra, idProducto, cantidad_caja, precio_unitario, fechaVencimiento)
+                            VALUES (%s, %s, %s, %s, %s)
+                        ''', (new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), fechaVenc))
+                else:
+                    # Otros errores, relanzar
+                    raise
             
             # Crear lote de producto para rastrear esta compra específica
             # Esto permite FEFO (First Expired First Out) y trazabilidad por compra
-            fechaVenc = det.fechaVencimiento if det.fechaVencimiento else None
-            ins2.execute('''
-                INSERT INTO lote_producto 
-                (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
-                  det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id))
+            try:
+                # Intentar guardar botellasPorCaja también en el lote si existe la columna
+                ins2.execute('''
+                    INSERT INTO lote_producto 
+                    (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra, botellasPorCaja)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
+                      det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id, 
+                      int(det.botellas_por_caja) if det.botellas_por_caja is not None else None))
+            except mysql_errors.ProgrammingError as e_lote:
+                if 'Unknown column' in str(e_lote) and 'botellasPorCaja' in str(e_lote):
+                    try:
+                        alt2 = conn.cursor()
+                        alt2.execute("""
+                            ALTER TABLE lote_producto
+                            ADD COLUMN IF NOT EXISTS botellasPorCaja INT NULL AFTER cantidadCajas
+                        """)
+                        conn.commit()
+                        alt2.close()
+                        # Reintentar inserción con columna botellasPorCaja
+                        ins2.execute('''
+                            INSERT INTO lote_producto 
+                            (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra, botellasPorCaja)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
+                              det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id, 
+                              int(det.botellas_por_caja) if det.botellas_por_caja is not None else None))
+                    except Exception:
+                        # Fallback: insertar sin la columna botellasPorCaja
+                        ins2.execute('''
+                            INSERT INTO lote_producto 
+                            (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
+                              det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id))
+                else:
+                    # Fallback general para lote_producto si falla por otra razón
+                    ins2.execute('''
+                        INSERT INTO lote_producto 
+                        (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (det.idProducto, payload.idProveedor, fechaCompra, fechaVenc, float(det.precio_unitario), 
+                          det.cantidad_caja, det.cantidad_caja, target_company, idUsuario, new_id))
             
             # El stock del producto se actualiza automáticamente por el trigger tr_actualizar_stock_producto_insert
             # que suma el stockActual de todos los lotes activos
             conn.commit()
             ins2.close()
 
-        # Si es compra a crédito, crear movimiento en cuenta corriente
-        if payload.idTipoPago == 2:  # crédito
-            ins3 = conn.cursor()
-            # Obtener idPersona del proveedor (si es persona, no empresa)
-            cur.execute('SELECT idPersona, esEmpresa FROM proveedor_O WHERE idProveedor = %s', (payload.idProveedor,))
-            prov_data = cur.fetchone()
-            id_persona_prov = prov_data.get('idPersona') if prov_data and not prov_data.get('esEmpresa') else None
-            
-            # Solo crear movimiento si el proveedor es persona (tiene idPersona)
-            if id_persona_prov:
-                # Crear movimiento: tipo=proveedor, haber=montoTotal (le debemos al proveedor)
+        # Registrar movimiento en cuenta corriente
+        # Tabla tipoPago: 1=crédito, 2=contado, 7=transferencia bancaria
+        ins3 = conn.cursor()
+        
+        # Obtener datos del proveedor para descripción
+        cur.execute('SELECT idPersona, esEmpresa, nombreComercial FROM proveedor_O WHERE idProveedor = %s', (payload.idProveedor,))
+        prov_data = cur.fetchone() or {}
+        id_persona_prov = prov_data.get('idPersona') if prov_data and not prov_data.get('esEmpresa') else None
+        nombre_proveedor = prov_data.get('nombreComercial') or str(payload.idProveedor)
+        
+        if payload.idTipoPago == 1:  # crédito
+            descripcion = f"Compra #{new_id} a crédito - Proveedor: {nombre_proveedor}"
+            # Intentar crear movimiento con idPersona si existe
+            try:
                 ins3.execute('''
                     INSERT INTO cuenta_corriente_O 
                     (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
                     VALUES ('proveedor', %s, %s, %s, 'compra', %s, 0, %s, %s, %s, 1)
-                ''', (id_persona_prov, target_company, fechaCompra, new_id, 
-                      float(payload.montoTotal), float(payload.montoTotal), 
-                      f'Compra #{new_id} a crédito'))
+                ''', (id_persona_prov, target_company, fechaCompra, new_id,
+                      float(payload.montoTotal), float(payload.montoTotal), descripcion))
                 conn.commit()
-            ins3.close()
+            except Exception as e_cc:
+                # Si falla por idPersona NULL o restricción, intentar con 0 como valor neutral
+                try:
+                    ins3.execute('''
+                        INSERT INTO cuenta_corriente_O 
+                        (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                        VALUES ('proveedor', %s, %s, %s, 'compra', %s, 0, %s, %s, %s, 1)
+                    ''', (0, target_company, fechaCompra, new_id,
+                          float(payload.montoTotal), float(payload.montoTotal), descripcion))
+                    conn.commit()
+                except Exception:
+                    # No bloquear creación de compra si el asiento contable falla
+                    pass
+        else:  # contado (idTipoPago == 2 o 7)
+            descripcion = f"Compra #{new_id} al contado - Proveedor: {nombre_proveedor}"
+            # Registrar salida de caja: tipo=caja, debe=montoTotal (salida de efectivo)
+            try:
+                ins3.execute('''
+                    INSERT INTO cuenta_corriente_O 
+                    (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                    VALUES ('caja', NULL, %s, %s, 'compra', %s, %s, 0, %s, %s, 1)
+                ''', (target_company, fechaCompra, new_id, 
+                      float(payload.montoTotal), 
+                      -float(payload.montoTotal),
+                      descripcion))
+                conn.commit()
+            except Exception:
+                # No bloquear creación de compra si el asiento contable falla
+                pass
+        
+        ins3.close()
 
         cur.close()
         conn.close()
@@ -588,9 +795,9 @@ def create_compra(payload: CompraIn, x_user_role: str = Header(None), request: R
 
 @app.put('/compras/{id}', response_model=CompraOut)
 def update_compra(id: int, payload: CompraIn, x_user_role: str = Header(None), request: Request = None):
-    """Actualizar compra (solo estado y observaciones)."""
+    """Actualizar compra: estado, observaciones, y si 'detalles' está presente, reemplazar detalles y lotes."""
     role = get_role(x_user_role, request)
-    if role not in ('admin', 'superadmin'):
+    if role not in ('admin', 'editor', 'superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
 
     try:
@@ -611,25 +818,60 @@ def update_compra(id: int, payload: CompraIn, x_user_role: str = Header(None), r
             raise HTTPException(status_code=403, detail='No autorizado')
 
         upd = conn.cursor()
-        
+
         # Si se está anulando la compra (estado = 0), actualizar lotes y poner total en 0
         if payload.estado == 0:
-            # Poner stockActual de los lotes en 0
             upd.execute('UPDATE lote_producto SET stockActual = 0 WHERE idCompra = %s', (id,))
-            # Actualizar compra: estado = 0, montoTotal = 0, observaciones
             upd.execute('''
                 UPDATE compra_O 
                 SET estado = %s, montoTotal = 0, observaciones = %s
                 WHERE idCompra = %s
             ''', (payload.estado, payload.observaciones, id))
         else:
-            # Actualizar solo estado y observaciones (sin cambiar montoTotal)
+            # Si 'detalles' está presente y no vacío, reemplazar detalles y lotes
+            if hasattr(payload, 'detalles') and payload.detalles:
+                # Eliminar detalles y lotes existentes
+                del_cur = conn.cursor()
+                del_cur.execute('DELETE FROM detalle_compra_O WHERE idCompra = %s', (id,))
+                del_cur.execute('DELETE FROM lote_producto WHERE idCompra = %s', (id,))
+                conn.commit()
+                del_cur.close()
+
+                # Insertar nuevos detalles y lotes
+                for det in payload.detalles:
+                    ins2 = conn.cursor()
+                    fechaVenc = det.fechaVencimiento if hasattr(det, 'fechaVencimiento') else None
+                    ins2.execute('''
+                        INSERT INTO detalle_compra_O (
+                            idCompra, idProducto, cantidad_caja, precio_unitario, precio_paquete,
+                            botellas_por_caja, precio_por_botella, fechaVencimiento
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (
+                        id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), float(det.precio_unitario),
+                        int(det.botellas_por_caja) if getattr(det, 'botellas_por_caja', None) is not None else None,
+                        float(det.precio_por_botella) if getattr(det, 'precio_por_botella', None) is not None else None,
+                        fechaVenc
+                    ))
+                    # Insertar lote_producto
+                    ins2.execute('''
+                        INSERT INTO lote_producto 
+                        (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador, idCompra, botellasPorCaja)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (
+                        det.idProducto, payload.idProveedor, payload.fechaCompra or None, fechaVenc, float(det.precio_unitario),
+                        det.cantidad_caja, det.cantidad_caja, compra['idEmpresa'], None, id,
+                        int(det.botellas_por_caja) if getattr(det, 'botellas_por_caja', None) is not None else None
+                    ))
+                    conn.commit()
+                    ins2.close()
+            # Actualizar estado y observaciones (sin cambiar montoTotal)
             upd.execute('''
                 UPDATE compra_O 
                 SET estado = %s, observaciones = %s
                 WHERE idCompra = %s
             ''', (payload.estado, payload.observaciones, id))
-        
+
         conn.commit()
         upd.close()
         cur.close()
@@ -707,7 +949,7 @@ def health():
 
 @app.get('/compras/{id}/lotes')
 def get_lotes_compra(id: int, x_user_role: str = Header(None), request: Request = None):
-    """Obtener lotes de una compra específica."""
+    """Obtener lotes de una compra espec├¡fica."""
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
@@ -727,7 +969,7 @@ def get_lotes_compra(id: int, x_user_role: str = Header(None), request: Request 
             conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
 
-        # Obtener lotes de esta compra con información de producto
+        # Obtener lotes de esta compra con informaci├│n de producto
         cur.execute('''
             SELECT 
                 l.idLote,

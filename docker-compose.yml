@@ -166,6 +166,44 @@ services:
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
 
+  rutas_service:
+    build:
+      context: ./backend/rutas_service
+      dockerfile: Dockerfile
+    container_name: rutas_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8008:8008"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  entregas_service:
+    build:
+      context: ./backend/entregas_service
+      dockerfile: Dockerfile
+    container_name: entregas_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8009:8000"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+    volumes:
+      - ./backend/entregas_service:/app
+
   frontend:
     build:
       context: ./frontend
@@ -191,6 +229,8 @@ services:
       - compra_service
       - proveedores_service
       - cuentas_service
+      - rutas_service
+      - entregas_service
     ports:
       - "80:80"
     volumes:

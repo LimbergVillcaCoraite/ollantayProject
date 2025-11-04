@@ -238,8 +238,18 @@ def create_loan(payload: PrestamoIn, x_user_role: str = Header(None), request: R
     role = get_role(x_user_role, request)
     if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
-    # basic validations: chofer must exist, id_persona if provided must exist
+    
     try:
+        # Si el usuario NO es admin ni superadmin, auto-completar id_persona con el usuario actual
+        id_persona_final = payload.id_persona
+        if role not in ('admin', 'superadmin'):
+            # Obtener id_persona del usuario actual desde JWT
+            id_persona_actual = get_id_persona_from_request(request)
+            if id_persona_actual:
+                id_persona_final = id_persona_actual
+            elif payload.id_persona is None:
+                raise HTTPException(status_code=400, detail='No se pudo determinar la persona que presta')
+        
         # validate fecha_prestamo is not in the future (if provided)
         if payload.fecha_prestamo:
             try:
@@ -257,8 +267,8 @@ def create_loan(payload: PrestamoIn, x_user_role: str = Header(None), request: R
             cur.close(); conn.close();
             raise HTTPException(status_code=400, detail='Chofer no existe')
         # check id_persona if provided
-        if payload.id_persona is not None:
-            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (payload.id_persona,))
+        if id_persona_final is not None:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona = %s', (id_persona_final,))
             pas = cur.fetchone()
             if not pas:
                 cur.close(); conn.close();
@@ -281,14 +291,14 @@ def create_loan(payload: PrestamoIn, x_user_role: str = Header(None), request: R
         # estado_prestamo por defecto activo (0) si no se envía
         estado_prestamo = payload.estado_prestamo if payload.estado_prestamo is not None else 0
 
-        # insert
+        # insert con id_persona_final
         ins = conn.cursor()
         ins.execute('INSERT INTO prestamo_O (cantidad_envaseCaja, cantidad_prestamoBotellas, descripcion_envase, fecha_prestamo, id_persona, estado_prestamo, fecha_devolucion, chofer, idTipocaja, idProducto) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-                    (payload.cantidad_envaseCaja, payload.cantidad_prestamoBotellas, payload.descripcion_envase, payload.fecha_prestamo, payload.id_persona, estado_prestamo, payload.fecha_devolucion, payload.chofer, payload.idTipocaja, payload.idProducto))
+                    (payload.cantidad_envaseCaja, payload.cantidad_prestamoBotellas, payload.descripcion_envase, payload.fecha_prestamo, id_persona_final, estado_prestamo, payload.fecha_devolucion, payload.chofer, payload.idTipocaja, payload.idProducto))
         conn.commit()
         new_id = ins.lastrowid
         ins.close(); cur.close(); conn.close()
-        out = {**payload.dict(), 'id_prestamo': new_id, 'estado_prestamo': estado_prestamo}
+        out = {**payload.dict(), 'id_prestamo': new_id, 'estado_prestamo': estado_prestamo, 'id_persona': id_persona_final}
         for f in ('fecha_prestamo', 'fecha_devolucion'):
             if out.get(f) is not None:
                 try:
@@ -403,6 +413,7 @@ def list_tipocajas():
         cur = conn.cursor(dictionary=True)
         cur.execute('SELECT idTipocaja, nombretipo_caja FROM tipocaja_O ORDER BY idTipocaja')
         rows = cur.fetchall()
+
         cur.close()
         conn.close()
         return rows
@@ -462,7 +473,9 @@ def list_productos(request: Request):
                        p.idTipoBotella, tb.tipoBotella, p.idEmpresa, p.idUsuarioCreador,
                        NULL AS lote_activo_id, NULL AS idProveedor, NULL AS nombreProveedor,
                        NULL AS fecha_vencimiento_proxima, NULL AS precio_compra_actual,
-                       NULL AS precio_minorista, NULL AS precio_mayorista, NULL AS precio_especial,
+                       p.precioMinorista AS precio_minorista, 
+                       p.precioMayorista AS precio_mayorista, 
+                       p.precioEspecial AS precio_especial,
                        p.stockCaja AS stock_total_lotes
                 FROM producto_O p
                 LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
@@ -492,7 +505,9 @@ def list_productos(request: Request):
                        p.idTipoBotella, tb.tipoBotella, p.idEmpresa, p.idUsuarioCreador,
                        NULL AS lote_activo_id, NULL AS idProveedor, NULL AS nombreProveedor,
                        NULL AS fecha_vencimiento_proxima, NULL AS precio_compra_actual,
-                       NULL AS precio_minorista, NULL AS precio_mayorista, NULL AS precio_especial,
+                       p.precioMinorista AS precio_minorista, 
+                       p.precioMayorista AS precio_mayorista, 
+                       p.precioEspecial AS precio_especial,
                        p.stockCaja AS stock_total_lotes
                 FROM producto_O p
                 LEFT JOIN tipoBotella tb ON p.idTipoBotella = tb.idTipoBotella
@@ -502,6 +517,34 @@ def list_productos(request: Request):
                 cur.execute(query, (company_id,))
         
         rows = cur.fetchall()
+
+        # Sobrescribir con precios manuales de precio_producto_O si existen (prioridad sobre calculados)
+        try:
+            for row in rows:
+                pid = row.get('idProducto')
+                if not pid:
+                    continue
+                cur.execute(
+                    """
+                    SELECT tipoPrecio, precio
+                    FROM precio_producto_O
+                    WHERE idProducto = %s AND activo = 1
+                    """,
+                    (pid,),
+                )
+                precios_manuales = cur.fetchall() or []
+                for pm in precios_manuales:
+                    t = (pm.get('tipoPrecio') or '').lower()
+                    if t == 'minorista':
+                        row['precio_minorista'] = pm.get('precio')
+                    elif t == 'mayorista':
+                        row['precio_mayorista'] = pm.get('precio')
+                    elif t == 'especial':
+                        row['precio_especial'] = pm.get('precio')
+        except Exception as _e:
+            # No bloquear listado si la tabla no existe en algunas instalaciones
+            print(f"WARN: precios manuales no aplicados: {_e}")
+
         cur.close()
         conn.close()
         return rows
@@ -546,7 +589,31 @@ async def create_producto(
     
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
+        cur = conn.cursor(dictionary=True)
+
+        # Obtener nombre de la empresa para generar código
+        cur.execute("SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s", (target_company_id,))
+        row_emp = cur.fetchone()
+        if not row_emp:
+            raise HTTPException(status_code=404, detail="Empresa no encontrada")
+        nombre_empresa = row_emp.get('nombre_empresa') or ''
+        empresa_slug = ''.join(c for c in nombre_empresa if c.isalnum()).upper()
+        from datetime import datetime
+        today = datetime.utcnow()
+        y, m, d = today.strftime('%Y'), today.strftime('%m'), today.strftime('%d')
+        abbr = 'PRD'
+
+        # Calcular siguiente secuencia del día por empresa para productos
+        prefix = f"{empresa_slug}-{abbr}-{y}-{m}-{d}-"
+        # Buscar códigos existentes con ese prefijo y obtener el máximo sufijo numérico
+        cur.execute("""
+            SELECT MAX(CAST(SUBSTRING_INDEX(codigoProducto, '-', -1) AS UNSIGNED)) AS max_seq
+            FROM producto_O
+            WHERE idEmpresa = %s AND codigoProducto LIKE %s
+        """, (target_company_id, prefix + '%'))
+        row_seq = cur.fetchone() or {}
+        next_seq = int(row_seq.get('max_seq') or 0) + 1
+        codigo = f"{prefix}{next_seq:03d}"
         
         # Manejar imagen
         imagen_path = None
@@ -569,11 +636,23 @@ async def create_producto(
             with open(f"/app{imagen_path}", "wb") as buffer:
                 buffer.write(processed_content)
         
-        # Insertar producto con usuario creador
-        cur.execute("""
-            INSERT INTO producto_O (nombreProducto, stockCaja, idEmpresa, idTipoBotella, imagen_producto, idUsuarioCreador)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (nombreProducto, stockCaja, target_company_id, idTipoBotella, imagen_path, id_persona))
+        # Insertar producto con usuario creador y código
+        # Nota: algunas instalaciones pueden no tener columna imagen_producto; si falla, capturaremos y reintentaremos sin la columna
+        try:
+            cur.execute("""
+                INSERT INTO producto_O (nombreProducto, codigoProducto, stockCaja, idEmpresa, idTipoBotella, imagen_producto, idUsuarioCreador)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (nombreProducto, codigo, stockCaja, target_company_id, idTipoBotella, imagen_path, id_persona))
+        except Exception as e:
+            # Reintentar sin imagen_producto si la columna no existe en la BD
+            if 'Unknown column' in str(e) and 'imagen_producto' in str(e):
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO producto_O (nombreProducto, codigoProducto, stockCaja, idEmpresa, idTipoBotella, idUsuarioCreador)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (nombreProducto, codigo, stockCaja, target_company_id, idTipoBotella, id_persona))
+            else:
+                raise
         
         producto_id = cur.lastrowid
         
@@ -584,7 +663,7 @@ async def create_producto(
         cur.close()
         conn.close()
         
-        return {"message": "Producto creado exitosamente. Agregue un lote para establecer precios.", "idProducto": producto_id}
+        return {"message": "Producto creado exitosamente. Agregue un lote para establecer precios.", "idProducto": producto_id, "codigoProducto": codigo}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -622,12 +701,12 @@ async def update_producto(
         if not producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        # Permisos: cualquier admin de la misma empresa o superadmin puede editar
-        if user_role not in ('admin', 'superadmin'):
-            raise HTTPException(status_code=403, detail="Solo administradores pueden editar productos")
+        # Permisos: administradores y editores de la misma empresa o superadmin pueden editar
+        if user_role not in ('admin', 'editor', 'superadmin'):
+            raise HTTPException(status_code=403, detail="Solo administradores o editores pueden editar productos")
         
         # Manejar imagen
-        imagen_path = producto['imagen_producto']
+        imagen_path = producto.get('imagen_producto')
         if imagen_producto and imagen_producto.filename:
             # Eliminar imagen anterior si existe
             if imagen_path and os.path.exists(f"/app{imagen_path}"):
@@ -651,14 +730,53 @@ async def update_producto(
             with open(f"/app{imagen_path}", "wb") as buffer:
                 buffer.write(processed_content)
         
-        # Actualizar producto
-        cur.execute("""
-            UPDATE producto_O 
-            SET nombreProducto = %s, stockCaja = %s, idTipoBotella = %s, imagen_producto = %s
-            WHERE idProducto = %s
-        """, (nombreProducto, stockCaja, idTipoBotella, imagen_path, producto_id))
+        # Actualizar producto con tolerancia si la columna imagen_producto no existe en algunas instalaciones
+        try:
+            cur.execute(
+                """
+                UPDATE producto_O 
+                SET nombreProducto = %s, stockCaja = %s, idTipoBotella = %s, imagen_producto = %s
+                WHERE idProducto = %s
+                """,
+                (nombreProducto, stockCaja, idTipoBotella, imagen_path, producto_id),
+            )
+        except Exception as e:
+            if 'Unknown column' in str(e) and 'imagen_producto' in str(e):
+                # Reintentar sin la columna de imagen
+                cur.execute(
+                    """
+                    UPDATE producto_O 
+                    SET nombreProducto = %s, stockCaja = %s, idTipoBotella = %s
+                    WHERE idProducto = %s
+                    """,
+                    (nombreProducto, stockCaja, idTipoBotella, producto_id),
+                )
+            else:
+                raise
         
-        # Precios manejados por lotes: no actualizar precio_producto_O aquí
+        # Actualizar precios en precio_producto_O si se proporcionan
+        if precio_minorista is not None or precio_mayorista is not None or precio_especial is not None:
+            # Desactivar precios anteriores
+            cur.execute("UPDATE precio_producto_O SET activo = 0 WHERE idProducto = %s", (producto_id,))
+        
+            # Insertar nuevos precios activos
+            if precio_minorista is not None and precio_minorista > 0:
+                cur.execute("""
+                    INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, activo)
+                    VALUES (%s, 'minorista', %s, 1)
+                """, (producto_id, precio_minorista))
+        
+            if precio_mayorista is not None and precio_mayorista > 0:
+                cur.execute("""
+                    INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, activo)
+                    VALUES (%s, 'mayorista', %s, 1)
+                """, (producto_id, precio_mayorista))
+        
+            if precio_especial is not None and precio_especial > 0:
+                cur.execute("""
+                    INSERT INTO precio_producto_O (idProducto, tipoPrecio, precio, activo)
+                    VALUES (%s, 'especial', %s, 1)
+                """, (producto_id, precio_especial))
         
         conn.commit()
         cur.close()
@@ -772,7 +890,7 @@ def list_lotes(request: Request, idProducto: int = None):
                     FROM lote_producto l
                     LEFT JOIN producto_O p ON l.idProducto = p.idProducto
                     LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
-                    WHERE l.idProducto = %s
+                    WHERE l.idProducto = %s AND l.stockActual > 0
                     ORDER BY l.fechaVencimiento ASC, l.fechaCompra ASC
                 """, (idProducto,))
             else:
@@ -781,6 +899,7 @@ def list_lotes(request: Request, idProducto: int = None):
                     FROM lote_producto l
                     LEFT JOIN producto_O p ON l.idProducto = p.idProducto
                     LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
+                    WHERE l.stockActual > 0
                     ORDER BY l.fechaVencimiento ASC
                 """)
         else:
@@ -793,7 +912,7 @@ def list_lotes(request: Request, idProducto: int = None):
                     FROM lote_producto l
                     LEFT JOIN producto_O p ON l.idProducto = p.idProducto
                     LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
-                    WHERE l.idEmpresa = %s AND l.idProducto = %s
+                    WHERE l.idEmpresa = %s AND l.idProducto = %s AND l.stockActual > 0
                     ORDER BY l.fechaVencimiento ASC, l.fechaCompra ASC
                 """, (company_id, idProducto))
             else:
@@ -802,7 +921,7 @@ def list_lotes(request: Request, idProducto: int = None):
                     FROM lote_producto l
                     LEFT JOIN producto_O p ON l.idProducto = p.idProducto
                     LEFT JOIN proveedor_O prov ON l.idProveedor = prov.idProveedor
-                    WHERE l.idEmpresa = %s
+                    WHERE l.idEmpresa = %s AND l.stockActual > 0
                     ORDER BY l.fechaVencimiento ASC
                 """, (company_id,))
         
@@ -814,6 +933,83 @@ def list_lotes(request: Request, idProducto: int = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get('/productos/{idProducto}/precios-proveedor')
+def precios_por_proveedor(idProducto: int, request: Request, idProveedor: int = None, company_id: int = None):
+    """
+    Devuelve el último precio de compra por proveedor para un producto dado.
+    - Si el usuario no es superadmin, se limita a su empresa (JWT company_id)
+    - Si es superadmin y se pasa company_id, se filtra por esa empresa; si no, incluye todas
+    Respuesta: [{ idProveedor, nombreProveedor, precioCompra, fechaCompra }]
+    """
+    user_role = request.headers.get('x-user-role', '').lower()
+    user_company = get_company_id_from_request(request)
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+
+        where = ['lp.idProducto = %s']
+        params = [idProducto]
+
+        # Scoping por empresa
+        if user_role == 'superadmin':
+            if company_id is not None:
+                where.append('lp.idEmpresa = %s')
+                params.append(company_id)
+        else:
+            if not user_company:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+            where.append('lp.idEmpresa = %s')
+            params.append(user_company)
+
+        # Filtro por proveedor (opcional)
+        if idProveedor is not None:
+            where.append('lp.idProveedor = %s')
+            params.append(idProveedor)
+
+        # Obtener el último precio por proveedor usando subconsulta de max(fechaCompra)
+        query = f'''
+            SELECT lp.idProveedor, prov.nombreComercial AS nombreProveedor, lp.precioCompra, lp.fechaCompra
+            FROM lote_producto lp
+            LEFT JOIN proveedor_O prov ON prov.idProveedor = lp.idProveedor
+            JOIN (
+                SELECT idProveedor, MAX(fechaCompra) AS maxFecha
+                FROM lote_producto
+                WHERE idProducto = %s {' AND idEmpresa = %s' if (user_role != 'superadmin' or company_id is not None) else ''} {' AND idProveedor = %s' if idProveedor is not None else ''}
+                GROUP BY idProveedor
+            ) t ON t.idProveedor = lp.idProveedor AND t.maxFecha = lp.fechaCompra
+            WHERE {' AND '.join(where)}
+            ORDER BY lp.fechaCompra DESC
+        '''
+
+        # Construir params para la subconsulta + consulta principal en el mismo orden de los placeholders
+        sub_params = [idProducto]
+        if user_role != 'superadmin' or company_id is not None:
+            sub_params.append(company_id if user_role == 'superadmin' else user_company)
+        if idProveedor is not None:
+            sub_params.append(idProveedor)
+        all_params = sub_params + params
+
+        cur.execute(query, tuple(all_params))
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+
+        # Normalizar tipos
+        for r in rows:
+            if r.get('fechaCompra') is not None:
+                try:
+                    r['fechaCompra'] = r['fechaCompra'].isoformat()
+                except Exception:
+                    r['fechaCompra'] = str(r['fechaCompra'])
+            r['precioCompra'] = float(r.get('precioCompra') or 0)
+
+        return rows
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post('/lotes')
 async def create_lote(
     request: Request,
@@ -822,7 +1018,10 @@ async def create_lote(
     fechaCompra: str = Form(...),
     fechaVencimiento: str = Form(None),
     precioCompra: float = Form(...),
-    cantidadCajas: int = Form(...)
+    cantidadCajas: int = Form(...),
+    precio_minorista: float = Form(None),
+    precio_mayorista: float = Form(None),
+    precio_especial: float = Form(None)
 ):
     """Crea un nuevo lote (registra una compra de producto)"""
     company_id = get_company_id_from_request(request)
@@ -855,12 +1054,62 @@ async def create_lote(
         if not producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado o no pertenece a su empresa")
         
-        # Insertar lote
-        cur.execute("""
-            INSERT INTO lote_producto 
-            (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, idEmpresa, idUsuarioCreador)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, cantidadCajas, company_id, id_persona))
+        # Preparar código de lote: EMPRESASLUG-LOT-YYYY-MM-DD-NNN
+        cur.execute("SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s", (company_id,))
+        emp = cur.fetchone() or {}
+        nombre_empresa = (emp.get('nombre_empresa') or '').upper()
+        empresa_slug = ''.join(ch for ch in nombre_empresa if ch.isalnum())
+        from datetime import datetime as _dt
+        f = _dt.fromisoformat(fechaCompra) if fechaCompra else _dt.utcnow()
+        prefix = f"{empresa_slug}-LOT-{f.year}-{f.month:02d}-{f.day:02d}-"
+        # Secuencia para el día/empresa
+        try:
+            cur.execute("""
+                SELECT MAX(CAST(SUBSTRING_INDEX(codigoLote, '-', -1) AS UNSIGNED)) AS max_seq
+                FROM lote_producto
+                WHERE idEmpresa = %s AND codigoLote LIKE %s
+            """, (company_id, prefix + '%'))
+            row_seq = cur.fetchone() or {}
+            seq = int(row_seq.get('max_seq') or 0) + 1
+        except Exception:
+            seq = 1
+
+        codigo_lote = f"{prefix}{seq:03d}"
+
+        # Insertar lote (con fallback si la columna no existe)
+        try:
+            # Intentar insertar con todos los campos incluyendo precios
+            cur.execute("""
+                INSERT INTO lote_producto 
+                (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, 
+                 idEmpresa, idUsuarioCreador, codigoLote, precio_minorista, precio_mayorista, precio_especial)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, cantidadCajas, 
+                  company_id, id_persona, codigo_lote, precio_minorista, precio_mayorista, precio_especial))
+        except Exception as e:
+            if 'Unknown column' in str(e):
+                # Si faltan columnas de precios, crear y reintentar
+                alt = conn.cursor()
+                for col in ['precio_minorista', 'precio_mayorista', 'precio_especial', 'codigoLote']:
+                    try:
+                        if col == 'codigoLote':
+                            alt.execute(f"ALTER TABLE lote_producto ADD COLUMN {col} VARCHAR(100) NULL")
+                        else:
+                            alt.execute(f"ALTER TABLE lote_producto ADD COLUMN {col} DECIMAL(10,2) NULL")
+                    except Exception:
+                        pass
+                conn.commit()
+                alt.close()
+                # Reintentar inserción completa
+                cur.execute("""
+                    INSERT INTO lote_producto 
+                    (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, stockActual, 
+                     idEmpresa, idUsuarioCreador, codigoLote, precio_minorista, precio_mayorista, precio_especial)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (idProducto, idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas, cantidadCajas, 
+                      company_id, id_persona, codigo_lote, precio_minorista, precio_mayorista, precio_especial))
+            else:
+                raise
         
         lote_id = cur.lastrowid
         
@@ -870,7 +1119,83 @@ async def create_lote(
         cur.close()
         conn.close()
         
-        return {"message": "Lote creado exitosamente", "idLote": lote_id}
+        return {"message": "Lote creado exitosamente", "idLote": lote_id, "codigoLote": codigo_lote}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/lotes/{id}')
+async def update_lote(
+    id: int,
+    request: Request,
+    precio_minorista: float = Form(None),
+    precio_mayorista: float = Form(None),
+    precio_especial: float = Form(None)
+):
+    """Actualiza los precios de un lote específico"""
+    company_id = get_company_id_from_request(request)
+    user_role = request.headers.get('x-user-role', '').lower()
+    
+    if not company_id and user_role != 'superadmin':
+        raise HTTPException(status_code=403, detail="No se pudo determinar la empresa del usuario")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Verificar que el lote existe y pertenece a la empresa
+        if user_role == 'superadmin':
+            cur.execute("SELECT * FROM lote_producto WHERE idLote = %s", (id,))
+        else:
+            cur.execute("SELECT * FROM lote_producto WHERE idLote = %s AND idEmpresa = %s", (id, company_id))
+        
+        lote = cur.fetchone()
+        if not lote:
+            raise HTTPException(status_code=404, detail="Lote no encontrado o no pertenece a su empresa")
+        
+        # Construir SET dinámico
+        updates = []
+        params = []
+        if precio_minorista is not None:
+            updates.append('precio_minorista = %s')
+            params.append(precio_minorista)
+        if precio_mayorista is not None:
+            updates.append('precio_mayorista = %s')
+            params.append(precio_mayorista)
+        if precio_especial is not None:
+            updates.append('precio_especial = %s')
+            params.append(precio_especial)
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No se proporcionaron precios para actualizar")
+        
+        params.append(id)
+        
+        # Intentar actualizar (con fallback si columnas no existen)
+        try:
+            cur.execute(f"UPDATE lote_producto SET {', '.join(updates)} WHERE idLote = %s", tuple(params))
+            conn.commit()
+        except Exception as e:
+            if 'Unknown column' in str(e):
+                # Crear columnas si no existen
+                alt = conn.cursor()
+                for col in ['precio_minorista', 'precio_mayorista', 'precio_especial']:
+                    try:
+                        alt.execute(f"ALTER TABLE lote_producto ADD COLUMN {col} DECIMAL(10,2) NULL")
+                    except Exception:
+                        pass
+                conn.commit()
+                alt.close()
+                # Reintentar
+                cur.execute(f"UPDATE lote_producto SET {', '.join(updates)} WHERE idLote = %s", tuple(params))
+                conn.commit()
+            else:
+                raise
+        
+        cur.close()
+        conn.close()
+        
+        return {"message": "Precios del lote actualizados exitosamente"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

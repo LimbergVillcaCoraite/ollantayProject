@@ -216,9 +216,9 @@ export default function Proveedores({ API, userRole = 'admin', permissions = [] 
         throw new Error(errorData.detail || `HTTP ${res.status}`)
       }
 
-      await loadProveedores()
-      resetForm()
-      toast.showToast(editingId ? 'Proveedor actualizado' : 'Proveedor creado', 'success')
+  await loadProveedores()
+  resetForm()
+  toast.push(editingId ? 'Proveedor actualizado' : 'Proveedor creado', 'success')
     } catch (err) {
       console.error('Error saving proveedor:', err)
       setError('Error guardando: ' + err.message)
@@ -279,11 +279,11 @@ export default function Proveedores({ API, userRole = 'admin', permissions = [] 
         throw new Error(errorData.detail || `HTTP ${res.status}`)
       }
 
-      await loadProveedores()
-      toast.showToast('Proveedor eliminado', 'success')
+  await loadProveedores()
+  toast.push('Proveedor eliminado', 'success')
     } catch (err) {
-      console.error('Error deleting proveedor:', err)
-      toast.showToast('Error eliminando: ' + err.message, 'error')
+  console.error('Error deleting proveedor:', err)
+  toast.push('Error eliminando: ' + err.message, 'error')
     }
   }
 

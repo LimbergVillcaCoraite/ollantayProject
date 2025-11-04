@@ -55,7 +55,7 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
       <h2 className="text-xl font-semibold mb-2">Tipos</h2>
       {loading && <p>Cargando tipos...</p>}
       {error && <p className="text-red-600">{error}</p>}
-  <div className="bg-panel rounded shadow overflow-x-auto text-panel p-4">
+  <div className="bg-panel rounded shadow text-panel p-4">
   <div className="mb-4 flex items-center justify-between">
         <div>
           <h3 className="font-medium">Listado de Tipos</h3>
@@ -74,43 +74,78 @@ export default function Tipos({types, loading, error, onEdit, onDelete, onRefres
           </div>
         </div>
       )}
-        <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
-          <thead className="bg-gray-50 dark:bg-gray-800">
-            <tr>
-              <th className="px-4 py-2">ID</th>
-              <th className="px-4 py-2">Tipo</th>
-              <th className="px-4 py-2">Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {types.length === 0 && <tr><td className="p-4" colSpan={3}>No hay tipos</td></tr>}
-            {types.map(t => (
-              <tr key={t.id} className="border-b dark:border-gray-700">
-                <td className="px-4 py-2">{t.id}</td>
-                <td className="px-4 py-2">{editingId === t.id ? (
-                  <input className="p-2 border w-full" value={editingTipo} onChange={e=>setEditingTipo(e.target.value)} />
-                ) : (
-                  t.tipo
-                )}</td>
-                <td className="px-4 py-2">
-                  <div className="flex gap-2 justify-end">
-                    {editingId === t.id ? (
-                      <>
-                        <button disabled={editingSaving} onClick={()=>saveEdit(t.id)} className="btn btn-primary"><span className="mr-1">✓</span>Guardar</button>
-                        <button disabled={editingSaving} onClick={cancelEdit} className="btn btn-secondary"><span className="mr-1">✕</span>Cancelar</button>
-                      </>
-                    ) : (
-                      <>
-                        {has('tipos','update') && <button onClick={()=>startEdit(t)} className="btn btn-blue" title="Editar"><span className="mr-1">✎</span>Editar</button>}
-                        {has('tipos','delete') && <button onClick={()=>onDelete(t.id)} className="btn btn-danger" title="Eliminar"><span className="mr-1">🗑️</span>Borrar</button>}
-                      </>
-                    )}
-                  </div>
-                </td>
+        {/* Desktop table (hidden on mobile) */}
+        <div className="hidden md:block overflow-x-auto rounded-lg">
+          <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
+            <thead className="bg-gray-50 dark:bg-gray-800">
+              <tr>
+                <th className="px-4 py-2 text-left">ID</th>
+                <th className="px-4 py-2 text-left">Tipo</th>
+                <th className="px-4 py-2 text-left">Acciones</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {types.length === 0 && <tr><td className="p-4" colSpan={3}>No hay tipos</td></tr>}
+              {types.map(t => (
+                <tr key={t.id} className="border-b dark:border-gray-700">
+                  <td className="px-4 py-2">{t.id}</td>
+                  <td className="px-4 py-2">{editingId === t.id ? (
+                    <input className="p-2 border w-full" value={editingTipo} onChange={e=>setEditingTipo(e.target.value)} />
+                  ) : (
+                    t.tipo
+                  )}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-2 justify-end">
+                      {editingId === t.id ? (
+                        <>
+                          <button disabled={editingSaving} onClick={()=>saveEdit(t.id)} className="btn btn-primary"><span className="mr-1">✓</span>Guardar</button>
+                          <button disabled={editingSaving} onClick={cancelEdit} className="btn btn-secondary"><span className="mr-1">✕</span>Cancelar</button>
+                        </>
+                      ) : (
+                        <>
+                          {has('tipos','update') && <button onClick={()=>startEdit(t)} className="btn btn-blue" title="Editar"><span className="mr-1">✎</span>Editar</button>}
+                          {has('tipos','delete') && <button onClick={()=>onDelete(t.id)} className="btn btn-danger" title="Eliminar"><span className="mr-1">🗑️</span>Borrar</button>}
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile cards (visible on mobile only) */}
+        <div className="md:hidden space-y-3">
+          {types.length === 0 && (
+            <div className="p-4 rounded bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 text-center">No hay tipos</div>
+          )}
+          {types.map(t => (
+            <div key={t.id} className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 shadow-sm">
+              {editingId === t.id ? (
+                <div className="space-y-2">
+                  <label className="block text-sm text-gray-600 dark:text-gray-300">Tipo</label>
+                  <input className="p-2 border w-full dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" value={editingTipo} onChange={e=>setEditingTipo(e.target.value)} />
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    <button disabled={editingSaving} onClick={()=>saveEdit(t.id)} className="btn btn-primary">Guardar</button>
+                    <button disabled={editingSaving} onClick={cancelEdit} className="btn btn-secondary">Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">ID: {t.id}</div>
+                    <div className="text-base font-semibold text-gray-900 dark:text-white">{t.tipo}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    {has('tipos','update') && <button onClick={()=>startEdit(t)} className="btn btn-blue">Editar</button>}
+                    {has('tipos','delete') && <button onClick={()=>onDelete(t.id)} className="btn btn-danger">Borrar</button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

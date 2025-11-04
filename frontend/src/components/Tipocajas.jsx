@@ -59,34 +59,58 @@ export default function Tipocajas({ API, userRole, permissions }){
           </div>
         </form>
       )}
-      <div className="bg-panel rounded shadow overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 dark:bg-gray-800">
-            <tr>
-              <th className="px-4 py-2 text-left">ID</th>
-              <th className="px-4 py-2 text-left">Nombre</th>
-              <th className="px-4 py-2 text-left">Botellas por caja</th>
-              <th className="px-4 py-2 text-left">Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td className="p-4" colSpan={4}>Cargando...</td></tr>}
-            {!loading && items.length===0 && <tr><td className="p-4" colSpan={4}>Sin datos</td></tr>}
-            {items.map(it => (
-              <tr key={it.idTipocaja} className="border-b dark:border-gray-700">
-                <td className="px-4 py-2">{it.idTipocaja}</td>
-                <td className="px-4 py-2">{it.nombretipo_caja}</td>
-                <td className="px-4 py-2">{it.cantidadBotellasCaja}</td>
-                <td className="px-4 py-2">
-                  <div className="flex gap-2">
-                    <button onClick={()=>startEdit(it)} className="btn btn-blue">Editar</button>
-                    <button onClick={()=>deleteItem(it.idTipocaja)} className="btn btn-danger">Borrar</button>
-                  </div>
-                </td>
+      <div className="bg-panel rounded shadow">
+        {/* Desktop table (hidden on mobile) */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 dark:bg-gray-800">
+              <tr>
+                <th className="px-4 py-2 text-left">ID</th>
+                <th className="px-4 py-2 text-left">Nombre</th>
+                <th className="px-4 py-2 text-left">Botellas por caja</th>
+                <th className="px-4 py-2 text-left">Acciones</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {loading && <tr><td className="p-4" colSpan={4}>Cargando...</td></tr>}
+              {!loading && items.length===0 && <tr><td className="p-4" colSpan={4}>Sin datos</td></tr>}
+              {items.map(it => (
+                <tr key={it.idTipocaja} className="border-b dark:border-gray-700">
+                  <td className="px-4 py-2">{it.idTipocaja}</td>
+                  <td className="px-4 py-2">{it.nombretipo_caja}</td>
+                  <td className="px-4 py-2">{it.cantidadBotellasCaja}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-2">
+                      <button onClick={()=>startEdit(it)} className="btn btn-blue">Editar</button>
+                      <button onClick={()=>deleteItem(it.idTipocaja)} className="btn btn-danger">Borrar</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile cards (visible on mobile only) */}
+        <div className="md:hidden space-y-3 p-3">
+          {loading && <div className="p-4 rounded bg-white dark:bg-gray-800">Cargando...</div>}
+          {!loading && items.length===0 && <div className="p-4 rounded bg-white dark:bg-gray-800">Sin datos</div>}
+          {items.map(it => (
+            <div key={it.idTipocaja} className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">ID: {it.idTipocaja}</div>
+                  <div className="text-base font-semibold text-gray-900 dark:text-white">{it.nombretipo_caja}</div>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">{it.cantidadBotellasCaja} botellas/caja</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>startEdit(it)} className="btn btn-blue">Editar</button>
+                  <button onClick={()=>deleteItem(it.idTipocaja)} className="btn btn-danger">Borrar</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

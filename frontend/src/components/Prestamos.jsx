@@ -1188,3 +1188,4 @@ export default function Prestamos({API, API_PERSONAS, API_TYPES, userRole='admin
     </div>
   )
 }
+

@@ -11,10 +11,12 @@ import Ventas from './components/Ventas'
 import Compras from './components/Compras'
 import Proveedores from './components/Proveedores'
 import Productos from './components/Productos'
+import Rutas from './components/Rutas'
 import Cuentas from './components/Cuentas'
 import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
+import { usePermissions } from './hooks/usePermissions'
 
 export default function App(){
   const [view, setView] = useState('tipos')
@@ -41,7 +43,7 @@ export default function App(){
   })
   const [personasCompanyFilter, setPersonasCompanyFilter] = useState(null)
   const perms = loggedUser?.permissions || []
-  const has = (resource, action) => perms.includes(`${resource}:${action}`)
+  const { has, canViewPage, isAdmin, isSuperAdmin } = usePermissions(loggedUser)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false)
@@ -53,6 +55,35 @@ export default function App(){
       .then(data => setAppVersion(data.version))
       .catch(() => setAppVersion('1.0.0'))
   }, [])
+
+  // Verificar permisos cuando cambia la vista
+  useEffect(() => {
+    if (!loggedUser) return
+    
+    // Verificar si el usuario tiene permiso para ver la vista actual
+    if (!canViewPage(view)) {
+      console.warn(`⚠️ Usuario no tiene permiso para ver: ${view}. Redirigiendo a vista por defecto.`)
+      
+      // Encontrar la primera vista disponible para el usuario
+      const availableViews = [
+        'tipos', 'personas', 'empresas', 'prestamos', 'productos',
+        'caja', 'ventas', 'compras', 'proveedores', 'rutas', 'cuentas',
+        'usuarios', 'roles', 'superadmin'
+      ]
+      
+      const firstAvailable = availableViews.find(v => canViewPage(v))
+      
+      if (firstAvailable) {
+        console.log(`✅ Redirigiendo a: ${firstAvailable}`)
+        setView(firstAvailable)
+      } else {
+        console.error('❌ Usuario no tiene permisos para ninguna vista')
+        // Opcionalmente cerrar sesión si no tiene permisos
+        setLoggedUser(null)
+        setUserRole('')
+      }
+    }
+  }, [view, loggedUser])
 
   // Auto-refresh DISABLED - was causing view switching issues
   // If permissions change, user must log out and back in
@@ -226,33 +257,6 @@ export default function App(){
   useEffect(()=>{ loadTypes() }, [API_TYPES, userRole])
 
   // Ensure current view is permitted by permissions; if not, route to first allowed
-  useEffect(()=>{
-  const viewsOrder = ['prestamos','personas','empresas','tipos','productos']
-    const allowed = viewsOrder.filter(v => (
-      (v==='prestamos' && has('prestamos','view')) ||
-      (v==='personas' && has('personas','view')) ||
-      (v==='empresas' && has('empresas','view')) ||
-      (v==='tipos' && has('tipos','view')) ||
-      (v==='productos' && has('productos','view'))
-    ))
-    const adminAllowed = has('roles','manage')
-    
-    // Don't auto-redirect if user is on admin/management views to avoid interrupting their work
-    const managementViews = ['admin', 'usuarios', 'superadmin', 'roles', 'loading']
-    if(managementViews.includes(view)) {
-      console.log(`👤 User is on management view '${view}' - skipping auto-redirect`)
-      return
-    }
-    
-    if((view==='admin' || view==='usuarios') && !adminAllowed){
-      setView(allowed[0] || 'tipos')
-      return
-    }
-    if(!allowed.includes(view)){
-      setView(allowed[0] || (adminAllowed ? 'admin' : 'tipos'))
-    }
-  }, [perms])
-
   // handlers forwarded to Tipos component
   const handleEditTipo = (t)=>{ /* open edit in a modal or implement inline if desired */ }
   const handleDeleteTipo = async (id)=>{
@@ -356,67 +360,73 @@ export default function App(){
         {/* Sidebar */}
         <aside className={`fixed md:static z-40 left-0 top-16 h-[calc(100vh-4rem)] w-64 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-r shadow-lg flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
           <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-            {has('tipos','view') && (
+            {canViewPage('tipos') && (
               <button onClick={()=>{setView('tipos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='tipos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
                 Tipos
               </button>
             )}
-            {has('personas','view') && (
+            {canViewPage('personas') && (
               <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
                 Personas
               </button>
             )}
-            {has('empresas','view') && (
+            {canViewPage('empresas') && (
               <button onClick={()=>{setView('empresas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
                 Empresas
               </button>
             )}
-            {has('prestamos','view') && (
+            {canViewPage('prestamos') && (
               <button onClick={()=>changeView('prestamos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
                 Prestamos
               </button>
             )}
-            {(has('caja','view') || userRole === 'admin' || userRole === 'superadmin') && (
+            {canViewPage('caja') && (
               <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='caja' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
                 Caja
               </button>
             )}
-            {(has('ventas','view') || userRole === 'admin' || userRole === 'superadmin') && (
+            {canViewPage('ventas') && (
               <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='ventas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
                 Ventas
               </button>
             )}
-            {(has('compras','view') || userRole === 'admin' || userRole === 'superadmin') && (
+            {canViewPage('compras') && (
               <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
                 Compras
               </button>
             )}
-            {(has('proveedores','view') || userRole === 'admin' || userRole === 'superadmin') && (
+            {canViewPage('proveedores') && (
               <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='proveedores' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2-2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
                 Proveedores
               </button>
             )}
-            {has('productos','view') && (
+            {canViewPage('productos') && (
               <button onClick={()=>changeView('productos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='productos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.2"/></svg>
                 Productos
               </button>
             )}
-            {(has('cuentas','view') || userRole === 'admin' || userRole === 'superadmin') && (
+            {canViewPage('rutas') && (
+              <button onClick={()=>{setView('rutas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='rutas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                Rutas
+              </button>
+            )}
+            {canViewPage('cuentas') && (
               <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='cuentas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
                 Cuentas
               </button>
             )}
-            {has('roles','manage') && (
+            {canViewPage('usuarios') && (
               <>
                 <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
@@ -426,13 +436,13 @@ export default function App(){
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4M21 12c0 1.66-4 3-9 3s-9-1.34-9-3m18 0c0-1.66-4-3-9-3s-9 1.34-9 3m18 0v9c0 1.66-4 3-9 3s-9-1.34-9-3V12"/></svg>
                   Roles y Permisos
                 </button>
-                {userRole === 'superadmin' && (
-                  <button onClick={()=>{setView('superadmin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='superadmin' ? 'bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
-                    SuperAdmin
-                  </button>
-                )}
               </>
+            )}
+            {canViewPage('superadmin') && (
+              <button onClick={()=>{setView('superadmin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='superadmin' ? 'bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+                SuperAdmin
+              </button>
             )}
           </nav>
           
@@ -453,7 +463,7 @@ export default function App(){
                 <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{loggedUser?.username || userRole}</p>
               </div>
             </div>
-            {(userRole === 'admin' || userRole === 'superadmin') && (
+            {(isAdmin() || isSuperAdmin()) && (
               <>
                 <label htmlFor="profile-photo-upload" className="block px-2 cursor-pointer text-xs text-blue-600 dark:text-blue-400 hover:underline mt-2">
                   📷 Cambiar foto de perfil
@@ -493,7 +503,7 @@ export default function App(){
             }} />
               </>
             )}
-            {!(userRole === 'admin' || userRole === 'superadmin') && (
+            {!(isAdmin() || isSuperAdmin()) && (
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 px-2">
                 Solo administradores pueden cambiar fotos
               </p>
@@ -515,19 +525,20 @@ export default function App(){
 
         {/* Main content */}
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
-          {view === 'tipos' && has('tipos','view') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
-          {view === 'personas' && has('personas','view') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
-          {view === 'empresas' && has('empresas','view') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
-          {view === 'prestamos' && has('prestamos','view') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
-          {view === 'caja' && (has('caja','view') || userRole === 'admin' || userRole === 'superadmin') && <Caja API={API_REPORTES} dark={dark} userRole={userRole} />}
-          {view === 'ventas' && (has('ventas','view') || userRole === 'admin' || userRole === 'superadmin') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
-          {view === 'compras' && (has('compras','view') || userRole === 'admin' || userRole === 'superadmin') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
-          {view === 'proveedores' && (has('proveedores','view') || userRole === 'admin' || userRole === 'superadmin') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
-          {view === 'productos' && has('productos','view') && <Productos API={API_PRESTAMOS} userRole={userRole} permissions={perms} clienteInfo={loggedUser} />}
-          {view === 'cuentas' && (has('cuentas','view') || userRole === 'admin' || userRole === 'superadmin') && <Cuentas API={API_CUENTAS} dark={dark} userRole={userRole} />}
-          {view === 'usuarios' && has('roles','manage') && <Usuarios API={API_PERSONS} userRole={userRole} />}
-          {view === 'roles' && has('roles','manage') && <RoleManagement API={API_PERSONS} userRole={userRole} onPermissionsUpdate={refreshUserSession} />}
-          {view === 'superadmin' && userRole === 'superadmin' && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
+          {view === 'tipos' && canViewPage('tipos') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
+          {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
+          {view === 'empresas' && canViewPage('empresas') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
+          {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
+          {view === 'caja' && canViewPage('caja') && <Caja />}
+          {view === 'ventas' && canViewPage('ventas') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
+          {view === 'compras' && canViewPage('compras') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
+          {view === 'proveedores' && canViewPage('proveedores') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
+          {view === 'productos' && canViewPage('productos') && <Productos API={API_PRESTAMOS} userRole={userRole} permissions={perms} clienteInfo={loggedUser} />}
+          {view === 'rutas' && canViewPage('rutas') && <Rutas />}
+          {view === 'cuentas' && canViewPage('cuentas') && <Cuentas />}
+          {view === 'usuarios' && canViewPage('usuarios') && <Usuarios API={API_PERSONS} userRole={userRole} />}
+          {view === 'roles' && canViewPage('roles') && <RoleManagement API={API_PERSONS} userRole={userRole} onPermissionsUpdate={refreshUserSession} />}
+          {view === 'superadmin' && canViewPage('superadmin') && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">

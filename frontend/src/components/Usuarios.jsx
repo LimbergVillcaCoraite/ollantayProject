@@ -811,7 +811,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
         ) : (
           <>
             {/* Vista Desktop - Tabla */}
-            <div className="hidden lg:block bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden border border-gray-200 dark:border-gray-700">
+            <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden border border-gray-200 dark:border-gray-700">
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className="bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-700 dark:to-gray-600">
@@ -931,7 +931,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
             </div>
 
             {/* Vista Mobile - Cards */}
-            <div className="lg:hidden space-y-4">
+            <div className="md:hidden space-y-4">
               {filteredUsers.map((user, index) => (
                 <div key={user.id_user} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
                   <div className="p-4">

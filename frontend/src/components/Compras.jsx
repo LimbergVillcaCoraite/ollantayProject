@@ -1,10 +1,80 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import { showToast } from '../toast';
+import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+
+// Dropdown renderizado en portal para evitar clipping/overflow
+function ProductDropdownPortal({ anchorEl, open, children }) {
+  const [style, setStyle] = useState({ display: 'none' });
+
+  const updatePosition = useCallback(() => {
+    if (!anchorEl || !open) return;
+    const rect = anchorEl.getBoundingClientRect();
+    setStyle({
+      position: 'absolute',
+      top: rect.bottom + window.scrollY,
+      left: rect.left + window.scrollX,
+      width: rect.width,
+      zIndex: 9999,
+      display: 'block'
+    });
+  }, [anchorEl, open]);
+
+  useEffect(() => {
+    if (!open) { setStyle(s => ({ ...s, display: 'none' })); return; }
+    updatePosition();
+  }, [open, anchorEl, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => updatePosition();
+    const onResize = () => updatePosition();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [open, updatePosition]);
+
+  if (!open) return null;
+  return ReactDOM.createPortal(
+    <div style={style}>{children}</div>,
+    document.body
+  );
+}
 
 export default function Compras({ API, userRole }) {
+  // Edit-details workflow for full purchase edit (clone-and-cancel)
+  const startEditDetalles = (compra) => {
+    setShowForm(true);
+    setEditingCompraId(compra.idCompra);
+    setEditingOriginalCompra(compra);
+    setFechaCompra(compra.fechaCompra);
+    setIdProveedor(compra.idProveedor);
+    setIdTipoPago(compra.idTipoPago);
+    setObservaciones(compra.observaciones || '');
+    setDetalles(
+      Array.isArray(compra.detalles)
+        ? compra.detalles.map(d => ({
+            idProducto: d.idProducto,
+            cantidad_caja: d.cantidad_caja,
+            precio_unitario: d.precio_unitario,
+            botellas_por_caja: d.botellas_por_caja ?? '',
+            precio_por_botella: d.precio_por_botella ?? '',
+            costo_total: d.subtotal,
+            fechaVencimiento: d.fechaVencimiento || '',
+            precio_sugerido: false
+          }))
+        : [{ idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '', precio_sugerido: false }]
+    );
+    setFiles([]);
+    setHistorialPrecios({});
+  };
   const [compras, setCompras] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
 
   // Derived API roots for related services
   const host = (typeof window !== 'undefined' && window.location?.hostname) ? window.location.hostname : 'localhost'
@@ -20,8 +90,10 @@ export default function Compras({ API, userRole }) {
   const [loadingProductos, setLoadingProductos] = useState(false)
   const [productSearch, setProductSearch] = useState({}) // { [idx]: "search text" }
   const [showProductDropdown, setShowProductDropdown] = useState({}) // { [idx]: true/false }
+  const productInputRefs = useRef({}); // { [idx]: HTMLInputElement }
   const [tiposPago, setTiposPago] = useState([])
   const [loadingTiposPago, setLoadingTiposPago] = useState(false)
+  const [validationMsg, setValidationMsg] = useState('')
 
   // Create form state
   const [showForm, setShowForm] = useState(false)
@@ -29,8 +101,11 @@ export default function Compras({ API, userRole }) {
   const [idProveedor, setIdProveedor] = useState('')
   const [idTipoPago, setIdTipoPago] = useState(1) // default; will be adjusted after tiposPago load
   const [observaciones, setObservaciones] = useState('')
-  const [detalles, setDetalles] = useState([ { idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '' } ])
+  const [detalles, setDetalles] = useState([ { idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '', precio_sugerido: false } ])
   const [files, setFiles] = useState([])
+  const [historialPrecios, setHistorialPrecios] = useState({}) // {idProducto-idProveedor: [{fecha, precio}]}
+  const [editingCompraId, setEditingCompraId] = useState(null) // modo edición de detalles (clonación)
+  const [editingOriginalCompra, setEditingOriginalCompra] = useState(null)
 
   // Inline edit state for update (estado/observaciones)
   const [editing, setEditing] = useState(null) // compra object
@@ -44,6 +119,7 @@ export default function Compras({ API, userRole }) {
   const [fHasta, setFHasta] = useState('')
   const [fProveedor, setFProveedor] = useState('')
   const [fTipoPago, setFTipoPago] = useState('')
+  const [fIdProducto, setFIdProducto] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
@@ -52,6 +128,8 @@ export default function Compras({ API, userRole }) {
   // Calendar and statistics
   const [showCalendar, setShowCalendar] = useState(false)
   const [selectedDate, setSelectedDate] = useState(null)
+  const [periodo, setPeriodo] = useState('') // '', 'hoy', 'semana', 'mes'
+  const [isMobile, setIsMobile] = useState(false)
 
   // Lotes state
   const [expandedLotes, setExpandedLotes] = useState({}) // {idCompra: [lotes]}
@@ -67,7 +145,8 @@ export default function Compras({ API, userRole }) {
     } catch { return 0 }
   }, [detalles])
 
-  const loadCompras = async () => {
+  const loadCompras = useCallback(async () => {
+    console.log('[Compras] loadCompras start', { API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto })
     setLoading(true)
     setError(null)
     try {
@@ -79,13 +158,16 @@ export default function Compras({ API, userRole }) {
       if (fHasta) params.set('fecha_fin', fHasta)
       if (fProveedor) params.set('idProveedor', String(fProveedor))
       if (fTipoPago) params.set('idTipoPago', String(fTipoPago))
+      if (fIdProducto) params.set('idProducto', String(fIdProducto))
       const url = `${API}?${params.toString()}`
+      console.log('[Compras] GET', url)
       const res = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
       if (!res.ok) {
         const t = await res.text().catch(() => '')
         throw new Error(`HTTP ${res.status}${t ? ` - ${t.substring(0,120)}` : ''}`)
       }
       const data = await res.json()
+      console.log('[Compras] response items', Array.isArray(data) ? data.length : 'n/a')
       const hdr = res.headers?.get('X-Total-Count')
       setTotal(Number(hdr || (Array.isArray(data) ? data.length : 0)))
       setCompras(Array.isArray(data) ? data : [])
@@ -93,37 +175,13 @@ export default function Compras({ API, userRole }) {
       console.error('Error cargando compras:', e)
       setError('No se pudieron cargar las compras. ' + (e?.message || 'Error desconocido'))
     } finally {
+      console.log('[Compras] loadCompras end')
       setLoading(false)
     }
-  }
+  }, [API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto])
 
-  useEffect(() => {
-    loadCompras()
-  }, [API, userRole, page, pageSize])
-
-  // Re-apply when filters change but reset to first page
-  useEffect(() => {
-    setPage(1)
-    // debounce small
-    const t = setTimeout(() => { loadCompras() }, 150)
-    return () => clearTimeout(t)
-  }, [fDesde, fHasta, fProveedor, fTipoPago])
-
-  // Calcular estadísticas cuando cambian las compras o los filtros
-  useEffect(() => {
-    calcularEstadisticas()
-    agruparComprasPorDia()
-  }, [compras, fDesde, fHasta])
-
-  // Cuando se selecciona una fecha del calendario, actualizar los filtros
-  useEffect(() => {
-    if (selectedDate) {
-      setFDesde(selectedDate)
-      setFHasta(selectedDate)
-    }
-  }, [selectedDate])
-
-  const calcularEstadisticas = () => {
+   // Funciones de cálculo y agrupación
+  const calcularEstadisticas = useCallback(() => {
     if (!compras || compras.length === 0) {
       setEstadisticas(null)
       return
@@ -155,9 +213,9 @@ export default function Compras({ API, userRole }) {
         cantidad: productoMasComprado[1]
       } : null
     })
-  }
+  }, [compras])
 
-  const agruparComprasPorDia = () => {
+  const agruparComprasPorDia = useCallback(() => {
     const porDia = {}
     compras.forEach(c => {
       const fecha = c.fechaCompra ? c.fechaCompra.split('T')[0] : null
@@ -166,7 +224,76 @@ export default function Compras({ API, userRole }) {
       porDia[fecha].push(c)
     })
     setComprasPorDia(porDia)
-  }
+  }, [compras])
+
+  // Cargar compras (paginadas) cuando cambian dependencias base
+  useEffect(() => {
+    loadCompras()
+  }, [loadCompras])
+
+  // Detectar tamaño de pantalla
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 640)
+    }
+    // Verificar al montar
+    checkMobile()
+    // Escuchar cambios de tamaño
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
+
+  // Re-apply when filters change but reset to first page
+  useEffect(() => {
+    setPage(1)
+    }, [fDesde, fHasta, fProveedor, fTipoPago, fIdProducto])
+
+  // Calcular estadísticas y agrupar compras por día cuando cambien
+  useEffect(() => {
+    calcularEstadisticas()
+    agruparComprasPorDia()
+  }, [calcularEstadisticas, agruparComprasPorDia])
+
+  // Cuando se selecciona una fecha del calendario, actualizar filtros
+  useEffect(() => {
+    if (selectedDate) {
+      setFDesde(selectedDate)
+      setFHasta(selectedDate)
+    }
+  }, [selectedDate])
+
+  // Cargar todas las compras de un mes específico para el calendario
+  const loadComprasDelMes = useCallback(async (year, month) => {
+    try {
+      const primerDia = `${year}-${String(month + 1).padStart(2, '0')}-01`
+      const ultimoDia = new Date(year, month + 1, 0)
+      const ultimoDiaStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(ultimoDia.getDate()).padStart(2, '0')}`
+      
+      const params = new URLSearchParams()
+      params.set('fecha_inicio', primerDia)
+      params.set('fecha_fin', ultimoDiaStr)
+      params.set('limit', '1000') // Cargar todas las compras del mes
+      
+      const url = `${API}?${params.toString()}`
+      const res = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+      if (!res.ok) return
+      
+      const data = await res.json()
+      const comprasDelMes = Array.isArray(data) ? data : []
+      
+      // Agrupar por día
+      const porDia = {}
+      comprasDelMes.forEach(c => {
+        const fecha = c.fechaCompra ? c.fechaCompra.split('T')[0] : null
+        if (!fecha) return
+        if (!porDia[fecha]) porDia[fecha] = []
+        porDia[fecha].push(c)
+      })
+      setComprasPorDia(porDia)
+    } catch (e) {
+      console.error('Error cargando compras del mes:', e)
+    }
+  }, [API, userRole])
 
   const loadProveedores = async () => {
     setLoadingProveedores(true)
@@ -191,7 +318,7 @@ export default function Compras({ API, userRole }) {
   const loadTiposPago = async () => {
     setLoadingTiposPago(true)
     try {
-      console.log('Loading tipos de pago from:', `${API}/tipos-pago`)
+      // console.log('Loading tipos de pago from:', `${API}/tipos-pago`)
       const res = await fetch(`${API}/tipos-pago`, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
       if (!res.ok) {
         const errorText = await res.text().catch(() => '')
@@ -199,14 +326,15 @@ export default function Compras({ API, userRole }) {
         throw new Error(`No se pudieron cargar tipos de pago (HTTP ${res.status})`)
       }
       const data = await res.json()
-      console.log('Tipos de pago loaded:', data)
+      // console.log('Tipos de pago loaded:', data)
       const arr = Array.isArray(data) ? data : []
       setTiposPago(arr)
       // Ajustar default del formulario si aplica
       if (arr.length > 0) {
-        // Preferir Contado si existe
+        // Preferir Contado si existe (o Crédito si no hay Contado)
         const contado = arr.find(tp => /contado/i.test(tp.tipoPago))
-        setIdTipoPago(prev => prev || (contado ? contado.idPago : arr[0].idPago))
+        const credito = arr.find(tp => /cr[eé]dito/i.test(tp.tipoPago))
+        setIdTipoPago(prev => prev || (contado ? contado.idPago : (credito ? credito.idPago : arr[0].idPago)))
       } else {
         console.warn('No se encontraron tipos de pago')
       }
@@ -264,11 +392,14 @@ export default function Compras({ API, userRole }) {
       return contado ? contado.idPago : (tiposPago[0]?.idPago || 1)
     })
     setObservaciones('')
-    setDetalles([{ idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '' }])
+    setDetalles([{ idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '', precio_sugerido: false }])
     setFiles([])
+    setHistorialPrecios({})
+    setEditingCompraId(null)
+    setEditingOriginalCompra(null)
   }
 
-  const addDetalle = () => setDetalles(d => [...d, { idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '' }])
+  const addDetalle = () => setDetalles(d => [...d, { idProducto: '', cantidad_caja: 0, precio_unitario: 0, botellas_por_caja: '', precio_por_botella: '', costo_total: 0, fechaVencimiento: '', precio_sugerido: false }])
   const removeDetalle = (idx) => setDetalles(d => d.filter((_, i) => i !== idx))
   const updateDetalle = (idx, patch) => setDetalles(d => d.map((row, i) => {
     if (i !== idx) return row
@@ -276,47 +407,46 @@ export default function Compras({ API, userRole }) {
     const nCant = Number(next.cantidad_caja || 0)
     const nBot = Number(next.botellas_por_caja || 0)
     
-    // Prioridad: Si cambia costo_total, recalcular precio_unitario y precio_por_botella
-    if (patch.costo_total !== undefined) {
-      const total = Number(next.costo_total || 0)
-      if (nCant > 0) {
-        next.precio_unitario = (total / nCant).toFixed(2)
-        if (nBot > 0) {
-          next.precio_por_botella = (total / (nCant * nBot)).toFixed(4)
-        }
-      }
-    }
-    // Si cambia cantidad_caja y existe costo_total, recalcular
-    else if (patch.cantidad_caja !== undefined && next.costo_total > 0) {
-      const total = Number(next.costo_total || 0)
-      if (nCant > 0) {
-        next.precio_unitario = (total / nCant).toFixed(2)
-        if (nBot > 0) {
-          next.precio_por_botella = (total / (nCant * nBot)).toFixed(4)
-        }
-      }
-    }
-    // Si cambia precio_unitario (edición manual), recalcular costo_total
-    else if (patch.precio_unitario !== undefined) {
+    // PRIORIDAD 1: Si cambia precio_unitario (Precio/Caja), recalcular costo_total y precio_por_botella
+    if (patch.precio_unitario !== undefined) {
       const pu = Number(next.precio_unitario || 0)
       next.costo_total = (pu * nCant).toFixed(2)
       if (nBot > 0) {
         next.precio_por_botella = (pu / nBot).toFixed(4)
       }
     }
-    // Si cambia botellas_por_caja, recalcular precio_por_botella
+    // PRIORIDAD 2: Si cambia cantidad_caja, recalcular costo_total basado en precio_unitario
+    else if (patch.cantidad_caja !== undefined) {
+      const pu = Number(next.precio_unitario || 0)
+      next.costo_total = (pu * nCant).toFixed(2)
+      // Mantener precio_por_botella si ya existe
+      if (nBot > 0 && pu > 0) {
+        next.precio_por_botella = (pu / nBot).toFixed(4)
+      }
+    }
+    // PRIORIDAD 3: Si cambia precio_por_botella, recalcular precio_unitario y costo_total
+    else if (patch.precio_por_botella !== undefined) {
+      const pb = Number(next.precio_por_botella || 0)
+      if (nBot > 0) {
+        next.precio_unitario = (pb * nBot).toFixed(2)
+        next.costo_total = (Number(next.precio_unitario) * nCant).toFixed(2)
+      }
+    }
+    // PRIORIDAD 4: Si cambia botellas_por_caja, recalcular precio_por_botella basado en precio_unitario
     else if (patch.botellas_por_caja !== undefined) {
       if (nBot > 0 && next.precio_unitario > 0) {
         const pu = Number(next.precio_unitario || 0)
         next.precio_por_botella = (pu / nBot).toFixed(4)
       }
     }
-    // Si cambia precio_por_botella (edición manual), recalcular precio_unitario y costo_total
-    else if (patch.precio_por_botella !== undefined) {
-      const pb = Number(next.precio_por_botella || 0)
-      if (nBot > 0) {
-        next.precio_unitario = (pb * nBot).toFixed(2)
-        next.costo_total = (next.precio_unitario * nCant).toFixed(2)
+    // PRIORIDAD 5 (Baja): Si cambia costo_total manualmente (fallback), recalcular precio_unitario
+    else if (patch.costo_total !== undefined) {
+      const total = Number(next.costo_total || 0)
+      if (nCant > 0) {
+        next.precio_unitario = (total / nCant).toFixed(2)
+        if (nBot > 0) {
+          next.precio_por_botella = (total / (nCant * nBot)).toFixed(4)
+        }
       }
     }
     
@@ -335,6 +465,25 @@ export default function Compras({ API, userRole }) {
     updateDetalle(idx, { idProducto: producto.idProducto })
     setProductSearch(prev => ({ ...prev, [idx]: producto.nombreProducto }))
     setShowProductDropdown(prev => ({ ...prev, [idx]: false }))
+    // Si hay proveedor seleccionado, intentar sugerir precio del proveedor para este producto
+    try {
+      const provId = Number(idProveedor)
+      if (provId && producto?.idProducto) {
+        const host = (typeof window !== 'undefined' && window.location?.hostname) ? window.location.hostname : 'localhost'
+        const proto = (typeof window !== 'undefined' && window.location?.protocol) ? window.location.protocol : 'http:'
+        const url = `${proto}//${host}/api/prestamos/productos/${producto.idProducto}/precios-proveedor?idProveedor=${provId}`
+        fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+          .then(r => r.ok ? r.json() : [])
+          .then(list => {
+            const item = Array.isArray(list) && list[0]
+            const precio = item?.precioCompra
+            if (precio && !Number.isNaN(Number(precio))) {
+              updateDetalle(idx, { precio_unitario: Number(precio).toFixed(2), precio_sugerido: true })
+              showToast(`💡 Precio sugerido del proveedor: Bs ${Number(precio).toFixed(2)}`, 'info')
+            }
+          }).catch(()=>{})
+      }
+    } catch {}
   }
 
   const handleProductSearchChange = (idx, value) => {
@@ -351,33 +500,36 @@ export default function Compras({ API, userRole }) {
   }
 
   const validateForm = () => {
-    console.log('DEBUG: validateForm called')
-    console.log('DEBUG: idProveedor:', idProveedor)
-    console.log('DEBUG: detalles:', detalles)
-    if (!idProveedor) { showToast('Seleccione un proveedor', 'error'); return false }
+    setValidationMsg('')
+    if (!idProveedor) { setValidationMsg('Seleccione un proveedor.'); showToast('Seleccione un proveedor', 'error'); return false }
+    if (!idTipoPago) { setValidationMsg('Seleccione un tipo de pago.'); showToast('Seleccione un tipo de pago', 'error'); return false }
     const validRows = detalles.filter(d => Number(d.idProducto) && Number(d.cantidad_caja) > 0 && Number(d.costo_total) > 0)
-    console.log('DEBUG: validRows:', validRows)
-    if (validRows.length === 0) { showToast('Agregue al menos un producto con cantidad y costo total', 'error'); return false }
+    if (validRows.length === 0) { setValidationMsg('Agregue al menos un producto con cantidad (>0) y costo total (>0).'); showToast('Agregue al menos un producto con cantidad y costo total', 'error'); return false }
+    // Validaciones por fila (primera falla visible)
+    for (let i=0; i<detalles.length; i++){
+      const d = detalles[i]
+      if (!Number(d.idProducto)) { showToast(`Fila ${i+1}: seleccione un producto`, 'error'); return false }
+      if (!(Number(d.cantidad_caja) > 0)) { showToast(`Fila ${i+1}: cantidad de cajas debe ser > 0`, 'error'); return false }
+      if (!(Number(d.costo_total) > 0)) { showToast(`Fila ${i+1}: costo total debe ser > 0`, 'error'); return false }
+      if (d.botellas_por_caja !== '' && d.botellas_por_caja !== null && !(Number(d.botellas_por_caja) > 0)) { showToast(`Fila ${i+1}: botellas por caja debe ser > 0 si se indica`, 'error'); return false }
+    }
     for (const f of files) {
       if (!['application/pdf'].includes(f.type) && !f.type.startsWith('image/')) {
         showToast('Solo se permiten imágenes o PDF como comprobantes', 'error')
         return false
       }
     }
-    console.log('DEBUG: validateForm returning true')
     return true
   }
 
   const handleCreate = async (e) => {
     e?.preventDefault?.()
-    console.log('DEBUG: handleCreate called')
-    console.log('DEBUG: Form values - idProveedor:', idProveedor, 'detalles:', detalles)
+    if (submitting) return
     if (!validateForm()) {
-      console.log('DEBUG: validateForm returned false')
       return
     }
-    console.log('DEBUG: validateForm passed')
-    const payload = {
+    setSubmitting(true)
+      const payload = {
       fechaCompra,
       idProveedor: Number(idProveedor),
       idTipoPago: Number(idTipoPago),
@@ -390,33 +542,71 @@ export default function Compras({ API, userRole }) {
           const cantidad = Number(d.cantidad_caja)
           const costoTotal = Number(d.costo_total)
           const precioUnit = cantidad > 0 ? (costoTotal / cantidad) : 0
+            const botellas = d.botellas_por_caja ? Number(d.botellas_por_caja) : null
+            const precioBot = d.precio_por_botella
+              ? Number(Number(d.precio_por_botella).toFixed(4))
+              : (botellas && botellas > 0 ? Number((precioUnit / botellas).toFixed(4)) : null)
           return {
             idProducto: Number(d.idProducto),
             cantidad_caja: cantidad,
             precio_unitario: Number(precioUnit.toFixed(2)),
             subtotal: Number(costoTotal.toFixed(2)),
-            fechaVencimiento: d.fechaVencimiento || null
+            fechaVencimiento: d.fechaVencimiento || null,
+              botellas_por_caja: botellas,
+              precio_por_botella: precioBot
           }
         })
     }
-    console.log('DEBUG: Payload to send:', JSON.stringify(payload, null, 2))
-    console.log('DEBUG: API endpoint:', API)
     try {
-      console.log('DEBUG: About to fetch...')
+      if (editingCompraId) {
+        // Crear nueva compra y anular la anterior
+        const resNew = await fetch(`${API}`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', ...(userRole ? { 'X-User-Role': userRole } : {}) },
+          body: JSON.stringify(payload)
+        })
+        if (!resNew.ok) {
+          const j = await resNew.json().catch(async () => ({ raw: await resNew.text() }))
+          throw new Error(j?.detail || j?.raw || `Status ${resNew.status}`)
+        }
+        const created = await resNew.json()
+        const newId = created?.idCompra || created?.id
+        if (editingOriginalCompra) {
+          const bodyCancel = {
+            fechaCompra: editingOriginalCompra.fechaCompra,
+            idProveedor: editingOriginalCompra.idProveedor,
+            idTipoPago: editingOriginalCompra.idTipoPago,
+            montoTotal: 0,
+            estado: 0,
+            observaciones: `Anulada por edición (reemplazada por compra #${newId})`,
+            detalles: []
+          }
+          await fetch(`${API}/${editingCompraId}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', ...(userRole ? { 'X-User-Role': userRole } : {}) },
+            body: JSON.stringify(bodyCancel)
+          }).catch(()=>{})
+        }
+        await loadCompras()
+        resetForm()
+        setShowForm(false)
+        showToast('Compra editada (nueva compra creada y anterior anulada)', 'success')
+        return
+      }
+
       const res = await fetch(`${API}`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', ...(userRole ? { 'X-User-Role': userRole } : {}) },
         body: JSON.stringify(payload)
       })
-      console.log('DEBUG: Response status:', res.status, res.statusText)
       if (!res.ok) {
         const j = await res.json().catch(async () => ({ raw: await res.text() }))
-        console.log('DEBUG: Error response:', j)
         throw new Error(j?.detail || j?.raw || `Status ${res.status}`)
       }
       const created = await res.json()
-      console.log('DEBUG: Created response:', created)
       const newId = created?.idCompra || created?.id
       if (newId && files.length > 0) {
         const fd = new FormData()
@@ -439,6 +629,8 @@ export default function Compras({ API, userRole }) {
     } catch (err) {
       console.error('Error creando compra:', err)
       showToast('No se pudo crear la compra: ' + (err?.message || 'Error'), 'error')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -535,14 +727,39 @@ export default function Compras({ API, userRole }) {
       {showForm && (
         <div className="mb-6 p-4 rounded-lg border dark:border-gray-700 bg-white dark:bg-gray-800">
           <form onSubmit={handleCreate} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Fecha</label>
                 <input type="date" value={fechaCompra} onChange={e=>setFechaCompra(e.target.value)} className="w-full border rounded px-3 py-2 dark:bg-gray-900 dark:border-gray-700" />
               </div>
               <div>
                 <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Proveedor</label>
-                <select value={idProveedor} onChange={e=>setIdProveedor(e.target.value)} className="w-full border rounded px-3 py-2 dark:bg-gray-900 dark:border-gray-700">
+                <select value={idProveedor} onChange={e=>{
+                  const val = e.target.value; setIdProveedor(val);
+                  // Al cambiar proveedor, si hay producto seleccionado en filas, sugerir precio
+                  try {
+                    const provId = Number(val)
+                    if (provId) {
+                      detalles.forEach((d, idx) => {
+                        const pid = Number(d.idProducto || 0)
+                        if (pid) {
+                          const host = (typeof window !== 'undefined' && window.location?.hostname) ? window.location.hostname : 'localhost'
+                          const proto = (typeof window !== 'undefined' && window.location?.protocol) ? window.location.protocol : 'http:'
+                          const url = `${proto}//${host}/api/prestamos/productos/${pid}/precios-proveedor?idProveedor=${provId}`
+                          fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+                            .then(r => r.ok ? r.json() : [])
+                            .then(list => {
+                              const item = Array.isArray(list) && list[0]
+                              const precio = item?.precioCompra
+                              if (precio && !Number.isNaN(Number(precio))) {
+                                updateDetalle(idx, { precio_unitario: Number(precio).toFixed(2), precio_sugerido: true })
+                              }
+                            }).catch(()=>{})
+                        }
+                      })
+                    }
+                  } catch {}
+                }} className="w-full border rounded px-3 py-2 dark:bg-gray-900 dark:border-gray-700">
                   <option value="">Seleccione...</option>
                   {loadingProveedores ? <option>Cargando...</option> : proveedores.map(p => (
                     <option key={p.idProveedor} value={p.idProveedor}>
@@ -562,6 +779,9 @@ export default function Compras({ API, userRole }) {
                 </select>
               </div>
             </div>
+            {validationMsg && (
+              <div className="text-sm text-red-600 dark:text-red-400">{validationMsg}</div>
+            )}
             <div>
               <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Comprobantes (imagen/PDF)</label>
               <input type="file" accept="image/*,application/pdf" multiple onChange={(e)=> setFiles(Array.from(e.target.files||[]))} className="w-full border rounded px-3 py-2 dark:bg-gray-900 dark:border-gray-700" />
@@ -582,16 +802,36 @@ export default function Compras({ API, userRole }) {
                 <h3 className="font-semibold dark:text-gray-200">Detalles</h3>
                 <button type="button" onClick={addDetalle} className="px-2 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700">Agregar producto</button>
               </div>
-              <div className="overflow-x-auto">
+              {idProveedor && (
+                <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded text-sm">
+                  <div className="flex items-start gap-2">
+                    <span className="text-blue-600 dark:text-blue-400">💡</span>
+                    <div>
+                      <div className="font-medium text-blue-900 dark:text-blue-200">Precios por Proveedor</div>
+                      <div className="text-blue-700 dark:text-blue-300 text-xs mt-1">
+                        Al seleccionar un producto, se sugerirá automáticamente el último precio de compra registrado con este proveedor. 
+                        Puede editarlo manualmente según su negociación actual.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="overflow-x-auto overflow-y-visible">
                 <table className="min-w-full text-sm border dark:border-gray-700">
-                  <thead className="bg-gray-100 dark:bg-gray-800">
+                  <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0 z-10">
                     <tr>
                       <th className="p-2 text-left">Producto</th>
                       <th className="p-2 text-left">Cantidad (cajas)</th>
                       <th className="p-2 text-left">Bot/Caja</th>
-                      <th className="p-2 text-left">Costo Total (Bs)</th>
-                      <th className="p-2 text-left">Costo/Caja (Bs)</th>
-                      <th className="p-2 text-left">Costo/Botella (Bs)</th>
+                      <th className="p-2 text-left">
+                        <div>Precio/Caja (Bs)</div>
+                        <div className="text-[10px] font-normal text-gray-500">Campo principal</div>
+                      </th>
+                      <th className="p-2 text-left">Precio/Botella (Bs)</th>
+                      <th className="p-2 text-left">
+                        <div>Costo Total (Bs)</div>
+                        <div className="text-[10px] font-normal text-gray-500">Auto-calculado</div>
+                      </th>
                       <th className="p-2 text-left">Fecha Vencimiento</th>
                       <th className="p-2"></th>
                     </tr>
@@ -606,8 +846,9 @@ export default function Compras({ API, userRole }) {
                       
                       return (
                         <tr key={idx} className="border-t dark:border-gray-700">
-                          <td className="p-2 min-w-[220px] relative">
-                            <input 
+                          <td className="p-2 min-w-[220px]">
+                            <input
+                              ref={(el) => { productInputRefs.current[idx] = el }}
                               type="text"
                               value={searchText || (selectedProd ? selectedProd.nombreProducto : '')}
                               onChange={(e) => handleProductSearchChange(idx, e.target.value)}
@@ -616,14 +857,15 @@ export default function Compras({ API, userRole }) {
                               placeholder="Buscar producto..."
                               className="w-full border rounded px-2 py-1 dark:bg-gray-900 dark:border-gray-700"
                             />
-                            {showDropdown && (
-                              <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded shadow-lg max-h-60 overflow-y-auto">
+                            <ProductDropdownPortal anchorEl={productInputRefs.current[idx]} open={!!showDropdown}>
+                              <div className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded shadow-lg max-h-60 overflow-y-auto">
                                 {loadingProductos ? (
                                   <div className="p-2 text-gray-500">Cargando...</div>
                                 ) : filteredProds.length > 0 ? (
                                   filteredProds.map(p => (
                                     <div
                                       key={p.idProducto}
+                                      onMouseDown={(e) => e.preventDefault()}
                                       onClick={() => selectProducto(idx, p)}
                                       className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer border-b dark:border-gray-700 last:border-b-0"
                                     >
@@ -636,6 +878,7 @@ export default function Compras({ API, userRole }) {
                                     <div className="text-gray-500 mb-2">No se encontraron productos</div>
                                     <button
                                       type="button"
+                                      onMouseDown={(e) => e.preventDefault()}
                                       onClick={() => {
                                         setShowProductDropdown(prev => ({ ...prev, [idx]: false }))
                                         showToast('Funcionalidad de crear producto en desarrollo', 'info')
@@ -647,7 +890,7 @@ export default function Compras({ API, userRole }) {
                                   </div>
                                 )}
                               </div>
-                            )}
+                            </ProductDropdownPortal>
                           </td>
                           <td className="p-2">
                             <input type="number" min="0" step="1" value={d.cantidad_caja} onChange={(e)=>updateDetalle(idx, { cantidad_caja: e.target.value })} className="w-24 border rounded px-2 py-1 text-right dark:bg-gray-900 dark:border-gray-700" placeholder="0" />
@@ -657,28 +900,27 @@ export default function Compras({ API, userRole }) {
                             <div className="text-xs text-gray-500 mt-1">Opcional</div>
                           </td>
                           <td className="p-2">
-                            <input 
-                              type="number" 
-                              min="0" 
-                              step="0.01" 
-                              value={d.costo_total} 
-                              onChange={(e)=>updateDetalle(idx, { costo_total: e.target.value })} 
-                              className="w-32 border-2 border-blue-500 rounded px-2 py-1 text-right font-semibold dark:bg-gray-900 dark:border-blue-600" 
-                              placeholder="0.00"
-                            />
-                            <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">Ingrese aquí</div>
-                          </td>
-                          <td className="p-2">
-                            <input 
-                              type="number" 
-                              min="0" 
-                              step="0.01" 
-                              value={d.precio_unitario} 
-                              onChange={(e)=>updateDetalle(idx, { precio_unitario: e.target.value })} 
-                              className="w-28 border rounded px-2 py-1 text-right bg-gray-50 dark:bg-gray-800 dark:border-gray-700" 
-                              placeholder="Auto"
-                            />
-                            <div className="text-xs text-gray-500 mt-1">Editable</div>
+                            <div className="relative">
+                              <input 
+                                type="number" 
+                                min="0" 
+                                step="0.01" 
+                                value={d.precio_unitario} 
+                                onChange={(e)=>updateDetalle(idx, { precio_unitario: e.target.value, precio_sugerido: false })} 
+                                className={`w-28 border-2 rounded px-2 py-1 text-right font-semibold ${d.precio_sugerido ? 'bg-green-50 border-green-500 dark:bg-green-900/20 dark:border-green-600' : 'border-blue-500 bg-white dark:bg-gray-900 dark:border-blue-600'}`}
+                                placeholder="0.00"
+                              />
+                              {d.precio_sugerido && (
+                                <span className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] px-1 rounded-full" title="Precio sugerido del proveedor">
+                                  ✓
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs mt-1">
+                              {d.precio_sugerido ? (
+                                <span className="text-green-600 dark:text-green-400">✓ Sugerido</span>
+                              ) : <span className="text-blue-600 dark:text-blue-400">Ingrese aquí</span>}
+                            </div>
                           </td>
                           <td className="p-2">
                             <input 
@@ -691,6 +933,19 @@ export default function Compras({ API, userRole }) {
                               className="w-28 border rounded px-2 py-1 text-right bg-gray-50 dark:bg-gray-800 dark:border-gray-700" 
                             />
                             <div className="text-xs text-gray-500 mt-1">Editable</div>
+                          </td>
+                          <td className="p-2">
+                            <input 
+                              type="number" 
+                              min="0" 
+                              step="0.01" 
+                              value={d.costo_total} 
+                              onChange={(e)=>updateDetalle(idx, { costo_total: e.target.value })} 
+                              className="w-32 border rounded px-2 py-1 text-right bg-gray-100 dark:bg-gray-800 dark:border-gray-700" 
+                              placeholder="0.00"
+                              title="Se calcula automáticamente, pero puede editarse"
+                            />
+                            <div className="text-xs text-gray-500 mt-1">Auto-calc</div>
                           </td>
                           <td className="p-2">
                             <input 
@@ -718,7 +973,7 @@ export default function Compras({ API, userRole }) {
             </div>
             <div className="flex items-center justify-end gap-2">
               <button type="button" onClick={()=>{ resetForm(); setShowForm(false) }} className="px-3 py-2 rounded border dark:border-gray-700">Cancelar</button>
-              <button type="submit" className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">Guardar compra</button>
+              <button type="submit" disabled={submitting} className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300">{submitting ? 'Guardando...' : 'Guardar compra'}</button>
             </div>
           </form>
         </div>
@@ -732,7 +987,7 @@ export default function Compras({ API, userRole }) {
       {!loading && !error && (
         <div className="overflow-x-auto">
           {/* Filters */}
-          <div className="mb-3 grid grid-cols-1 md:grid-cols-5 gap-3">
+          <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
             <div>
               <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">Desde</label>
               <input type="date" value={fDesde} onChange={e=>setFDesde(e.target.value)} className="w-full border rounded px-2 py-1 dark:bg-gray-900 dark:border-gray-700" />
@@ -757,8 +1012,18 @@ export default function Compras({ API, userRole }) {
                 {tiposPago.map(tp => (<option key={tp.idPago} value={tp.idPago}>{tp.tipoPago}</option>))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">ID Producto</label>
+              <input
+                type="text"
+                value={fIdProducto}
+                onChange={e=>setFIdProducto(e.target.value)}
+                placeholder="ID del producto..."
+                className="w-full border rounded px-2 py-1 dark:bg-gray-900 dark:border-gray-700"
+              />
+            </div>
             <div className="flex items-end gap-2">
-              <button onClick={()=>{ setFDesde(''); setFHasta(''); setFProveedor(''); setFTipoPago(''); }} className="px-2 py-1 text-sm rounded border dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800">Limpiar</button>
+              <button onClick={()=>{ setFDesde(''); setFHasta(''); setFProveedor(''); setFTipoPago(''); setFIdProducto(''); }} className="px-2 py-1 text-sm rounded border dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800">Limpiar</button>
               <button onClick={()=> setShowCalendar(!showCalendar)} className="px-2 py-1 text-sm rounded border dark:border-gray-700 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-800/50 text-blue-700 dark:text-blue-300">
                 📅 {showCalendar ? 'Ocultar' : 'Calendario'}
               </button>
@@ -766,32 +1031,75 @@ export default function Compras({ API, userRole }) {
           </div>
 
           {/* Calendario de compras */}
-          {showCalendar && <CalendarioCompras comprasPorDia={comprasPorDia} onSelectDate={setSelectedDate} selectedDate={selectedDate} />}
+          {showCalendar && <CalendarioCompras comprasPorDia={comprasPorDia} onSelectDate={setSelectedDate} selectedDate={selectedDate} loadComprasDelMes={loadComprasDelMes} />}
 
-          {/* Estadísticas resumen */}
+          {/* Estadísticas resumen con gráficos */}
           {estadisticas && (
             <div className="mb-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-              <h3 className="text-lg font-semibold mb-3 text-blue-900 dark:text-blue-100 flex items-center gap-2">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                </svg>
-                Resumen {selectedDate ? `del ${selectedDate}` : (fDesde || fHasta) ? 'del rango seleccionado' : 'general'}
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Total Compras</div>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100 flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                  </svg>
+                  Resumen {selectedDate ? `del ${selectedDate}` : (fDesde || fHasta) ? 'del rango seleccionado' : 'general'}
+                </h3>
+                {/* Botones de periodo rápido */}
+                <div className="flex flex-wrap gap-2 items-center">
+                  <span className="text-xs text-gray-600 dark:text-gray-300 mr-1">Periodo:</span>
+                  {[
+                    {k:'hoy', label:'Hoy'},
+                    {k:'semana', label:'Esta semana'},
+                    {k:'mes', label:'Este mes'},
+                    {k:'', label:'Todo'}
+                  ].map(p => (
+                    <button key={p.k}
+                      onClick={() => {
+                        setPeriodo(p.k)
+                        const now = new Date()
+                        if(p.k==='hoy'){
+                          const ds = now.toISOString().slice(0,10)
+                          setFDesde(ds); setFHasta(ds)
+                        } else if(p.k==='semana'){
+                          const day = now.getDay() // 0 dom ... 6 sab
+                          const diffToMonday = (day === 0 ? 6 : day-1)
+                          const monday = new Date(now); monday.setDate(now.getDate()-diffToMonday)
+                          const sunday = new Date(monday); sunday.setDate(monday.getDate()+6)
+                          const ds = monday.toISOString().slice(0,10)
+                          const hs = sunday.toISOString().slice(0,10)
+                          setFDesde(ds); setFHasta(hs)
+                        } else if(p.k==='mes'){
+                          const y = now.getFullYear(); const m = now.getMonth()
+                          const first = new Date(y, m, 1)
+                          const last = new Date(y, m+1, 0)
+                          const ds = first.toISOString().slice(0,10)
+                          const hs = new Date(y, m, last.getDate()).toISOString().slice(0,10)
+                          setFDesde(ds); setFHasta(hs)
+                        } else {
+                          setFDesde(''); setFHasta('')
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${periodo===p.k ? 'bg-blue-600 text-white shadow-md' : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/30'}`}
+                    >{p.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Tarjetas de resumen */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Total Compras</div>
                   <div className="text-2xl font-bold text-green-600 dark:text-green-400">{formatMoney(estadisticas.totalCompras)}</div>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Número de Compras</div>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Número de Compras</div>
                   <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{estadisticas.numeroCompras}</div>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Promedio por Compra</div>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Promedio por Compra</div>
                   <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">{formatMoney(estadisticas.promedioCompra)}</div>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
-                  <div className="text-sm text-gray-600 dark:text-gray-400">Producto Más Comprado</div>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Producto Más Comprado</div>
                   <div className="text-sm font-bold text-orange-600 dark:text-orange-400">
                     {estadisticas.productoMasComprado ? (
                       <>
@@ -802,13 +1110,278 @@ export default function Compras({ API, userRole }) {
                   </div>
                 </div>
               </div>
+
+              {/* Gráficos estadísticos */}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                {/* Gráfico de barras: Compras por día */}
+                <div className="bg-white dark:bg-gray-800 p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                    <span className="text-blue-600 dark:text-blue-400">📊</span>
+                    Compras por Día
+                  </h4>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={(() => {
+                      const grouped = {}
+                      compras.forEach(c => {
+                        const fecha = c.fechaCompra ? c.fechaCompra.split('T')[0] : 'Sin fecha'
+                        if (!grouped[fecha]) grouped[fecha] = { fecha, total: 0, cantidad: 0 }
+                        grouped[fecha].total += Number(c.montoTotal || 0)
+                        grouped[fecha].cantidad += 1
+                      })
+                      return Object.values(grouped).sort((a,b) => a.fecha.localeCompare(b.fecha)).slice(-10) // últimos 10 días
+                    })()} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#9CA3AF" opacity={0.2} />
+                      <XAxis 
+                        dataKey="fecha" 
+                        tick={{fontSize:10, fill:'currentColor'}} 
+                        stroke="#6B7280"
+                        tickFormatter={(value) => {
+                          const [y, m, d] = value.split('-')
+                          return `${d}/${m}`
+                        }}
+                      />
+                      <YAxis 
+                        tick={{fontSize:10, fill:'currentColor'}} 
+                        stroke="#6B7280"
+                        width={50}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor:'rgba(31, 41, 55, 0.95)', 
+                          border:'1px solid #4B5563', 
+                          borderRadius:'8px',
+                          color: '#F9FAFB'
+                        }}
+                        labelStyle={{color:'#F9FAFB', fontWeight: 'bold'}}
+                        formatter={(value, name) => {
+                          if (name === 'total') return ['Bs ' + Number(value).toFixed(2), 'Monto Total']
+                          if (name === 'cantidad') return [value, 'N° Compras']
+                          return [value, name]
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{fontSize:'11px', paddingTop: '10px'}}
+                        iconType="circle"
+                      />
+                      <Bar dataKey="total" fill="#3B82F6" name="Monto (Bs)" radius={[6,6,0,0]} />
+                      <Bar dataKey="cantidad" fill="#10B981" name="Cantidad" radius={[6,6,0,0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Gráfico de pastel: Compras por tipo de pago */}
+                <div className="bg-white dark:bg-gray-800 p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                    <span className="text-purple-600 dark:text-purple-400">💳</span>
+                    Por Tipo de Pago
+                  </h4>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <PieChart>
+                      <Pie
+                        data={(() => {
+                          const grouped = {}
+                          compras.forEach(c => {
+                            const tipo = c.tipoPago || 'Sin tipo'
+                            if (!grouped[tipo]) grouped[tipo] = { name: tipo, value: 0, count: 0 }
+                            grouped[tipo].value += Number(c.montoTotal || 0)
+                            grouped[tipo].count += 1
+                          })
+                          return Object.values(grouped).sort((a,b) => b.value - a.value)
+                        })()}
+                        cx="50%"
+                        cy="50%"
+                        labelLine={false}
+                        label={({name, percent}) => percent > 0.05 ? `${name} ${(percent * 100).toFixed(0)}%` : ''}
+                        outerRadius={isMobile ? 70 : 90}
+                        fill="#8884d8"
+                        dataKey="value"
+                      >
+                        {(() => {
+                          // Colores del sistema acordes al tema
+                          const COLORS = {
+                            'Pago al crédito': '#F59E0B', // amber-500
+                            'Pago al credito': '#F59E0B',
+                            'Pago al contado': '#10B981', // green-500
+                            'Transferencia Bancaria': '#3B82F6', // blue-500
+                            'Sin tipo': '#6B7280' // gray-500
+                          }
+                          const FALLBACK_COLORS = ['#8B5CF6', '#EC4899', '#06B6D4', '#84CC16', '#F97316']
+                          
+                          const grouped = {}
+                          compras.forEach(c => {
+                            const tipo = c.tipoPago || 'Sin tipo'
+                            if (!grouped[tipo]) grouped[tipo] = { name: tipo, value: 0 }
+                            grouped[tipo].value += Number(c.montoTotal || 0)
+                          })
+                          return Object.values(grouped).sort((a,b) => b.value - a.value).map((entry, index) => (
+                            <Cell 
+                              key={`cell-${index}`} 
+                              fill={COLORS[entry.name] || FALLBACK_COLORS[index % FALLBACK_COLORS.length]} 
+                            />
+                          ))
+                        })()}
+                      </Pie>
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor:'rgba(31, 41, 55, 0.95)', 
+                          border:'1px solid #4B5563', 
+                          borderRadius:'8px',
+                          color: '#F9FAFB'
+                        }}
+                        formatter={(value, name, props) => {
+                          const count = props.payload.count || 0
+                          return [`Bs ${Number(value).toFixed(2)} (${count} compras)`, name]
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{fontSize:'11px', paddingTop: '10px'}}
+                        iconType="circle"
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Gráfico de productos más comprados */}
+                <div className="bg-white dark:bg-gray-800 p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                    <span className="text-orange-600 dark:text-orange-400">🏆</span>
+                    Productos Más Comprados
+                  </h4>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart 
+                      data={(() => {
+                        const productosMap = {}
+                        compras.forEach(c => {
+                          if (Array.isArray(c.detalles)) {
+                            c.detalles.forEach(d => {
+                              const nombre = d.nombreProducto || `Producto ${d.idProducto}`
+                              if (!productosMap[nombre]) {
+                                productosMap[nombre] = { 
+                                  nombre, 
+                                  cantidad: 0, 
+                                  monto: 0 
+                                }
+                              }
+                              productosMap[nombre].cantidad += Number(d.cantidad_caja || 0)
+                              productosMap[nombre].monto += Number(d.subtotal || 0)
+                            })
+                          }
+                        })
+                        return Object.values(productosMap)
+                          .sort((a,b) => b.cantidad - a.cantidad)
+                          .slice(0, 8) // Top 8
+                      })()} 
+                      layout="vertical"
+                      margin={{ top: 5, right: 10, left: 5, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#9CA3AF" opacity={0.2} />
+                      <XAxis type="number" tick={{fontSize:10, fill:'currentColor'}} stroke="#6B7280" />
+                      <YAxis 
+                        type="category" 
+                        dataKey="nombre" 
+                        tick={{fontSize:9, fill:'currentColor'}} 
+                        stroke="#6B7280"
+                        width={100}
+                        tickFormatter={(value) => value.length > 15 ? value.slice(0,15) + '...' : value}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor:'rgba(31, 41, 55, 0.95)', 
+                          border:'1px solid #4B5563', 
+                          borderRadius:'8px',
+                          color: '#F9FAFB'
+                        }}
+                        formatter={(value, name, props) => {
+                          if (name === 'cantidad') {
+                            const monto = props.payload.monto
+                            return [`${value} cajas (Bs ${Number(monto).toFixed(2)})`, 'Cantidad']
+                          }
+                          return [value, name]
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{fontSize:'11px', paddingTop: '10px'}}
+                        iconType="circle"
+                      />
+                      <Bar 
+                        dataKey="cantidad" 
+                        fill="#F97316" 
+                        name="Cajas compradas" 
+                        radius={[0,6,6,0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Gráfico de proveedores */}
+                <div className="bg-white dark:bg-gray-800 p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                    <span className="text-green-600 dark:text-green-400">🏢</span>
+                    Por Proveedor
+                  </h4>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <PieChart>
+                      <Pie
+                        data={(() => {
+                          const grouped = {}
+                          compras.forEach(c => {
+                            const prov = c.nombreProveedor || 'Sin proveedor'
+                            if (!grouped[prov]) grouped[prov] = { name: prov, value: 0, count: 0 }
+                            grouped[prov].value += Number(c.montoTotal || 0)
+                            grouped[prov].count += 1
+                          })
+                          return Object.values(grouped).sort((a,b) => b.value - a.value).slice(0, 6) // Top 6
+                        })()}
+                        cx="50%"
+                        cy="50%"
+                        labelLine={true}
+                        label={({name, percent}) => percent > 0.08 ? `${(percent * 100).toFixed(0)}%` : ''}
+                        outerRadius={isMobile ? 60 : 80}
+                        innerRadius={isMobile ? 30 : 40}
+                        fill="#8884d8"
+                        dataKey="value"
+                      >
+                        {(() => {
+                          const COLORS = ['#10B981', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16']
+                          const grouped = {}
+                          compras.forEach(c => {
+                            const prov = c.nombreProveedor || 'Sin proveedor'
+                            if (!grouped[prov]) grouped[prov] = { name: prov, value: 0 }
+                            grouped[prov].value += Number(c.montoTotal || 0)
+                          })
+                          return Object.values(grouped).sort((a,b) => b.value - a.value).slice(0, 6).map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))
+                        })()}
+                      </Pie>
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor:'rgba(31, 41, 55, 0.95)', 
+                          border:'1px solid #4B5563', 
+                          borderRadius:'8px',
+                          color: '#F9FAFB'
+                        }}
+                        formatter={(value, name, props) => {
+                          const count = props.payload.count || 0
+                          return [`Bs ${Number(value).toFixed(2)} (${count} compras)`, props.payload.name]
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{fontSize:'10px', paddingTop: '10px'}}
+                        iconType="circle"
+                        formatter={(value) => value.length > 20 ? value.slice(0,20) + '...' : value}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
           )}
 
           {/* Desktop Table View - Hidden on mobile */}
           <div className="hidden md:block overflow-x-auto">
             <table className="min-w-full border dark:border-gray-700 text-sm">
-              <thead className="bg-gray-100 dark:bg-gray-800">
+              <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0 z-10">
                 <tr>
                   <th className="p-2 text-left dark:text-gray-200">Nº Compra</th>
                   <th className="p-2 text-left dark:text-gray-200">Fecha</th>
@@ -844,12 +1417,14 @@ export default function Compras({ API, userRole }) {
                           <summary className="cursor-pointer text-blue-600 hover:underline">Detalles</summary>
                           <div className="mt-2 p-3 rounded border dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left">
                             {Array.isArray(c.detalles) && c.detalles.length > 0 ? (
-                              <table className="min-w-[420px] text-xs">
+                              <table className="min-w-[520px] text-xs">
                                 <thead>
                                   <tr className="text-gray-600 dark:text-gray-400">
                                     <th className="p-1 text-left">Producto</th>
                                     <th className="p-1 text-right">Cant.</th>
-                                    <th className="p-1 text-right">Costo</th>
+                                    <th className="p-1 text-right">Bot/Caja</th>
+                                    <th className="p-1 text-right">C/Botella</th>
+                                    <th className="p-1 text-right">C/Caja</th>
                                     <th className="p-1 text-right">Subtotal</th>
                                   </tr>
                                 </thead>
@@ -858,7 +1433,20 @@ export default function Compras({ API, userRole }) {
                                     <tr key={d.idDetalleCompra}>
                                       <td className="p-1">{d.nombreProducto || d.idProducto}</td>
                                       <td className="p-1 text-right">{d.cantidad_caja}</td>
-                                      <td className="p-1 text-right">{formatMoney(d.precio_unitario)}</td>
+                                      <td className="p-1 text-right">{d.botellas_por_caja ?? '—'}</td>
+                                      <td className="p-1 text-right">
+                                        {(() => {
+                                          const bot = Number(d.botellas_por_caja || 0)
+                                          let pb = d?.precio_por_botella
+                                          if ((pb === null || pb === undefined) && bot > 0) {
+                                            pb = Number(d.precio_unitario || 0) / bot
+                                          }
+                                          return pb !== null && pb !== undefined && !Number.isNaN(Number(pb))
+                                            ? `Bs ${Number(pb).toFixed(4)}`
+                                            : '—'
+                                        })()}
+                                      </td>
+                                      <td className="p-1 text-right">{formatMoney(d.precio_paquete ?? d.precio_unitario)}</td>
                                       <td className="p-1 text-right">{formatMoney(d.subtotal)}</td>
                                     </tr>
                                   ))}
@@ -895,7 +1483,8 @@ export default function Compras({ API, userRole }) {
                         </button>
                         {canManage && (
                           <>
-                            <button onClick={()=>openEdit(c)} className="px-2 py-1 text-xs rounded border dark:border-gray-700 mr-2">Editar</button>
+                            <button onClick={()=>openEdit(c)} className="px-2 py-1 text-xs rounded border dark:border-gray-700 mr-2">Editar estado/obs</button>
+                            <button onClick={()=>startEditDetalles(c)} className="px-2 py-1 text-xs rounded border dark:border-gray-700 mr-2 bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-100 dark:hover:bg-yellow-900/50">Editar detalles</button>
                             <button onClick={()=>handleDelete(c)} className="px-2 py-1 text-xs rounded bg-red-600 text-white hover:bg-red-700">{userRole === 'superadmin' ? 'Eliminar' : 'Anular'}</button>
                           </>
                         )}
@@ -913,7 +1502,7 @@ export default function Compras({ API, userRole }) {
                               <table className="min-w-full text-xs border dark:border-gray-700">
                                 <thead className="bg-indigo-100 dark:bg-indigo-900/40">
                                   <tr>
-                                    <th className="p-2 text-left">ID Lote</th>
+                                    <th className="p-2 text-left">Código</th>
                                     <th className="p-2 text-left">Producto</th>
                                     <th className="p-2 text-right">Cant. Cajas</th>
                                     <th className="p-2 text-right">Stock Actual</th>
@@ -926,7 +1515,7 @@ export default function Compras({ API, userRole }) {
                                 <tbody>
                                   {expandedLotes[c.idCompra].map(lote => (
                                     <tr key={lote.idLote} className="border-t dark:border-gray-700">
-                                      <td className="p-2">{lote.idLote}</td>
+                                      <td className="p-2"><span className="font-mono text-xs bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded">{lote.codigoLote || `#${lote.idLote}`}</span></td>
                                       <td className="p-2">{lote.nombreProducto || `Producto ${lote.idProducto}`}</td>
                                       <td className="p-2 text-right">{lote.cantidadCajas}</td>
                                       <td className="p-2 text-right">{lote.stockActual}</td>
@@ -990,10 +1579,23 @@ export default function Compras({ API, userRole }) {
                       c.detalles.map(d => (
                         <div key={d.idDetalleCompra} className="bg-gray-50 dark:bg-gray-900 p-2 rounded text-xs">
                           <div className="font-semibold">{d.nombreProducto || d.idProducto}</div>
-                          <div className="flex justify-between mt-1">
-                            <span>Cantidad: {d.cantidad_caja}</span>
-                            <span>Costo: {formatMoney(d.precio_unitario)}</span>
-                            <span className="font-bold">Subtotal: {formatMoney(d.subtotal)}</span>
+                          <div className="grid grid-cols-2 gap-1 mt-1">
+                            <span>Cant.: {d.cantidad_caja}</span>
+                            <span>C/Caja: {formatMoney(d.precio_paquete ?? d.precio_unitario)}</span>
+                            <span>Bot/Caja: {d.botellas_por_caja ?? '—'}</span>
+                            <span>
+                              C/Botella: {(() => {
+                                const bot = Number(d.botellas_por_caja || 0)
+                                let pb = d?.precio_por_botella
+                                if ((pb === null || pb === undefined) && bot > 0) {
+                                  pb = Number(d.precio_unitario || 0) / bot
+                                }
+                                return pb !== null && pb !== undefined && !Number.isNaN(Number(pb))
+                                  ? `Bs ${Number(pb).toFixed(4)}`
+                                  : '—'
+                              })()}
+                            </span>
+                            <span className="col-span-2 font-bold">Subtotal: {formatMoney(d.subtotal)}</span>
                           </div>
                         </div>
                       ))
@@ -1035,7 +1637,7 @@ export default function Compras({ API, userRole }) {
                       ) : (
                         expandedLotes[c.idCompra].map(lote => (
                           <div key={lote.idLote} className="bg-indigo-50 dark:bg-indigo-900/20 p-2 rounded text-xs">
-                            <div className="font-semibold text-indigo-900 dark:text-indigo-200">Lote #{lote.idLote}</div>
+                            <div className="font-semibold text-indigo-900 dark:text-indigo-200">{lote.codigoLote || `Lote #${lote.idLote}`}</div>
                             <div className="text-gray-700 dark:text-gray-300">{lote.nombreProducto || `Producto ${lote.idProducto}`}</div>
                             <div className="mt-1 grid grid-cols-2 gap-1">
                               <span>Cant.: {lote.cantidadCajas} cajas</span>
@@ -1173,8 +1775,17 @@ export default function Compras({ API, userRole }) {
 }
 
 // Componente de Calendario
-function CalendarioCompras({ comprasPorDia, onSelectDate, selectedDate }) {
+function CalendarioCompras({ comprasPorDia, onSelectDate, selectedDate, loadComprasDelMes }) {
   const [currentMonth, setCurrentMonth] = useState(new Date())
+  
+  // Cargar compras del mes cuando cambie el mes o al montar el componente
+  useEffect(() => {
+    const year = currentMonth.getFullYear()
+    const month = currentMonth.getMonth()
+    if (loadComprasDelMes) {
+      loadComprasDelMes(year, month)
+    }
+  }, [currentMonth, loadComprasDelMes])
   
   const getDaysInMonth = (date) => {
     const year = date.getFullYear()
@@ -1307,3 +1918,5 @@ function CalendarioCompras({ comprasPorDia, onSelectDate, selectedDate }) {
     </div>
   )
 }
+
+

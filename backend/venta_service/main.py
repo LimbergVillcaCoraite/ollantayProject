@@ -90,8 +90,10 @@ def get_id_persona_from_request(request: Request = None) -> Optional[int]:
 class DetalleVentaIn(BaseModel):
     idProducto: int
     cantidad_caja: int = Field(ge=0)
-    precio_unitario: Decimal = Field(ge=0)
-    subtotal: Decimal = Field(ge=0)
+    # precio_unitario and subtotal are accepted but not strictly required from client
+    # The server will compute subtotal and may override precio_unitario based on route pricing.
+    precio_unitario: Optional[Decimal] = Field(default=None, ge=0)
+    subtotal: Optional[Decimal] = None
 
 
 class DetalleVentaOut(DetalleVentaIn):
@@ -103,7 +105,7 @@ class DetalleVentaOut(DetalleVentaIn):
 class VentaIn(BaseModel):
     fechaVenta: Optional[str] = None  # ISO date YYYY-MM-DD
     idTipoVenta: int  # 1=mayorista, 2=minorista
-    idTipoPago: int  # 1=contado, 2=credito
+    idTipoPago: int  # 1=credito, 2=contado, 7=transferencia bancaria
     idCliente: int  # id_persona
     montoTotal: Decimal = Field(ge=0)
     estado: int = Field(default=1, ge=0, le=1)  # 1=activa, 0=anulada
@@ -113,6 +115,7 @@ class VentaIn(BaseModel):
 
 class VentaOut(BaseModel):
     idVenta: int
+    codigoVenta: Optional[str] = None
     fechaVenta: str
     idTipoVenta: int
     tipoVenta: Optional[str] = None
@@ -139,21 +142,36 @@ def list_ventas(
     idCliente: Optional[int] = None,
     idTipoVenta: Optional[int] = None,
     idTipoPago: Optional[int] = None,
+    idProducto: Optional[int] = None,
     estado: Optional[int] = None,
     offset: int = 0,
     limit: int = 100,
     x_user_role: str = Header(None),
     request: Request = None
 ):
-    """Listar ventas con filtros. Superadmin ve todas, admin solo de su empresa."""
+    """Listar ventas con filtros. Superadmin ve todas, admin solo de su empresa. Filtro opcional por idProducto."""
     try:
         conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
+        # Buffered cursor avoids 'Unread result found' when issuing multiple queries
+        cur = conn.cursor(dictionary=True, buffered=True)
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
-        # Base query con JOINs para obtener nombres
-        query = '''
+        # Base queries con y sin codigoVenta (fallback por esquemas antiguos)
+        query_with_code = '''
+            SELECT 
+                v.idVenta, v.codigoVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
+                v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                v.montoTotal, v.estado, v.observaciones
+            FROM venta_O v
+            LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+        '''
+        query_no_code = '''
             SELECT 
                 v.idVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
                 v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
@@ -191,18 +209,32 @@ def list_ventas(
         if idTipoPago is not None:
             where.append('v.idTipoPago = %s')
             params.append(idTipoPago)
+        if idProducto is not None:
+            where.append('EXISTS (SELECT 1 FROM detalle_venta_O dv WHERE dv.idVenta = v.idVenta AND dv.idProducto = %s)')
+            params.append(idProducto)
         if estado is not None:
             where.append('v.estado = %s')
             params.append(estado)
 
         if where:
-            query += ' WHERE ' + ' AND '.join(where)
-        
-        query += ' ORDER BY v.fechaVenta DESC, v.idVenta DESC LIMIT %s OFFSET %s'
+            query_with_code += ' WHERE ' + ' AND '.join(where)
+            query_no_code += ' WHERE ' + ' AND '.join(where)
+
+        query_with_code += ' ORDER BY v.fechaVenta DESC, v.idVenta DESC LIMIT %s OFFSET %s'
+        query_no_code += ' ORDER BY v.fechaVenta DESC, v.idVenta DESC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
 
-        cur.execute(query, tuple(params))
-        ventas = cur.fetchall() or []
+        # Intentar primero con codigoVenta; si falla por columna desconocida, reintentar sin ella
+        try:
+            cur.execute(query_with_code, tuple(params))
+            ventas = cur.fetchall() or []
+        except Exception as ex:
+            msg = str(ex)
+            if 'Unknown column' in msg and 'codigoVenta' in msg:
+                cur.execute(query_no_code, tuple(params))
+                ventas = cur.fetchall() or []
+            else:
+                raise
 
         # Obtener detalles para cada venta
         result = []
@@ -236,25 +268,46 @@ def list_ventas(
 def get_venta(id: int, x_user_role: str = Header(None), request: Request = None):
     try:
         conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
+        cur = conn.cursor(dictionary=True, buffered=True)
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
-        query = '''
-            SELECT 
-                v.idVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
-                v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
-                CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
-                v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                v.montoTotal, v.estado, v.observaciones
-            FROM venta_O v
-            LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
-            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
-            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
-            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
-            WHERE v.idVenta = %s
-        '''
-        cur.execute(query, (id,))
+        # Intentar con codigoVenta y fallback sin la columna
+        try:
+            query = '''
+                SELECT 
+                    v.idVenta, v.codigoVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                    v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                    CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
+                    v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                    v.montoTotal, v.estado, v.observaciones
+                FROM venta_O v
+                LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+                LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+                LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+                LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+                WHERE v.idVenta = %s
+            '''
+            cur.execute(query, (id,))
+        except Exception as e:
+            if 'Unknown column' in str(e) and 'codigoVenta' in str(e):
+                query = '''
+                    SELECT 
+                        v.idVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                        v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                        CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
+                        v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                        v.montoTotal, v.estado, v.observaciones
+                    FROM venta_O v
+                    LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+                    LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+                    LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+                    LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+                    WHERE v.idVenta = %s
+                '''
+                cur.execute(query, (id,))
+            else:
+                raise
         venta = cur.fetchone()
         
         if not venta:
@@ -326,8 +379,8 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
                 raise HTTPException(status_code=400, detail='Usuario sin empresa asignada')
             target_company = user_company
 
-        # Validar que el cliente existe y pertenece a la empresa
-        cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.idCliente,))
+        # Validar que el cliente existe y pertenece a la empresa, obtener tipo_cliente y ruta
+        cur.execute('SELECT id_persona, id_empresa, tipo_cliente, idRuta FROM persona_O WHERE id_persona = %s', (payload.idCliente,))
         cliente = cur.fetchone()
         if not cliente:
             cur.close()
@@ -338,9 +391,22 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
             cur.close()
             conn.close()
             raise HTTPException(status_code=400, detail='Cliente no pertenece a su empresa')
+        
+        # Determinar idTipoVenta automáticamente basado en tipo_cliente
+        tipo_cliente = cliente.get('tipo_cliente', 'minorista')
+        cur.execute('SELECT idTipoVenta FROM tipoVenta WHERE nombreTipoVenta = %s', (tipo_cliente.capitalize(),))
+        tipo_venta_row = cur.fetchone()
+        if tipo_venta_row:
+            id_tipo_venta_auto = tipo_venta_row['idTipoVenta']
+        else:
+            # Fallback to provided or default
+            id_tipo_venta_auto = payload.idTipoVenta
+        
+        # Store cliente's idRuta for price calculation
+        id_ruta_cliente = cliente.get('idRuta')
 
         # Validar tipoVenta y tipoPago
-        cur.execute('SELECT idTipoVenta FROM tipoVenta WHERE idTipoVenta = %s', (payload.idTipoVenta,))
+        cur.execute('SELECT idTipoVenta FROM tipoVenta WHERE idTipoVenta = %s', (id_tipo_venta_auto,))
         if not cur.fetchone():
             cur.close()
             conn.close()
@@ -374,32 +440,181 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
         fechaVenta = payload.fechaVenta or date.today().isoformat()
 
         # Insertar venta
+        # Generar codigoVenta: EMPRESASLUG-VTA-YYYY-MM-DD-NNN (secuencia por empresa y día)
+        try:
+            cur.execute('SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s', (target_company,))
+            emp = cur.fetchone() or {}
+            nombre_empresa = (emp.get('nombre_empresa') or '').upper()
+            empresa_slug = ''.join(ch for ch in nombre_empresa if ch.isalnum())
+        except Exception:
+            empresa_slug = 'EMPRESA'
+        f = datetime.fromisoformat(fechaVenta) if isinstance(fechaVenta, str) else datetime.utcnow()
+        prefix = f"{empresa_slug}-VTA-{f.year}-{f.month:02d}-{f.day:02d}-"
+        try:
+            cur.execute('''
+                SELECT MAX(CAST(SUBSTRING_INDEX(codigoVenta, '-', -1) AS UNSIGNED)) AS max_seq
+                FROM venta_O
+                WHERE idEmpresa = %s AND codigoVenta LIKE %s
+            ''', (target_company, prefix + '%'))
+            row_seq = cur.fetchone() or {}
+            next_seq = int(row_seq.get('max_seq') or 0) + 1
+        except Exception:
+            next_seq = 1
+        codigo_venta = f"{prefix}{next_seq:03d}"
+        
+        # Generate shorter numeroVenta (max 20 chars): VTA-YYYYMMDD-NNNN
+        numero_venta = f"VTA-{f.year}{f.month:02d}{f.day:02d}-{next_seq:04d}"
+
         ins = conn.cursor()
-        ins.execute('''
-            INSERT INTO venta_O (fechaVenta, idTipoVenta, idTipoPago, idCliente, idEmpresa, montoTotal, estado, observaciones)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (fechaVenta, payload.idTipoVenta, payload.idTipoPago, payload.idCliente, target_company, 
-              float(payload.montoTotal), payload.estado, payload.observaciones))
+        # Intentar insertar con columna codigoVenta y numeroVenta; fallback si no existe
+        try:
+            ins.execute('''
+                INSERT INTO venta_O (numeroVenta, codigoVenta, fechaVenta, idTipoVenta, idTipoPago, idCliente, idEmpresa, montoTotal, estado, observaciones)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (numero_venta, codigo_venta, fechaVenta, id_tipo_venta_auto, payload.idTipoPago, payload.idCliente, target_company, 
+                  float(payload.montoTotal), 1, payload.observaciones))
+        except Exception as e:
+            if 'Unknown column' in str(e) and 'codigoVenta' in str(e):
+                ins = conn.cursor()
+                ins.execute('''
+                    INSERT INTO venta_O (numeroVenta, fechaVenta, idTipoVenta, idTipoPago, idCliente, idEmpresa, montoTotal, estado, observaciones)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (numero_venta, fechaVenta, id_tipo_venta_auto, payload.idTipoPago, payload.idCliente, target_company, 
+                      float(payload.montoTotal), 1, payload.observaciones))
+            else:
+                raise
         conn.commit()
         new_id = ins.lastrowid
         ins.close()
 
-        # Insertar detalles y actualizar stock
+        # Use id_ruta_cliente for price calculation (already obtained from cliente query)
+
+        # Insertar detalles y actualizar stock usando FEFO
         for det in payload.detalles:
+            # FEFO: Get lotes ordenados por fecha de vencimiento (más próxima primero)
+            cur_lotes = conn.cursor(dictionary=True)
+            cur_lotes.execute('''
+                SELECT idLote, stockActual, precio_minorista, precio_mayorista, precio_especial
+                FROM lote_producto
+                WHERE idProducto = %s AND idEmpresa = %s AND stockActual > 0
+                ORDER BY fechaVencimiento IS NULL, fechaVencimiento ASC, fechaCompra ASC, idLote ASC
+                LIMIT 1
+            ''', (det.idProducto, target_company))
+            primer_lote = cur_lotes.fetchone()
+            cur_lotes.close()
+            
+            # Determine base price: try lote first, fallback to producto
+            precio_base = 0
+            if primer_lote:
+                # Priority 1: Get price from lote based on tipo_cliente
+                if tipo_cliente == 'mayorista' and primer_lote.get('precio_mayorista'):
+                    precio_base = float(primer_lote['precio_mayorista'])
+                elif tipo_cliente == 'especial' and primer_lote.get('precio_especial'):
+                    precio_base = float(primer_lote['precio_especial'])
+                elif primer_lote.get('precio_minorista'):
+                    precio_base = float(primer_lote['precio_minorista'])
+            
+            # If lote doesn't have price, use producto default prices
+            if precio_base == 0:
+                cur_prod = conn.cursor(dictionary=True)
+                cur_prod.execute('''
+                    SELECT precioMinorista, precioMayorista, precioEspecial 
+                    FROM producto_O 
+                    WHERE idProducto = %s
+                ''', (det.idProducto,))
+                producto = cur_prod.fetchone()
+                cur_prod.close()
+                
+                if not producto:
+                    cur.close(); conn.close()
+                    raise HTTPException(status_code=400, detail=f'Producto {det.idProducto} no encontrado')
+                
+                # Priority 2: Get fallback price from producto
+                if tipo_cliente == 'mayorista':
+                    precio_base = float(producto.get('precioMayorista', 0))
+                elif tipo_cliente == 'especial':
+                    precio_base = float(producto.get('precioEspecial', 0))
+                else:  # minorista (default)
+                    precio_base = float(producto.get('precioMinorista', 0))
+            
+            # Apply route increments if cliente has idRuta
+            incremento_general = 0
+            incremento_especifico = 0
+            
+            if id_ruta_cliente is not None:
+                try:
+                    # Get general increment from ruta_O (applies to ALL products)
+                    cur_rg = conn.cursor(dictionary=True)
+                    cur_rg.execute('SELECT incremento_general FROM ruta_O WHERE idRuta = %s', (id_ruta_cliente,))
+                    ruta = cur_rg.fetchone()
+                    cur_rg.close()
+                    if ruta and ruta.get('incremento_general') is not None:
+                        incremento_general = float(ruta['incremento_general'])
+                    
+                    # Get specific increment from ruta_precio (applies only to specific products)
+                    cur_re = conn.cursor(dictionary=True)
+                    cur_re.execute('SELECT incremento_precio FROM ruta_precio WHERE idRuta = %s AND idProducto = %s', (id_ruta_cliente, det.idProducto))
+                    rp = cur_re.fetchone()
+                    cur_re.close()
+                    if rp and rp.get('incremento_precio') is not None:
+                        incremento_especifico = float(rp['incremento_precio'])
+                except Exception:
+                    # Table may not exist yet or query failed; ignore route pricing
+                    incremento_general = 0
+                    incremento_especifico = 0
+            
+            # Final price = base price + general increment + specific increment
+            precio_final = precio_base + incremento_general + incremento_especifico
+            
+            if precio_final <= 0:
+                # Price cannot be zero or negative
+                cur.close(); conn.close()
+                raise HTTPException(status_code=400, detail=f'Precio inválido para producto {det.idProducto}')
+
+            # Compute subtotal (server-side) if not provided
+            if getattr(det, 'subtotal', None) is not None:
+                subtotal_final = float(det.subtotal)
+            else:
+                subtotal_final = float(precio_final) * float(det.cantidad_caja)
+
             ins2 = conn.cursor()
+            # Don't insert subtotal - it's a STORED GENERATED column in the DB
             ins2.execute('''
-                INSERT INTO detalle_venta_O (idVenta, idProducto, cantidad_caja, precio_unitario, subtotal)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (new_id, det.idProducto, det.cantidad_caja, float(det.precio_unitario), float(det.subtotal)))
-            # Actualizar stock
-            ins2.execute('UPDATE producto_O SET stockCaja = stockCaja - %s WHERE idProducto = %s', 
-                        (det.cantidad_caja, det.idProducto))
+                INSERT INTO detalle_venta_O (idVenta, idProducto, cantidad_caja, precio_unitario)
+                VALUES (%s, %s, %s, %s)
+            ''', (new_id, det.idProducto, det.cantidad_caja, precio_final))
+
+            # FEFO: descontar stock de lotes ordenados por fecha de vencimiento (más próxima primero)
+            cantidad_restante = det.cantidad_caja
+            cur_lotes = conn.cursor(dictionary=True)
+            cur_lotes.execute('''
+                SELECT idLote, stockActual
+                FROM lote_producto
+                WHERE idProducto = %s AND idEmpresa = %s AND stockActual > 0
+                ORDER BY fechaVencimiento IS NULL, fechaVencimiento ASC, fechaCompra ASC, idLote ASC
+            ''', (det.idProducto, target_company))
+            lotes = cur_lotes.fetchall() or []
+            cur_lotes.close()
+
+            for lote in lotes:
+                if cantidad_restante <= 0:
+                    break
+                disponible = lote['stockActual']
+                consumir = min(disponible, cantidad_restante)
+                ins2.execute('UPDATE lote_producto SET stockActual = stockActual - %s WHERE idLote = %s', (consumir, lote['idLote']))
+                cantidad_restante -= consumir
+
+            if cantidad_restante > 0:
+                # No debería ocurrir si la validación de stock es correcta
+                raise HTTPException(status_code=400, detail=f'Stock insuficiente en lotes para producto {det.idProducto}')
+
+            # El trigger tr_actualizar_stock_producto_update actualizará automáticamente stockCaja del producto
             conn.commit()
             ins2.close()
 
-        # Si es venta a crédito, crear movimiento en cuenta corriente
-        if payload.idTipoPago == 2:  # crédito
-            ins3 = conn.cursor()
+        # Registrar movimiento en cuenta corriente
+        ins3 = conn.cursor()
+        if payload.idTipoPago == 1:  # crédito (Pago al credito)
             # Crear movimiento: tipo=cliente, debe=montoTotal (el cliente nos debe)
             ins3.execute('''
                 INSERT INTO cuenta_corriente_O 
@@ -408,8 +623,18 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
             ''', (payload.idCliente, target_company, fechaVenta, new_id, 
                   float(payload.montoTotal), float(payload.montoTotal), 
                   f'Venta #{new_id} a crédito'))
-            conn.commit()
-            ins3.close()
+        else:  # contado (idTipoPago == 2) o transferencia (idTipoPago == 7)
+            # Registrar ingreso a caja: tipo=caja, haber=montoTotal (entrada de efectivo)
+            ins3.execute('''
+                INSERT INTO cuenta_corriente_O 
+                (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                VALUES ('caja', NULL, %s, %s, 'venta', %s, 0, %s, %s, %s, 1)
+            ''', (target_company, fechaVenta, new_id, 
+                  float(payload.montoTotal), float(payload.montoTotal),
+                  f'Venta #{new_id} al contado'))
+        
+        conn.commit()
+        ins3.close()
 
         cur.close()
         conn.close()
@@ -525,7 +750,7 @@ def delete_venta(id: int, x_user_role: str = Header(None), request: Request = No
 # ========================
 
 @app.get('/tipos-venta')
-def list_tipos_venta():
+def list_tipos_venta(request: Request = None):
     """Listar tipos de venta (mayorista/minorista)."""
     try:
         conn = get_db_connection()
@@ -540,7 +765,7 @@ def list_tipos_venta():
 
 
 @app.get('/tipos-pago')
-def list_tipos_pago():
+def list_tipos_pago(request: Request = None):
     """Listar tipos de pago (contado/credito)."""
     try:
         conn = get_db_connection()
@@ -566,4 +791,168 @@ def health():
         return {'status': 'ok', 'db': 'connected'}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'db error: {e}')
+
+
+# ========================
+# Sistema de Entrega (Chofer)
+# ========================
+
+class ProductoEntregado(BaseModel):
+    idProducto: int
+    cantidad: int
+    entregado: bool = False
+
+
+class EntregaIn(BaseModel):
+    idVenta: int
+    id_chofer: Optional[int] = None
+    productos: List[ProductoEntregado]
+    observaciones: Optional[str] = None
+
+
+class EntregaUpdate(BaseModel):
+    productos: List[ProductoEntregado]
+    metodo_pago: Optional[str] = None  # 'Contado', 'Credito', 'Transferencia'
+    observaciones: Optional[str] = None
+
+
+@app.post('/ventas/{id_venta}/entrega')
+def crear_entrega(id_venta: int, payload: EntregaIn, x_user_role: str = Header(None), request: Request = None):
+    """Iniciar proceso de entrega para una venta. El chofer podrá marcar productos como entregados."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'editor', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Verificar que la venta existe
+        cur.execute('SELECT idVenta, idEmpresa FROM venta_O WHERE idVenta = %s', (id_venta,))
+        venta = cur.fetchone()
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+        
+        # Verificar que no exista ya una entrega para esta venta
+        cur.execute('SELECT id_entrega FROM entrega_venta WHERE idVenta = %s', (id_venta,))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=400, detail='Ya existe una entrega para esta venta')
+        
+        # Crear JSON con productos
+        import json
+        productos_json = json.dumps([p.dict() for p in payload.productos])
+        
+        # Insertar entrega
+        ins = conn.cursor()
+        ins.execute('''
+            INSERT INTO entrega_venta (idVenta, id_chofer, productos_entregados, estado_entrega, observaciones)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (id_venta, payload.id_chofer, productos_json, 'Pendiente', payload.observaciones))
+        conn.commit()
+        id_entrega = ins.lastrowid
+        ins.close()
+        cur.close()
+        conn.close()
+        
+        return {'id_entrega': id_entrega, 'idVenta': id_venta, 'estado': 'Pendiente'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/{id_venta}/entrega')
+def obtener_entrega(id_venta: int, x_user_role: str = Header(None), request: Request = None):
+    """Obtener información de entrega de una venta."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        cur.execute('''
+            SELECT e.*, p.nombres_persona, p.apellido_paternoPersona
+            FROM entrega_venta e
+            LEFT JOIN persona_O p ON e.id_chofer = p.id_persona
+            WHERE e.idVenta = %s
+        ''', (id_venta,))
+        entrega = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not entrega:
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+        
+        # Parse JSON
+        import json
+        if entrega.get('productos_entregados'):
+            entrega['productos_entregados'] = json.loads(entrega['productos_entregados'])
+        
+        return entrega
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/ventas/{id_venta}/entrega')
+def actualizar_entrega(id_venta: int, payload: EntregaUpdate, x_user_role: str = Header(None), request: Request = None):
+    """Actualizar productos entregados. El chofer marca qué productos entregó."""
+    role = get_role(x_user_role, request)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Obtener entrega actual
+        cur.execute('SELECT id_entrega FROM entrega_venta WHERE idVenta = %s', (id_venta,))
+        entrega = cur.fetchone()
+        if not entrega:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+        
+        # Calcular estado de entrega basado en productos
+        import json
+        todos_entregados = all(p.entregado for p in payload.productos)
+        alguno_entregado = any(p.entregado for p in payload.productos)
+        
+        if todos_entregados:
+            estado = 'Entregado'
+        elif alguno_entregado:
+            estado = 'Parcial'
+        else:
+            estado = 'Pendiente'
+        
+        productos_json = json.dumps([p.dict() for p in payload.productos])
+        
+        # Actualizar entrega
+        upd = conn.cursor()
+        upd.execute('''
+            UPDATE entrega_venta 
+            SET productos_entregados = %s, estado_entrega = %s, observaciones = %s, fecha_entrega = NOW()
+            WHERE idVenta = %s
+        ''', (productos_json, estado, payload.observaciones, id_venta))
+        
+        # Si se especifica método de pago y todos los productos fueron entregados, actualizar venta
+        # NOTA: Las columnas metodo_pago y estado_pago no existen en venta_O actual
+        # Se usa estado (tinyint) y idTipoPago existentes
+        if payload.metodo_pago and todos_entregados:
+            # Por ahora solo actualizamos el estado a 1 (activo/completado)
+            upd.execute('''
+                UPDATE venta_O 
+                SET estado = 1
+                WHERE idVenta = %s
+            ''', (id_venta,))
+        
+        conn.commit()
+        upd.close()
+        cur.close()
+        conn.close()
+        
+        return {'ok': True, 'estado': estado, 'metodo_pago': payload.metodo_pago if todos_entregados else None}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 

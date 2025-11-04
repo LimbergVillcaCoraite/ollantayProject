@@ -169,7 +169,6 @@ def list_cuentas(
 
         cur.execute(query, tuple(params))
         rows = cur.fetchall() or []
-        m
         # Convertir tipos
         for r in rows:
             r['saldo'] = float(r['saldo']) if r.get('saldo') else 0.0
