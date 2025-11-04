@@ -1961,7 +1961,25 @@ def update_role_permissions(
                 # Superadmin puede establecer permisos globales o para una empresa específica
                 target_company = payload.get('target_company_id', None)
             
-            values = [(role_id, perm_id, target_company) for perm_id in permission_ids if isinstance(perm_id, int)]
+            # Validate permission IDs before insertion to prevent 500 errors
+            valid_perm_ids = []
+            for perm_id in permission_ids:
+                if not isinstance(perm_id, int):
+                    continue  # Skip non-integer IDs
+                # Check if permission exists in the database
+                cursor.execute('SELECT id_perm FROM permission_O WHERE id_perm = %s', (perm_id,))
+                if cursor.fetchone():
+                    valid_perm_ids.append(perm_id)
+                else:
+                    print(f"⚠️ WARNING: Permission ID {perm_id} not found in permission_O - skipping")
+            
+            if not valid_perm_ids and permission_ids:
+                # If user sent IDs but none were valid, return 400
+                cursor.close()
+                conn.close()
+                raise HTTPException(status_code=400, detail='No se encontraron permisos válidos en la base de datos')
+            
+            values = [(role_id, perm_id, target_company) for perm_id in valid_perm_ids]
             if values:
                 cursor.executemany(
                     'INSERT INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s, %s, %s)',

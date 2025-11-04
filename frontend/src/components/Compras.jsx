@@ -1408,8 +1408,14 @@ export default function Compras({ API, userRole }) {
                       <td className="p-2 align-top">{c.nombreEmpresa}</td>
                       <td className="p-2 align-top">{formatMoney(c.montoTotal)}</td>
                       <td className="p-2 align-top">
-                        <span className={`px-2 py-1 rounded text-xs ${c.estado === 1 ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'}`}>
-                          {c.estado === 1 ? 'Activa' : 'Anulada'}
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          c.estado === 0
+                            ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                            : (c.idTipoPago === 1
+                                ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                                : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200')
+                        }`}>
+                          {c.estado === 0 ? 'Cancelado' : (c.idTipoPago === 1 ? 'Pendiente de pago' : 'Finalizado')}
                         </span>
                       </td>
                       <td className="p-2 align-top text-right whitespace-nowrap">
@@ -1549,8 +1555,14 @@ export default function Compras({ API, userRole }) {
                     <span className="font-mono text-sm font-bold bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded text-blue-700 dark:text-blue-300">
                       {c.numeroCompra || `#${c.idCompra}`}
                     </span>
-                    <span className={`px-2 py-1 rounded text-xs ${c.estado === 1 ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'}`}>
-                      {c.estado === 1 ? 'Activa' : 'Anulada'}
+                    <span className={`px-2 py-1 rounded text-xs ${
+                      c.estado === 0
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                        : (c.idTipoPago === 1
+                            ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                            : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200')
+                    }`}>
+                      {c.estado === 0 ? 'Cancelado' : (c.idTipoPago === 1 ? 'Pendiente de pago' : 'Finalizado')}
                     </span>
                   </div>
                   <div className="text-lg font-bold text-blue-600 dark:text-blue-400">{formatMoney(c.montoTotal)}</div>
@@ -1699,8 +1711,8 @@ export default function Compras({ API, userRole }) {
               <div>
                 <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">Estado</label>
                 <select value={editEstado} onChange={e=>setEditEstado(e.target.value)} className="w-full border rounded px-3 py-2 dark:bg-gray-900 dark:border-gray-700">
-                  <option value={1}>Activa</option>
-                  <option value={0}>Anulada</option>
+                  <option value={1}>Finalizado</option>
+                  <option value={0}>Cancelado</option>
                 </select>
               </div>
               <div>

@@ -17,10 +17,7 @@ export function usePermissions(loggedUser) {
     // Superadmin tiene todos los permisos
     if (userRole === 'superadmin') return true
     
-    // Admin tiene todos los permisos excepto gestión de superadmin
-    if (userRole === 'admin' && resource !== 'superadmin') return true
-    
-    // Verificar permiso específico
+    // Verificar permiso específico (sin atajos para admin)
     return perms.includes(`${resource}:${action}`)
   }
 
@@ -78,14 +75,14 @@ export function usePermissions(loggedUser) {
       'empresas': has('empresas', 'view'),
       'prestamos': has('prestamos', 'view'),
       'productos': has('productos', 'view'),
-      'caja': has('caja', 'view') || isAdmin(),
-      'ventas': has('ventas', 'view') || isAdmin(),
-      'compras': has('compras', 'view') || isAdmin(),
-      'proveedores': has('proveedores', 'view') || isAdmin(),
-      'rutas': has('rutas', 'view') || isAdmin(),
-      'cuentas': has('cuentas', 'view') || isAdmin(),
-      'usuarios': has('roles', 'manage') || isAdmin(),
-      'roles': has('roles', 'manage') || isAdmin(),
+      'caja': has('caja', 'view'),
+      'ventas': has('ventas', 'view'),
+      'compras': has('compras', 'view'),
+      'proveedores': has('proveedores', 'view'),
+      'rutas': has('rutas', 'view'),
+      'cuentas': has('cuentas', 'view'),
+      'usuarios': has('roles', 'manage'),
+      'roles': has('roles', 'manage'),
       'superadmin': isSuperAdmin(),
     }
 

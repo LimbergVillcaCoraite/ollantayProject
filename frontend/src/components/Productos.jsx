@@ -25,8 +25,8 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [previewImage, setPreviewImage] = useState(null)
   const [showUSD, setShowUSD] = useState(false) // Toggle para mostrar USD
   const TASA_CAMBIO = 6.96 // 1 USD = 6.96 Bs (Bolivia)
-  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa din·mica desde API
-  const [removeBg, setRemoveBg] = useState(false) // OpciÛn para remover fondo localmente
+  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa dinÔøΩmica desde API
+  const [removeBg, setRemoveBg] = useState(false) // OpciÔøΩn para remover fondo localmente
   const [lotesPorProducto, setLotesPorProducto] = useState({});
   const [showCreateLote, setShowCreateLote] = useState({}); // { [idProducto]: true/false }
   const [createLoteForm, setCreateLoteForm] = useState({}); // { [idProducto]: { idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas } }
@@ -36,7 +36,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [selectedLoteId, setSelectedLoteId] = useState({}) // { [idProducto]: idLote } - lote seleccionado por producto
   // Cargar/alternar lotes para un producto
   const loadLotesForProducto = async (idProducto) => {
-    // Alternar: si ya est·n cargados, ocultar
+    // Alternar: si ya estÔøΩn cargados, ocultar
     if (lotesPorProducto[idProducto]) {
       setLotesPorProducto(prev => {
         const next = { ...prev }
@@ -56,7 +56,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   };
 
-  // Abrir modal (cargar si no est· cargado)
+  // Abrir modal (cargar si no estÔøΩ cargado)
   const openLotesModal = async (idProducto) => {
     if (!lotesPorProducto[idProducto]) {
       await loadLotesForProducto(idProducto)
@@ -68,7 +68,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   // Crear lote para un producto
   const handleCreateLote = async (idProducto) => {
     const f = createLoteForm[idProducto] || {}
-    // ValidaciÛn mÌnima
+    // ValidaciÔøΩn mÔøΩnima
     if (!f || !f.fechaCompra || !f.precioCompra || !f.cantidadCajas) {
       toast.push('Complete fecha de compra, precio y cantidad', 'error')
       return
@@ -147,7 +147,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         }
       }
       
-      // TambiÈn refrescar si hay modal abierto
+      // TambiÔøΩn refrescar si hay modal abierto
       if (lotesModalProductId) {
         const url = `${API}/lotes?idProducto=${encodeURIComponent(lotesModalProductId)}`
         const r2 = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
@@ -186,9 +186,9 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     } else if (form.nombreProducto.trim().length < 2) {
       errors.nombreProducto = 'El nombre debe tener al menos 2 caracteres'
     } else if (form.nombreProducto.trim().length > 100) {
-      errors.nombreProducto = 'El nombre no puede tener m·s de 100 caracteres'
-    } else if (!/^[a-zA-ZÒ—·ÈÌÛ˙¡…Õ”⁄0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
-      errors.nombreProducto = 'El nombre contiene caracteres no v·lidos'
+      errors.nombreProducto = 'El nombre no puede tener mÔøΩs de 100 caracteres'
+    } else if (!/^[a-zA-ZÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
+      errors.nombreProducto = 'El nombre contiene caracteres no vÔøΩlidos'
     }
     
     // Validar duplicados de nombre (solo si no estamos editando)
@@ -227,7 +227,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       if (precio && precio.trim()) {
         const num = parseFloat(precio)
         if (isNaN(num) || num < 0) {
-          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un n˙mero v·lido mayor o igual a 0`
+          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un nÔøΩmero vÔøΩlido mayor o igual a 0`
         } else if (num > 999999.99) {
           errors[`precio_${tipo}`] = `El precio ${tipo} es demasiado alto`
         } else {
@@ -236,7 +236,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       }
     })
     
-    // Validar lÛgica de precios (mayorista < minorista)
+    // Validar lÔøΩgica de precios (mayorista < minorista)
     if (preciosNumericos.mayorista && preciosNumericos.minorista && 
         preciosNumericos.mayorista >= preciosNumericos.minorista) {
       errors.precio_mayorista = 'El precio mayorista debe ser menor al precio minorista'
@@ -247,7 +247,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       const file = form.imagen_producto
       const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
       if (!validTypes.includes(file.type)) {
-        errors.imagen_producto = 'Solo se permiten im·genes (JPG, PNG, GIF, WebP)'
+        errors.imagen_producto = 'Solo se permiten imÔøΩgenes (JPG, PNG, GIF, WebP)'
       } else if (file.size > 5 * 1024 * 1024) { // 5MB
         errors.imagen_producto = 'La imagen no puede ser mayor a 5MB'
       }
@@ -257,7 +257,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     return Object.keys(errors).length === 0
   }
 
-  // Limpiar errores de validaciÛn cuando cambie el campo
+  // Limpiar errores de validaciÔøΩn cuando cambie el campo
   const clearFieldError = (fieldName) => {
     if (validationErrors[fieldName]) {
       setValidationErrors(prev => {
@@ -268,7 +268,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // Filtrado y b˙squeda
+  // Filtrado y bÔøΩsqueda
   React.useEffect(() => {
     const t = setTimeout(() => {
       const q = (searchQ || '').trim().toLowerCase()
@@ -310,7 +310,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       
       if (!res.ok) {
         if (res.status === 401) {
-          // SesiÛn expirada, recargar p·gina para ir al login
+          // SesiÔøΩn expirada, recargar pÔøΩgina para ir al login
           window.location.reload()
           return
         }
@@ -391,13 +391,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
   const loadTasaCambio = async () => {
     try {
-      // Intentar primero con exchangerate.host (m·s actualizado y confiable)
+      // Intentar primero con exchangerate.host (mÔøΩs actualizado y confiable)
       let res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=BOB')
       if (res.ok) {
         const data = await res.json()
         if (data.rates && data.rates.BOB) {
           setTasaCambio(data.rates.BOB)
-          console.log(`?? Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate.host)`)
+          console.log(`üíµ Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate.host)`)
           return
         }
       }
@@ -408,13 +408,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         const data = await res.json()
         if (data.rates && data.rates.BOB) {
           setTasaCambio(data.rates.BOB)
-          console.log(`?? Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate-api.com)`)
+          console.log(`üíµ Tasa de cambio USD/BOB actualizada: 1 USD = ${data.rates.BOB} BOB (exchangerate-api.com)`)
           return
         }
       }
       
       // Si ambas fallan, usar tasa fija
-      console.warn('?? No se pudo obtener tasa de cambio de APIs externas, usando tasa fija 6.96')
+      console.warn('‚ö†Ô∏è No se pudo obtener tasa de cambio de APIs externas, usando tasa fija 6.96')
       setTasaCambio(6.96)
     } catch (err) {
       console.error('Error loading tasa de cambio:', err)
@@ -434,7 +434,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     e.preventDefault()
     setError(null)
     
-    // ValidaciÛn avanzada
+    // ValidaciÔøΩn avanzada
     if (!validateForm()) {
       setError('Por favor corrige los errores en el formulario')
       return
@@ -462,7 +462,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
 
       const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
-      // No establecer Content-Type para FormData - el navegador lo hace autom·ticamente
+      // No establecer Content-Type para FormData - el navegador lo hace automÔøΩticamente
 
       const url = editingId ? `${API}/productos/${editingId}` : `${API}/productos`
       const method = editingId ? 'PUT' : 'POST'
@@ -492,7 +492,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // Manejar cambio de imagen con previsualizaciÛn
+  // Manejar cambio de imagen con previsualizaciÔøΩn
   const handleImageChange = (e) => {
     const file = e.target.files[0]
     setForm({ ...form, imagen_producto: file })
@@ -507,7 +507,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   }
 
-  // FunciÛn simple para hacer el fondo m·s transparente (simulaciÛn b·sica)
+  // FunciÔøΩn simple para hacer el fondo mÔøΩs transparente (simulaciÔøΩn bÔøΩsica)
   const removeBackground = (imageDataUrl) => {
     return new Promise((resolve) => {
       const img = new Image()
@@ -521,13 +521,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         const data = imageData.data
         
-        // Algoritmo simple: hacer pÌxeles blancos/claros transparentes
+        // Algoritmo simple: hacer pÔøΩxeles blancos/claros transparentes
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i]
           const g = data[i + 1]
           const b = data[i + 2]
           
-          // Si el pÌxel es muy claro (cercano a blanco), hacerlo transparente
+          // Si el pÔøΩxel es muy claro (cercano a blanco), hacerlo transparente
           const brightness = (r + g + b) / 3
           if (brightness > 240) {
             data[i + 3] = 0 // Alpha = 0 (transparente)
@@ -631,13 +631,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   const deleteProducto = async (id) => {
-    if (!confirm('øEst· seguro de eliminar este producto? Esta acciÛn no se puede deshacer.')) return
+    if (!confirm('ÔøΩEstÔøΩ seguro de eliminar este producto? Esta acciÔøΩn no se puede deshacer.')) return
     
     try {
       const headers = {}
       if (userRole) headers['X-User-Role'] = userRole
 
-      console.log(`??? Eliminando producto ${id} con rol: ${userRole}`) // Debug
+      console.log(`üóëÔ∏è Eliminando producto ${id} con rol: ${userRole}`) // Debug
 
       const res = await fetch(`${API}/productos/${id}`, {
         method: 'DELETE',
@@ -666,7 +666,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     setShowPrecios(showPrecios === productoId ? null : productoId)
   }
 
-  // FunciÛn para formatear precios con conversiÛn a USD
+  // FunciÔøΩn para formatear precios con conversiÔøΩn a USD
   const formatPrecio = (precio) => {
     if (!precio) return 'N/A'
     const precioNum = parseFloat(precio)
@@ -704,7 +704,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Cat·logo de Productos
+            CatÔøΩlogo de Productos
           </h2>
           <div className="flex items-center mt-2 space-x-4">
             <span className="text-sm bg-blue-100 dark:bg-blue-900 px-2 py-1 rounded-full">
@@ -749,16 +749,16 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           </div>
         )}
 
-        {/* Cat·logo de productos para clientes */}
+        {/* CatÔøΩlogo de productos para clientes */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredProductos.length === 0 ? (
             <div className="col-span-full text-center py-12 text-gray-500 dark:text-gray-400">
-              <div className="text-6xl mb-4">???</div>
+              <div className="text-6xl mb-4">üì¶</div>
               <p>No se encontraron productos</p>
             </div>
           ) : (
             filteredProductos.map((producto) => {
-              // Determinar precio seg˙n tipo de cliente
+              // Determinar precio segÔøΩn tipo de cliente
               let precio = null
               let tipoPrecio = ''
               
@@ -793,13 +793,13 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
                     >
                       <div className="text-center">
-                        <div className="text-4xl mb-2">??</div>
+                        <div className="text-4xl mb-2">üñºÔ∏è</div>
                         <div className="text-sm">Sin imagen</div>
                       </div>
                     </div>
                   </div>
 
-                  {/* InformaciÛn del producto */}
+                  {/* InformaciÔøΩn del producto */}
                   <div className="p-4">
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2 line-clamp-2">
                       {producto.nombreProducto}
@@ -854,7 +854,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                         </div>
                         {showUSD && (
                           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            ò Bs {parseFloat(precio).toFixed(2)}
+                            ÔøΩ Bs {parseFloat(precio).toFixed(2)}
                           </div>
                         )}
                       </div>
@@ -866,7 +866,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       </div>
                     )}
 
-                    {/* BotÛn de acciÛn */}
+                    {/* BotÔøΩn de acciÔøΩn */}
                     <button className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors duration-200 hover:shadow-md">
                       Ver Detalles
                     </button>
@@ -891,7 +891,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           <button
             onClick={toggleMoneda}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors shadow-sm"
-            title={showUSD ? 'Mostrar en Bolivianos' : 'Mostrar en DÛlares'}
+            title={showUSD ? 'Mostrar en Bolivianos' : 'Mostrar en DÔøΩlares'}
           >
             <span className="text-lg">{showUSD ? '$us' : 'Bs'}</span>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -997,7 +997,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
           </div>
           
           <form onSubmit={submit} className="space-y-6">
-            {/* InformaciÛn b·sica */}
+            {/* InformaciÔøΩn bÔøΩsica */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1101,7 +1101,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  Nota: el proveedor est· ligado a cada lote de compra, no al producto en sÌ.
+                  Nota: el proveedor estÔøΩ ligado a cada lote de compra, no al producto en sÔøΩ.
                 </p>
               </div>
               
@@ -1152,7 +1152,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                 />
                 <label htmlFor="removeBg" className="text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
-                  ?? Remover fondo autom·ticamente (solo fondos blancos/claros)
+                  ‚úÇÔ∏è Remover fondo automÔøΩticamente (solo fondos blancos/claros)
                 </label>
               </div>
               
@@ -1169,15 +1169,15 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                     }`}
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Formatos: JPG, PNG, GIF, WebP. M·ximo 5MB
-                    {removeBg && <span className="text-blue-600 dark:text-blue-400"> ï Procesando con remociÛn de fondo</span>}
+                    Formatos: JPG, PNG, GIF, WebP. MÔøΩximo 5MB
+                    {removeBg && <span className="text-blue-600 dark:text-blue-400"> ÔøΩ Procesando con remociÔøΩn de fondo</span>}
                   </p>
                   {validationErrors.imagen_producto && (
                     <p className="text-red-500 text-xs mt-1">{validationErrors.imagen_producto}</p>
                   )}
                 </div>
                 
-                {/* PrevisualizaciÛn */}
+                {/* PrevisualizaciÔøΩn */}
                 {previewImage && (
                   <div className="w-24 h-24 border-2 border-gray-300 dark:border-gray-600 rounded-md overflow-hidden bg-gray-50 dark:bg-gray-700 bg-checkered">
                     <img 
@@ -1190,12 +1190,12 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               </div>
             </div>
 
-            {/* ConfiguraciÛn de precios con validaciones */
+            {/* ConfiguraciÔøΩn de precios con validaciones */
             }
             <div className="border-t pt-4 space-y-4">
               <div className="flex items-center space-x-2">
                 <h4 className="text-md font-medium text-gray-900 dark:text-gray-100">
-                  ConfiguraciÛn de Precios
+                  ConfiguraciÔøΩn de Precios
                 </h4>
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   (Opcionales - Mayorista debe ser menor que Minorista)
@@ -1203,14 +1203,14 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               </div>
               {editingId && (
                 <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 px-3 py-2 rounded">
-                  Puede configurar precios manuales aquÌ. Si los deja en blanco, el sistema usar· los precios calculados a partir de los lotes y m·rgenes.
+                  Puede configurar precios manuales aquÔøΩ. Si los deja en blanco, el sistema usarÔøΩ los precios calculados a partir de los lotes y mÔøΩrgenes.
                 </div>
               )}
               
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    ?? Precio Minorista
+                    üõí Precio Minorista
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
@@ -1241,7 +1241,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    ?? Precio Mayorista
+                    üè™ Precio Mayorista
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
@@ -1306,7 +1306,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               {(form.precios.minorista || form.precios.mayorista || form.precios.especial) && (
                 <div className="bg-blue-50 dark:bg-blue-900 p-3 rounded-md">
                   <p className="text-sm text-blue-800 dark:text-blue-200">
-                    ?? <strong>Resumen de precios:</strong>
+                    üí∞ <strong>Resumen de precios:</strong>
                     {form.precios.minorista && ` Minorista: Bs. ${form.precios.minorista}`}
                     {form.precios.mayorista && ` | Mayorista: Bs. ${form.precios.mayorista}`}
                     {form.precios.especial && ` | Especial: Bs. ${form.precios.especial}`}
@@ -1315,7 +1315,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
               )}
             </div>
 
-            {/* Botones de acciÛn */}
+            {/* Botones de acciÔøΩn */}
             <div className="flex justify-between items-center pt-4">
               <div className="text-sm text-gray-500 dark:text-gray-400">
                 Los campos marcados con * son obligatorios
@@ -1342,7 +1342,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       <span>Guardando...</span>
                     </>
                   ) : (
-                    <span>{editingId ? '?? Actualizar Producto' : '? Crear Producto'}</span>
+                    <span>{editingId ? '‚úèÔ∏è Actualizar Producto' : '‚úÖ Crear Producto'}</span>
                   )}
                 </button>
               </div>
@@ -1377,7 +1377,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   className="w-full h-full flex items-center justify-center text-gray-400"
                   style={{ display: producto.imagen_producto ? 'none' : 'flex' }}
                 >
-                  <span className="text-4xl">??</span>
+                  <span className="text-4xl">üñºÔ∏è</span>
                 </div>
               </div>
               <div className="mb-3">
@@ -1407,7 +1407,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                       ? 'text-red-600 dark:text-red-400 font-semibold'
                       : 'text-gray-500 dark:text-gray-400'
                   }`}>
-                    ?? Vence: {new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}
+                    üìÖ Vence: {new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}
                   </p>
                 )}
               </div>
@@ -1416,14 +1416,14 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                 <button
                   onClick={() => {
                     togglePrecios(producto.idProducto)
-                    // Cargar lotes autom·ticamente si no est·n cargados
+                    // Cargar lotes automÔøΩticamente si no estÔøΩn cargados
                     if (showPrecios !== producto.idProducto && !lotesPorProducto[producto.idProducto]) {
                       loadLotesForProducto(producto.idProducto)
                     }
                   }}
                   className={getButtonClass('ghost', 'sm') + ' w-full justify-between flex items-center'}
                 >
-                  <span>?? {showPrecios === producto.idProducto ? 'Ocultar precios' : 'Ver precios'}</span>
+                  <span>üí∞ {showPrecios === producto.idProducto ? 'Ocultar precios' : 'Ver precios'}</span>
                   <svg 
                     className={`w-4 h-4 transition-transform duration-200 ${showPrecios === producto.idProducto ? 'rotate-180' : ''}`} 
                     fill="none" 
@@ -1437,7 +1437,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   <div className="mt-2 bg-white dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-600 space-y-2 animate-fadeIn">
                     {showUSD && (
                       <div className={designSystem.typography.caption + ' text-center pb-2 border-b border-gray-200 dark:border-gray-600'}>
-                        ?? Tasa: 1$ = {tasaCambio.toFixed(2)} Bs
+                        üíµ Tasa: 1$ = {tasaCambio.toFixed(2)} Bs
                       </div>
                     )}
                     
@@ -1445,7 +1445,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                     {lotesPorProducto[producto.idProducto] && lotesPorProducto[producto.idProducto].length > 0 && (
                       <div className="pb-2 mb-2 border-b border-gray-200 dark:border-gray-600">
                         <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">
-                          ?? Seleccionar Lote:
+                          üì¶ Seleccionar Lote:
                         </label>
                         <select
                           value={selectedLoteId[producto.idProducto] || ''}
@@ -1492,7 +1492,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                           
                           {precioMinorista ? (
                             <div className="flex justify-between items-center">
-                              <span className={designSystem.typography.small}>?? Minorista:</span>
+                              <span className={designSystem.typography.small}>üõí Minorista:</span>
                               <span className={designSystem.typography.bodyBold + ' text-green-600 dark:text-green-400'}>
                                 {formatPrecio(precioMinorista)}
                               </span>
@@ -1505,7 +1505,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                           
                           {precioMayorista ? (
                             <div className="flex justify-between items-center">
-                              <span className={designSystem.typography.small}>?? Mayorista:</span>
+                              <span className={designSystem.typography.small}>üè™ Mayorista:</span>
                               <span className={designSystem.typography.bodyBold + ' text-blue-600 dark:text-blue-400'}>
                                 {formatPrecio(precioMayorista)}
                               </span>
@@ -1535,7 +1535,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                             ? 'text-red-600 dark:text-red-400 font-semibold'
                             : 'text-gray-600 dark:text-gray-400'
                         }`}>
-                          <span>?? Vencimiento:</span>
+                          <span>üìÖ Vencimiento:</span>
                           <span>{new Date(producto.fecha_vencimiento_proxima).toLocaleDateString('es-BO')}</span>
                         </div>
                       </div>
@@ -1548,7 +1548,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                           className={getButtonClass('primary', 'xs')}
                           onClick={() => openLotesModal(producto.idProducto)}
                         >
-                          ?? Ver lotes del producto
+                          üì¶ Ver lotes del producto
                         </button>
                       </div>
                       <button
@@ -1654,7 +1654,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                           {/* Precios de venta (opcional) */}
                           <div className="mt-3 pt-3 border-t border-yellow-300 dark:border-yellow-700">
                             <div className="text-xs text-gray-600 dark:text-gray-400 mb-2">
-                              ?? Precios de venta (opcional - dejar vacÌo para usar precios del producto)
+                              üí∞ Precios de venta (opcional - dejar vacÔøΩo para usar precios del producto)
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                               <div>
@@ -1728,14 +1728,14 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                     className={getButtonClass('primary', 'sm') + ' flex-1'}
                     title={'Editar producto'}
                   >
-                    ?? Editar
+                    ‚úèÔ∏è Editar
                   </button>
                   <button
                     onClick={() => deleteProducto(producto.idProducto)}
                     className={getButtonClass('danger', 'sm') + ' flex-1'}
                     title={'Eliminar producto'}
                   >
-                    ??? Eliminar
+                    üóëÔ∏è Eliminar
                   </button>
                 </div>
               )}
@@ -1765,7 +1765,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   <table className="min-w-full text-xs sm:text-sm border dark:border-gray-700">
                     <thead className="sticky top-0 bg-indigo-100 dark:bg-indigo-900/60">
                       <tr>
-                        <th className="p-2 text-left">CÛdigo</th>
+                        <th className="p-2 text-left">CÔøΩdigo</th>
                         <th className="p-2 text-left">Producto</th>
                         <th className="p-2 text-left">Proveedor</th>
                         <th className="p-2 text-right">Precio Compra</th>

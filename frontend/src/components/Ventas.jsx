@@ -14,6 +14,7 @@ export default function Ventas({ API, userRole }) {
   const [entregasLoading, setEntregasLoading] = useState(false);
   const [entregasError, setEntregasError] = useState('');
   const [entregasExpanded, setEntregasExpanded] = useState({}); // idEntrega -> detalles
+  const [ventasExpanded, setVentasExpanded] = useState({}); // idVenta -> expanded
   const [rutas, setRutas] = useState([]);
   
   // Filtros
@@ -283,6 +284,9 @@ export default function Ventas({ API, userRole }) {
       return `Bs ${num.toFixed(2)}`;
     }
   };
+
+  // Normaliza estados como "En Ruta" -> "en_ruta"
+  const normalizeEstado = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, '_');
 
   // Utilidad: nombre visible de persona
   const formatPersonaNombre = (p) => {
@@ -700,7 +704,7 @@ export default function Ventas({ API, userRole }) {
       const totalProductos = detallesEntrega.length;
       const totalUnidades = detallesEntrega.reduce((sum, d) => sum + Number(d.cantidadEnviada), 0);
       const totalValor = detallesEntrega.reduce((sum, d) => sum + (Number(d.cantidadEnviada) * Number(d.precioUnitario)), 0);
-      alert(`? Entrega creada exitosamente\n\n?? Total productos: ${totalProductos}\n?? Total unidades: ${totalUnidades.toFixed(2)}\n?? Valor total: Bs. ${totalValor.toFixed(2)}\n\n?? Estado: EN RUTA\nLos productos han salido del almac�n.`);
+      alert(`✅ Entrega creada exitosamente\n\n📦 Total productos: ${totalProductos}\n📊 Total unidades: ${totalUnidades.toFixed(2)}\n💰 Valor total: Bs. ${totalValor.toFixed(2)}\n\n🚚 Estado: EN RUTA\nLos productos han salido del almac�n.`);
       setCrearEntregaOpen(false);
       setFormEntrega({ idRuta: '', idEncargado: '', fechaSalida: new Date().toISOString().split('T')[0], observaciones: '' });
       setDetallesEntrega([]);
@@ -789,7 +793,7 @@ export default function Ventas({ API, userRole }) {
         return sum + (enviada - devuelta);
       }, 0);
       
-      alert(`? Entrega finalizada\n\n?? Total vendido: ${totalVendido.toFixed(2)} unidades\n?? El efectivo ha sido registrado en caja`);
+      alert(`✅ Entrega finalizada\n\n📊 Total vendido: ${totalVendido.toFixed(2)} unidades\n💵 El efectivo ha sido registrado en caja`);
       setFinalizandoEntrega(null);
       setEntregasExpanded(prev => ({ ...prev, [finalizandoEntrega.idEntrega]: null }));
       await loadEntregas();
@@ -1032,19 +1036,19 @@ export default function Ventas({ API, userRole }) {
             onClick={() => { setShowEntregas(v => { const nv = !v; if (nv) { setShowCreate(false); loadEntregas(); loadRutas(); } return nv; }); }}
             className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 transition font-semibold"
           >
-            {showEntregas ? '? Cerrar Entregas' : '?? Entregas (Chofer)'}
+            {showEntregas ? '❌ Cerrar Entregas' : '🚚 Entregas (Chofer)'}
           </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition"
           >
-            {showFilters ? '?? Ocultar Filtros' : '?? Mostrar Filtros'}
+            {showFilters ? '🔽 Ocultar Filtros' : '🔼 Mostrar Filtros'}
           </button>
           <button
             onClick={() => setShowSummary(!showSummary)}
             className="px-3 py-1.5 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition"
           >
-            {showSummary ? '?? Ocultar Resumen' : '?? Mostrar Resumen'}
+            {showSummary ? '📊 Ocultar Resumen' : '📈 Mostrar Resumen'}
           </button>
         </div>
       </div>
@@ -1310,7 +1314,7 @@ export default function Ventas({ API, userRole }) {
                 />
                 {nuevoDetalle.loteInfo && (
                   <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                    ?? Lote: {nuevoDetalle.loteInfo.codigoLote} | Vence: {nuevoDetalle.loteInfo.fechaVencimiento}
+                    📦 Lote: {nuevoDetalle.loteInfo.codigoLote} | Vence: {nuevoDetalle.loteInfo.fechaVencimiento}
                   </p>
                 )}
                 {nuevoDetalle.venderUnidades && nuevoDetalle.unidadesPorPaquete && nuevoDetalle.precio_por_paquete && (
@@ -1354,7 +1358,7 @@ export default function Ventas({ API, userRole }) {
                           {det.nombreProducto}
                           {det.loteInfo && (
                             <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                              ?? Lote: {det.loteInfo.codigoLote} | Vence: {det.loteInfo.fechaVencimiento}
+                              📦 Lote: {det.loteInfo.codigoLote} | Vence: {det.loteInfo.fechaVencimiento}
                             </div>
                           )}
                         </td>
@@ -1449,7 +1453,7 @@ export default function Ventas({ API, userRole }) {
               disabled={submitting || detalles.length === 0}
               className="px-6 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submitting ? 'Guardando...' : '?? Guardar Venta'}
+              {submitting ? 'Guardando...' : '💾 Guardar Venta'}
             </button>
             <button
               onClick={() => {
@@ -1473,7 +1477,7 @@ export default function Ventas({ API, userRole }) {
             <div>
               <h3 className="text-xl font-bold dark:text-white">Entregas por Ruta</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                ?? Los productos enviados est�n "en ruta" hasta que el cami�n retorne. El encargado solo puede vender de su stock en ruta.
+                🚚 Los productos enviados est�n "en ruta" hasta que el cami�n retorne. El encargado solo puede vender de su stock en ruta.
               </p>
             </div>
             <button
@@ -1487,7 +1491,7 @@ export default function Ventas({ API, userRole }) {
           {/* Crear Entrega */}
           {crearEntregaOpen && (
             <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-700/50 rounded border border-gray-200 dark:border-gray-600">
-              <h4 className="font-semibold mb-3 dark:text-white">?? Crear Nuevo Manifiesto de Entrega</h4>
+              <h4 className="font-semibold mb-3 dark:text-white">📋 Crear Nuevo Manifiesto de Entrega</h4>
               <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                 Al crear la entrega, los productos salen del almac�n y pasan a estar "en ruta" con el encargado.
                 El cami�n debe retornar para finalizar y registrar ventas en caja.
@@ -1558,7 +1562,7 @@ export default function Ventas({ API, userRole }) {
                          disabled={!nuevoDetEntrega.idProducto}
                          className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white disabled:opacity-50" />
                   {nuevoDetEntrega.stockDisponible > 0 && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">?? Almac�n: {nuevoDetEntrega.stockDisponible}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">📦 Almac�n: {nuevoDetEntrega.stockDisponible}</p>
                   )}
                 </div>
                 <div>
@@ -1568,7 +1572,7 @@ export default function Ventas({ API, userRole }) {
                          disabled={!nuevoDetEntrega.idProducto}
                          className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white disabled:opacity-50" />
                   {nuevoDetEntrega.codigoLote && (
-                    <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">?? Lote: {nuevoDetEntrega.codigoLote} {nuevoDetEntrega.fechaVencimiento ? `| Vence: ${nuevoDetEntrega.fechaVencimiento}` : ''}</p>
+                    <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">📦 Lote: {nuevoDetEntrega.codigoLote} {nuevoDetEntrega.fechaVencimiento ? `| Vence: ${nuevoDetEntrega.fechaVencimiento}` : ''}</p>
                   )}
                 </div>
                 <div className="flex items-end">
@@ -1617,7 +1621,7 @@ export default function Ventas({ API, userRole }) {
                     </tfoot>
                   </table>
                   <p className="text-sm text-amber-700 dark:text-amber-400 mt-2 flex items-start gap-2">
-                    <span className="text-lg">??</span>
+                    <span className="text-lg">⚠️</span>
                     <span>Estos productos quedar�n "en ruta" con el encargado. No se registrar�n en caja hasta que el cami�n retorne y se finalice la entrega.</span>
                   </p>
                 </div>
@@ -1626,7 +1630,7 @@ export default function Ventas({ API, userRole }) {
               <div className="mt-4 flex gap-3">
                 <button onClick={submitEntrega} disabled={detallesEntrega.length===0 || !formEntrega.idRuta || !formEntrega.idEncargado}
                         className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
-                  ?? Crear Entrega y Enviar Cami�n
+                  🚚 Crear Entrega y Enviar Cami�n
                 </button>
                 <button onClick={()=>{ setCrearEntregaOpen(false); setFormEntrega({ idRuta:'', idEncargado:'', fechaSalida:new Date().toISOString().split('T')[0], observaciones:''}); setDetallesEntrega([]); setNuevoDetEntrega({busqueda:'', idProducto:'', nombreProducto:'', idLote:null, codigoLote:'', fechaVencimiento:'', stockDisponible:0, cantidadEnviada:'', precioUnitario:''}); }}
                         className="px-6 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">Cancelar</button>
@@ -1677,22 +1681,22 @@ export default function Ventas({ API, userRole }) {
                           </td>
                           <td className="px-4 py-2 text-sm">
                             <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                              e.estado === 'finalizado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
-                              : e.estado === 'en_ruta' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                              normalizeEstado(e.estado) === 'finalizado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                              : normalizeEstado(e.estado) === 'en_ruta' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
                               : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
-                            }`}>{e.estado === 'en_ruta' ? '🚚 EN RUTA' : e.estado === 'finalizado' ? '✅ FINALIZADO' : e.estado}</span>
+                            }`}>{normalizeEstado(e.estado) === 'en_ruta' ? '🚚 EN RUTA' : normalizeEstado(e.estado) === 'finalizado' ? '✅ FINALIZADO' : (e.estado || '')}</span>
                           </td>
                           <td className="px-4 py-2 text-sm text-center">
                             <div className="flex gap-2 justify-center">
                               <button onClick={()=>toggleExpandEntrega(e)} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">{entregasExpanded[e.idEntrega] ? 'Ocultar' : 'Ver Detalle'}</button>
-                              {e.estado === 'en_ruta' && (
+                              {normalizeEstado(e.estado) !== 'finalizado' && (
                                 <button onClick={()=>finalizarEntrega(e.idEntrega)} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">🔚 Finalizar Retorno</button>
                               )}
                             </div>
                           </td>
                         </tr>
                         {entregasExpanded[e.idEntrega] && (
-                          <tr className="bg-gray-50 dark:bg-gray-800"><td colSpan="7" className="px-4 py-3">
+                          <tr className="bg-gray-50 dark:bg-gray-800"><td colSpan="8" className="px-4 py-3">
                             <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
                             <div className="overflow-x-auto">
                               <table className="w-full text-sm border dark:border-gray-700">
@@ -1739,7 +1743,7 @@ export default function Ventas({ API, userRole }) {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-xl font-bold dark:text-white">?? Finalizar Retorno de Entrega</h3>
+              <h3 className="text-xl font-bold dark:text-white">🏁 Finalizar Retorno de Entrega</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                 Ingrese las cantidades devueltas. Las cantidades vendidas se calcular�n autom�ticamente.
               </p>
@@ -1844,7 +1848,7 @@ export default function Ventas({ API, userRole }) {
 
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
                 <p className="text-sm text-blue-900 dark:text-blue-200">
-                  <strong>?? Importante:</strong> El efectivo recaudado se registrar� autom�ticamente en la caja cuando confirme la finalizaci�n.
+                  <strong>💡 Importante:</strong> El efectivo recaudado se registrar� autom�ticamente en la caja cuando confirme la finalizaci�n.
                 </p>
               </div>
             </div>
@@ -2143,35 +2147,72 @@ export default function Ventas({ API, userRole }) {
                   <th className="p-3 text-left dark:text-gray-200">Pago</th>
                   <th className="p-3 text-right dark:text-gray-200">Monto</th>
                   <th className="p-3 text-center dark:text-gray-200">Estado</th>
+                  <th className="p-3 text-center dark:text-gray-200">Acciones</th>
                 </tr>
               </thead>
               <tbody className="dark:text-gray-300">
                 {ventasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="p-8 text-center text-gray-500 dark:text-gray-400">
+                    <td colSpan="9" className="p-8 text-center text-gray-500 dark:text-gray-400">
                       No hay ventas registradas
                     </td>
                   </tr>
                 ) : (
                   ventasFiltradas.map(v => (
-                    <tr key={v.idVenta} className="border-t dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                      <td className="p-3"><span className="font-mono text-xs bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded">{v.codigoVenta || `#${v.idVenta}`}</span></td>
-                      <td className="p-3">{v.fechaVenta}</td>
-                      <td className="p-3">{v.nombreCliente}</td>
-                      <td className="p-3">{v.nombreEmpresa}</td>
-                      <td className="p-3">{v.tipoVenta || '-'}</td>
-                      <td className="p-3">{v.tipoPago || '-'}</td>
-                      <td className="p-3 text-right font-semibold">{formatMoney(v.montoTotal)}</td>
-                      <td className="p-3 text-center">
-                        <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
-                          v.estado === 1 
-                            ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' 
-                            : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
-                        }`}>
-                          {v.estado === 1 ? 'Activa' : 'Anulada'}
-                        </span>
-                      </td>
-                    </tr>
+                    <React.Fragment key={v.idVenta}>
+                      <tr className="border-t dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                        <td className="p-3"><span className="font-mono text-xs bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded">{v.codigoVenta || `#${v.idVenta}`}</span></td>
+                        <td className="p-3">{v.fechaVenta}</td>
+                        <td className="p-3">{v.nombreCliente}</td>
+                        <td className="p-3">{v.nombreEmpresa}</td>
+                        <td className="p-3">{v.tipoVenta || '-'}</td>
+                        <td className="p-3">{v.tipoPago || '-'}</td>
+                        <td className="p-3 text-right font-semibold">{formatMoney(v.montoTotal)}</td>
+                        <td className="p-3 text-center">
+                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
+                            v.estado === 1 
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' 
+                              : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                          }`}>
+                            {v.estado === 1 ? 'Activa' : 'Anulada'}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
+                            {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
+                          </button>
+                        </td>
+                      </tr>
+                      {ventasExpanded[v.idVenta] && (
+                        <tr className="bg-gray-50 dark:bg-gray-800">
+                          <td colSpan="9" className="p-3">
+                            <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm border dark:border-gray-700">
+                                <thead className="bg-gray-100 dark:bg-gray-700">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left">Producto</th>
+                                    <th className="px-3 py-2 text-right">Cantidad</th>
+                                    <th className="px-3 py-2 text-right">Precio</th>
+                                    <th className="px-3 py-2 text-right">Subtotal</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(v.detalles || []).map((d, i) => (
+                                    <tr key={d.idDetalle || i} className="border-t dark:border-gray-700">
+                                      <td className="px-3 py-2">{d.nombreProducto || d.idProducto}</td>
+                                      <td className="px-3 py-2 text-right">{Number(d.cantidad_caja).toFixed(2)}</td>
+                                      <td className="px-3 py-2 text-right">{formatMoney(d.precio_unitario)}</td>
+                                      <td className="px-3 py-2 text-right font-semibold">{formatMoney(d.subtotal)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))
                 )}
               </tbody>
@@ -2198,6 +2239,9 @@ export default function Ventas({ API, userRole }) {
                         {v.estado === 1 ? 'Activa' : 'Anulada'}
                       </span>
                     </div>
+                    <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="ml-3 px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
+                      {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
+                    </button>
                   </div>
                   
                   <div className="space-y-2 text-sm">
@@ -2225,6 +2269,33 @@ export default function Ventas({ API, userRole }) {
                       <span className="font-semibold text-gray-600 dark:text-gray-400 w-24 flex-shrink-0">Monto:</span>
                       <span className="text-lg font-bold text-green-600 dark:text-green-400">{formatMoney(v.montoTotal)}</span>
                     </div>
+                    {ventasExpanded[v.idVenta] && (
+                      <div className="mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
+                        <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm border dark:border-gray-700">
+                            <thead className="bg-gray-100 dark:bg-gray-700">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Producto</th>
+                                <th className="px-3 py-2 text-right">Cantidad</th>
+                                <th className="px-3 py-2 text-right">Precio</th>
+                                <th className="px-3 py-2 text-right">Subtotal</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(v.detalles || []).map((d, i) => (
+                                <tr key={d.idDetalle || i} className="border-t dark:border-gray-700">
+                                  <td className="px-3 py-2">{d.nombreProducto || d.idProducto}</td>
+                                  <td className="px-3 py-2 text-right">{Number(d.cantidad_caja).toFixed(2)}</td>
+                                  <td className="px-3 py-2 text-right">{formatMoney(d.precio_unitario)}</td>
+                                  <td className="px-3 py-2 text-right font-semibold">{formatMoney(d.subtotal)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
