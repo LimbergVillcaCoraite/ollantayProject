@@ -30,7 +30,9 @@ function createPersonIcon(fotoUrl, API_PERSONAS) {
     className: 'custom-person-marker',
     iconSize: [40, 40],
     iconAnchor: [20, 40],
-    popupAnchor: [0, -40]
+    popupAnchor: [0, -40],
+    // Asegurar que no tenga z-index alto
+    zIndexOffset: 0
   });
 }
 
@@ -173,8 +175,8 @@ export default function PersonasEnMapa({ API_PERSONAS, userRole }) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Mapa */}
         <div className="lg:col-span-2">
-          <div className="w-full h-[500px] rounded shadow border border-gray-200 dark:border-gray-700 overflow-hidden">
-            <MapContainer center={initialCenter} zoom={13} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
+          <div className="w-full h-[500px] rounded shadow border border-gray-200 dark:border-gray-700 overflow-hidden relative z-0">
+            <MapContainer center={initialCenter} zoom={13} scrollWheelZoom={true} style={{ height: '100%', width: '100%', zIndex: 0 }}>
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
               <MapController center={mapCenter} zoom={mapZoom} />
               {personas.map(p => {
