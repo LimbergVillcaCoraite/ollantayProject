@@ -1,5 +1,18 @@
 ﻿import React, { useEffect, useState, useCallback } from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { MapContainer, TileLayer, Marker, Circle } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+// Fix Leaflet default icon paths for Vite bundling
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow
+});
 
 export default function Ventas({ API, userRole }) {
   const [ventas, setVentas] = useState([]);
@@ -24,6 +37,7 @@ export default function Ventas({ API, userRole }) {
   const [fTipoVenta, setFTipoVenta] = useState('');
   const [fTipoPago, setFTipoPago] = useState('');
   const [fEstado, setFEstado] = useState('');
+  const [fEstadoPago, setFEstadoPago] = useState('');
   const [fIdProducto, setFIdProducto] = useState('');
   const [periodo, setPeriodo] = useState('');
 
@@ -94,6 +108,7 @@ export default function Ventas({ API, userRole }) {
   const [productosSugEntrega, setProductosSugEntrega] = useState([]);
   const [rutaPrecioCache, setRutaPrecioCache] = useState({}); // idRuta -> { incremento_general, precios: [{idProducto, incremento_precio}] }
   const [finalizandoEntrega, setFinalizandoEntrega] = useState(null); // { idEntrega, detalles con input de devoluci�n }
+    const [mapaEntrega, setMapaEntrega] = useState(null); // { idEntrega, numeroEntrega, ultima, online, socket }
   
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -244,6 +259,115 @@ export default function Ventas({ API, userRole }) {
   useEffect(() => {
     loadVentas();
   }, [loadVentas]);
+
+  const anularVenta = async (idVenta) => {
+    if (!window.confirm('¿Está seguro de anular esta venta? Se revertirá el stock y los movimientos contables.')) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/${idVenta}/anular`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(userRole ? { 'X-User-Role': userRole } : {})
+        }
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${errText ? ` - ${errText.substring(0, 120)}` : ''}`);
+      }
+
+      alert('Venta anulada exitosamente');
+      loadVentas(); // Recargar lista
+    } catch (e) {
+      console.error('Error anulando venta:', e);
+      alert('Error al anular venta: ' + (e?.message || 'Error desconocido'));
+    }
+  };
+  
+  // ====== Rastreo en vivo: mapa del chofer ======
+  const getCookie = (name) => {
+    if (typeof document === 'undefined') return null;
+    const v = document.cookie.split('; ').find(r => r.startsWith(name + '='));
+    return v ? decodeURIComponent(v.split('=')[1]) : null;
+  };
+
+  const abrirMapa = async (entrega) => {
+    const base = { idEntrega: entrega.idEntrega, numeroEntrega: entrega.numeroEntrega || entrega.idEntrega, ultima: null, online: false, socket: null };
+    setMapaEntrega(base);
+    try {
+      const r = await fetch(`${API_ENTREGAS}/entregas/${entrega.idEntrega}/ubicacion/ultima`, { credentials: 'include' });
+      if (r.ok) {
+        const d = await r.json();
+        setMapaEntrega(prev => ({ ...(prev || base), ultima: d || null }));
+      }
+    } catch {}
+    conectarWebSocket(entrega.idEntrega);
+  };
+
+  const conectarWebSocket = (idEntrega) => {
+    try {
+      const host = (typeof window !== 'undefined' && window.location?.host) ? window.location.host : 'localhost';
+      const scheme = (typeof window !== 'undefined' && window.location?.protocol === 'https:') ? 'wss' : 'ws';
+      const token = getCookie('ollantay_token');
+      const url = `${scheme}://${host}/api/entregas/ws/entregas/${idEntrega}/ubicacion${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const ws = new WebSocket(url);
+      ws.onopen = () => setMapaEntrega(prev => ({ ...(prev || {}), online: true, socket: ws }));
+      ws.onmessage = (ev) => {
+        try {
+          const obj = JSON.parse(ev.data);
+          if (obj && (obj.lat != null) && (obj.lng != null)) {
+            setMapaEntrega(prev => ({ ...(prev || {}), ultima: { lat: Number(obj.lat), lng: Number(obj.lng), accuracy: obj.accuracy ?? null, updated_at: obj.updated_at || new Date().toISOString() } }));
+          }
+        } catch {}
+      };
+      ws.onclose = () => setMapaEntrega(prev => ({ ...(prev || {}), online: false, socket: null }));
+      ws.onerror = () => setMapaEntrega(prev => ({ ...(prev || {}), online: false }));
+    } catch (e) {
+      console.warn('WS error', e);
+    }
+  };
+
+  const cerrarMapa = () => {
+    try { mapaEntrega?.socket?.close?.(); } catch {}
+    setMapaEntrega(null);
+  };
+
+  const registrarPagoVenta = async (venta) => {
+    try {
+      const montoStr = window.prompt(`Ingrese el monto a registrar para la venta #${venta.idVenta} (Pendiente: ${formatMoney((Number(venta.montoTotal||0) - Number(venta.montoPagado||0)))})`, '');
+      if (montoStr === null) return; // cancel
+      const monto = parseFloat(montoStr);
+      if (!(monto > 0)) { alert('Monto inválido'); return; }
+      const metodo = window.prompt('Método (contado/transferencia/otro) - opcional', '') || undefined;
+      const referencia = window.prompt('Referencia (opcional)', '') || undefined;
+      const body = { monto, ...(metodo ? { metodo } : {}), ...(referencia ? { referencia } : {}) };
+      const res = await fetch(`${API}/${venta.idVenta}/registrar-pago`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(userRole ? { 'X-User-Role': userRole } : {}) },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(()=> '');
+        throw new Error(t || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const estadoPago = data?.venta?.estado_pago || 'Actualizado';
+      // Abrir recibo en nueva pestaña si se devolvió idMovimiento
+      if (data?.idMovimiento) {
+        window.open(`${API}/${venta.idVenta}/recibo/${data.idMovimiento}?format=html`, '_blank');
+      }
+      alert(`Pago registrado. Estado de pago: ${estadoPago}`);
+      loadVentas();
+    } catch (e) {
+      console.error('Error registrando pago:', e);
+      alert('No se pudo registrar el pago: ' + (e?.message || 'Error'));
+    }
+  };
 
   const handlePeriodoChange = (tipo) => {
     const hoy = new Date();
@@ -753,7 +877,8 @@ export default function Ventas({ API, userRole }) {
         idEntrega: entregaId,
         detalles: detallesConDevolucion,
         fechaRetorno: new Date().toISOString().split('T')[0],
-        observaciones: ''
+        observaciones: '',
+        metodo_pago: 'Contado'
       });
     } catch (e) {
       console.error('Error preparando finalizaci�n:', e);
@@ -772,7 +897,8 @@ export default function Ventas({ API, userRole }) {
       const body = {
         fechaRetorno: finalizandoEntrega.fechaRetorno,
         devoluciones,
-        observaciones: finalizandoEntrega.observaciones || ''
+        observaciones: finalizandoEntrega.observaciones || '',
+        metodo_pago: finalizandoEntrega.metodo_pago || 'Contado'
       };
       
       const r = await fetch(`${API_ENTREGAS}/entregas/${finalizandoEntrega.idEntrega}/finalizar`, {
@@ -959,9 +1085,12 @@ export default function Ventas({ API, userRole }) {
 
 
   // C�lculos para resumen
-  const ventasFiltradas = fCliente 
+  let ventasFiltradas = fCliente 
     ? ventas.filter(v => v.nombreCliente?.toLowerCase().includes(fCliente.toLowerCase()))
     : ventas;
+  if (fEstadoPago) {
+    ventasFiltradas = ventasFiltradas.filter(v => (v.estado_pago || 'Pendiente').toLowerCase() === fEstadoPago.toLowerCase());
+  }
   
   const totalVentas = ventasFiltradas.reduce((sum, v) => sum + Number(v.montoTotal || 0), 0);
   const cantidadVentas = ventasFiltradas.length;
@@ -1470,6 +1599,72 @@ export default function Ventas({ API, userRole }) {
         </div>
       )}
 
+      {/* Modal de mapa del chofer */}
+      {mapaEntrega && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <div className="text-lg font-bold dark:text-white">📍 Ubicación en tiempo real</div>
+                <div className="text-xs text-gray-600 dark:text-gray-400">Entrega #{mapaEntrega.numeroEntrega}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`${mapaEntrega.online ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-200' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'} text-xs px-2 py-0.5 rounded`}>{mapaEntrega.online ? 'En línea' : 'Desconectado'}</span>
+                <button onClick={()=>{ try{mapaEntrega?.socket?.close?.()}catch{}; setMapaEntrega(null); }} className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">Cerrar</button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto">
+              {mapaEntrega.ultima ? (
+                <div className="w-full h-[420px] relative">
+                  {(() => {
+                    const lat = Number(mapaEntrega.ultima.lat);
+                    const lng = Number(mapaEntrega.ultima.lng);
+                    const acc = mapaEntrega.ultima?.accuracy != null ? Number(mapaEntrega.ultima.accuracy) : null;
+                    return (
+                      <MapContainer center={[lat, lng]} zoom={15} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
+                        <TileLayer
+                          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                          attribution="&copy; OpenStreetMap contributors"
+                        />
+                        <Marker position={[lat, lng]} />
+                        {acc && acc > 0 && (
+                          <Circle center={[lat, lng]} radius={acc} pathOptions={{ color: 'blue', fillColor: 'blue', fillOpacity: 0.15 }} />
+                        )}
+                      </MapContainer>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div className="p-6 text-center text-gray-600 dark:text-gray-300">Sin ubicación registrada aún…</div>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between text-sm">
+              <div className="text-gray-600 dark:text-gray-300">
+                {mapaEntrega?.ultima ? (
+                  <>
+                    <span>Lat/Lng: </span>
+                    <span className="font-mono">{Number(mapaEntrega.ultima.lat).toFixed(6)}, {Number(mapaEntrega.ultima.lng).toFixed(6)}</span>
+                    {mapaEntrega.ultima.accuracy != null && (
+                      <span className="ml-2">±{Number(mapaEntrega.ultima.accuracy).toFixed(0)}m</span>
+                    )}
+                    <span className="ml-3 text-xs text-gray-500 dark:text-gray-400">{mapaEntrega.ultima.updated_at ? new Date(mapaEntrega.ultima.updated_at).toLocaleString() : ''}</span>
+                  </>
+                ) : <span>Esperando primera ubicación…</span>}
+              </div>
+              {mapaEntrega?.ultima && (
+                <a
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+                  href={`https://www.google.com/maps?q=${encodeURIComponent(mapaEntrega.ultima.lat + ',' + mapaEntrega.ultima.lng)}`}
+                  target="_blank" rel="noreferrer"
+                >
+                  Abrir en Google Maps
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
           {/* Secci�n de Entregas (Chofer) */}
       {showEntregas && (
         <div className="mb-4 p-6 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
@@ -1652,86 +1847,180 @@ export default function Ventas({ API, userRole }) {
                     | <span className="px-2 py-1 bg-green-100 dark:bg-green-900 rounded text-xs ml-2">finalizado</span> = Cami�n retorn�, efectivo en caja
                   </p>
                 </div>
-                <table className="min-w-full">
-                  <thead className="bg-gray-100 dark:bg-gray-800">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">#</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Ruta</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Encargado</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Salida</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Retorno</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium dark:text-gray-200">Total Vendido</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Estado</th>
-                      <th className="px-4 py-2 text-center text-sm font-medium dark:text-gray-200">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {entregas.length === 0 ? (
-                      <tr><td colSpan="8" className="px-4 py-6 text-center text-gray-500 dark:text-gray-400">No hay entregas registradas</td></tr>
-                    ) : entregas.map(e => (
-                      <>
-                        <tr key={e.idEntrega} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-                          <td className="px-4 py-2 text-sm dark:text-gray-100"><span className="font-mono">{e.numeroEntrega || e.idEntrega}</span></td>
-                          <td className="px-4 py-2 text-sm dark:text-gray-100">{e.nombreRuta || e.idRuta}</td>
-                          <td className="px-4 py-2 text-sm dark:text-gray-100">{e.nombreEncargado || e.idEncargado}</td>
-                          <td className="px-4 py-2 text-sm dark:text-gray-100">{e.fechaSalida}</td>
-                          <td className="px-4 py-2 text-sm dark:text-gray-100">{e.fechaRetorno || '-'}</td>
-                          <td className="px-4 py-2 text-sm text-right dark:text-gray-100">
-                            <span className="font-semibold text-green-600 dark:text-green-400">{formatMoney(e.totalVendido || 0)}</span>
-                          </td>
-                          <td className="px-4 py-2 text-sm">
-                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                              normalizeEstado(e.estado) === 'finalizado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
-                              : normalizeEstado(e.estado) === 'en_ruta' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
-                              : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
-                            }`}>{normalizeEstado(e.estado) === 'en_ruta' ? '🚚 EN RUTA' : normalizeEstado(e.estado) === 'finalizado' ? '✅ FINALIZADO' : (e.estado || '')}</span>
-                          </td>
-                          <td className="px-4 py-2 text-sm text-center">
-                            <div className="flex gap-2 justify-center">
-                              <button onClick={()=>toggleExpandEntrega(e)} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">{entregasExpanded[e.idEntrega] ? 'Ocultar' : 'Ver Detalle'}</button>
-                              {normalizeEstado(e.estado) !== 'finalizado' && (
-                                <button onClick={()=>finalizarEntrega(e.idEntrega)} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">🔚 Finalizar Retorno</button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                        {entregasExpanded[e.idEntrega] && (
-                          <tr className="bg-gray-50 dark:bg-gray-800"><td colSpan="8" className="px-4 py-3">
-                            <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-sm border dark:border-gray-700">
-                                <thead className="bg-gray-100 dark:bg-gray-700">
-                                  <tr>
-                                    <th className="px-3 py-2 text-left">Producto</th>
-                                    <th className="px-3 py-2 text-left">Lote</th>
-                                    <th className="px-3 py-2 text-right">Enviado</th>
-                                    <th className="px-3 py-2 text-right">Devuelto</th>
-                                    <th className="px-3 py-2 text-right">Vendido</th>
-                                    <th className="px-3 py-2 text-right">Precio</th>
-                                    <th className="px-3 py-2 text-right">Monto</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {(entregasExpanded[e.idEntrega]?.detalles || []).map((d, i) => (
-                                    <tr key={d.idDetalle || i} className="border-t dark:border-gray-700">
-                                      <td className="px-3 py-2">{d.nombreProducto || d.idProducto}</td>
-                                      <td className="px-3 py-2 text-xs">{d.codigoLote || '-'}{d.idLote ? ` (#${d.idLote})` : ''}</td>
-                                      <td className="px-3 py-2 text-right">{Number(d.cantidadEnviada).toFixed(2)}</td>
-                                      <td className="px-3 py-2 text-right">{Number(d.cantidadDevuelta).toFixed(2)}</td>
-                                      <td className="px-3 py-2 text-right">{Number(d.cantidadVendida).toFixed(2)}</td>
-                                      <td className="px-3 py-2 text-right">{formatMoney(d.precioUnitario)}</td>
-                                      <td className="px-3 py-2 text-right font-semibold">{formatMoney(d.montoTotal)}</td>
+                
+                {/* Vista Desktop: Tabla */}
+                <div className="hidden md:block">
+                  <table className="min-w-full">
+                    <thead className="bg-gray-100 dark:bg-gray-800">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">#</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Ruta</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Encargado</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Salida</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Retorno</th>
+                        <th className="px-4 py-2 text-right text-sm font-medium dark:text-gray-200">Total Vendido</th>
+                        <th className="px-4 py-2 text-left text-sm font-medium dark:text-gray-200">Estado</th>
+                        <th className="px-4 py-2 text-center text-sm font-medium dark:text-gray-200">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {entregas.length === 0 ? (
+                        <tr><td colSpan="8" className="px-4 py-6 text-center text-gray-500 dark:text-gray-400">No hay entregas registradas</td></tr>
+                      ) : entregas.map(e => (
+                        <>
+                          <tr key={e.idEntrega} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <td className="px-4 py-2 text-sm dark:text-gray-100"><span className="font-mono">{e.numeroEntrega || e.idEntrega}</span></td>
+                            <td className="px-4 py-2 text-sm dark:text-gray-100">{e.nombreRuta || e.idRuta}</td>
+                            <td className="px-4 py-2 text-sm dark:text-gray-100">{e.nombreEncargado || e.idEncargado}</td>
+                            <td className="px-4 py-2 text-sm dark:text-gray-100">{e.fechaSalida}</td>
+                            <td className="px-4 py-2 text-sm dark:text-gray-100">{e.fechaRetorno || '-'}</td>
+                            <td className="px-4 py-2 text-sm text-right dark:text-gray-100">
+                              <span className="font-semibold text-green-600 dark:text-green-400">{formatMoney(e.totalVendido || 0)}</span>
+                            </td>
+                            <td className="px-4 py-2 text-sm">
+                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                                normalizeEstado(e.estado) === 'finalizado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                                : normalizeEstado(e.estado) === 'en_ruta' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                                : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+                              }`}>{normalizeEstado(e.estado) === 'en_ruta' ? '🚚 EN RUTA' : normalizeEstado(e.estado) === 'finalizado' ? '✅ FINALIZADO' : (e.estado || '')}</span>
+                            </td>
+                            <td className="px-4 py-2 text-sm text-center">
+                              <div className="flex gap-2 justify-center">
+                                <button onClick={()=>toggleExpandEntrega(e)} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">{entregasExpanded[e.idEntrega] ? 'Ocultar' : 'Ver Detalle'}</button>
+                                {normalizeEstado(e.estado) === 'en_ruta' && (
+                                  <button onClick={()=>abrirMapa(e)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">📍 Ver mapa</button>
+                                )}
+                                {normalizeEstado(e.estado) !== 'finalizado' && (
+                                  <button onClick={()=>finalizarEntrega(e.idEntrega)} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">🔚 Finalizar Retorno</button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          {entregasExpanded[e.idEntrega] && (
+                            <tr className="bg-gray-50 dark:bg-gray-800"><td colSpan="8" className="px-4 py-3">
+                              <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-sm border dark:border-gray-700">
+                                  <thead className="bg-gray-100 dark:bg-gray-700">
+                                    <tr>
+                                      <th className="px-3 py-2 text-left">Producto</th>
+                                      <th className="px-3 py-2 text-left">Lote</th>
+                                      <th className="px-3 py-2 text-right">Enviado</th>
+                                      <th className="px-3 py-2 text-right">Devuelto</th>
+                                      <th className="px-3 py-2 text-right">Vendido</th>
+                                      <th className="px-3 py-2 text-right">Precio</th>
+                                      <th className="px-3 py-2 text-right">Monto</th>
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </td></tr>
+                                  </thead>
+                                  <tbody>
+                                    {(entregasExpanded[e.idEntrega]?.detalles || []).map((d, i) => (
+                                      <tr key={d.idDetalle || i} className="border-t dark:border-gray-700">
+                                        <td className="px-3 py-2">{d.nombreProducto || d.idProducto}</td>
+                                        <td className="px-3 py-2 text-xs">{d.codigoLote || '-'}{d.idLote ? ` (#${d.idLote})` : ''}</td>
+                                        <td className="px-3 py-2 text-right">{Number(d.cantidadEnviada).toFixed(2)}</td>
+                                        <td className="px-3 py-2 text-right">{Number(d.cantidadDevuelta).toFixed(2)}</td>
+                                        <td className="px-3 py-2 text-right">{Number(d.cantidadVendida).toFixed(2)}</td>
+                                        <td className="px-3 py-2 text-right">{formatMoney(d.precioUnitario)}</td>
+                                        <td className="px-3 py-2 text-right font-semibold">{formatMoney(d.montoTotal)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td></tr>
+                          )}
+                        </>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Vista Mobile: Cards */}
+                <div className="md:hidden divide-y divide-gray-200 dark:divide-gray-700">
+                  {entregas.length === 0 ? (
+                    <div className="p-4 text-center text-gray-500 dark:text-gray-400">No hay entregas registradas</div>
+                  ) : entregas.map(e => (
+                    <div key={e.idEntrega} className="p-4 space-y-3">
+                      {/* Header del card */}
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">#{e.numeroEntrega || e.idEntrega}</div>
+                          <div className="font-semibold dark:text-white">{e.nombreRuta || e.idRuta}</div>
+                          <div className="text-sm text-gray-600 dark:text-gray-300">{e.nombreEncargado || e.idEncargado}</div>
+                        </div>
+                        <div>
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            normalizeEstado(e.estado) === 'finalizado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                            : normalizeEstado(e.estado) === 'en_ruta' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                            : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+                          }`}>{normalizeEstado(e.estado) === 'en_ruta' ? '🚚 EN RUTA' : normalizeEstado(e.estado) === 'finalizado' ? '✅ FINALIZADO' : (e.estado || '')}</span>
+                        </div>
+                      </div>
+
+                      {/* Info grid */}
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-gray-500 dark:text-gray-400">Salida:</span>
+                          <span className="ml-1 dark:text-gray-200">{e.fechaSalida}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500 dark:text-gray-400">Retorno:</span>
+                          <span className="ml-1 dark:text-gray-200">{e.fechaRetorno || '-'}</span>
+                        </div>
+                        <div className="col-span-2">
+                          <span className="text-gray-500 dark:text-gray-400">Total Vendido:</span>
+                          <span className="ml-1 font-semibold text-green-600 dark:text-green-400">{formatMoney(e.totalVendido || 0)}</span>
+                        </div>
+                      </div>
+
+                      {/* Botones de acción */}
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={()=>toggleExpandEntrega(e)} 
+                          className="flex-1 px-3 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+                        >
+                          {entregasExpanded[e.idEntrega] ? 'Ocultar Detalle' : 'Ver Detalle'}
+                        </button>
+                        {normalizeEstado(e.estado) === 'en_ruta' && (
+                          <button 
+                            onClick={()=>abrirMapa(e)} 
+                            className="flex-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                          >
+                            📍 Mapa
+                          </button>
                         )}
-                      </>
-                    ))}
-                </tbody>
-              </table>
+                        {normalizeEstado(e.estado) !== 'finalizado' && (
+                          <button 
+                            onClick={()=>finalizarEntrega(e.idEntrega)} 
+                            className="flex-1 px-3 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                          >
+                            🔚 Finalizar
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Detalles expandidos */}
+                      {entregasExpanded[e.idEntrega] && (
+                        <div className="mt-3 bg-gray-50 dark:bg-gray-800 rounded p-3 space-y-2">
+                          <div className="text-sm font-medium dark:text-gray-200 mb-2">Detalles de Productos</div>
+                          {(entregasExpanded[e.idEntrega]?.detalles || []).map((d, i) => (
+                            <div key={d.idDetalle || i} className="border-t dark:border-gray-700 pt-2 text-sm">
+                              <div className="font-medium dark:text-white">{d.nombreProducto || d.idProducto}</div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Lote: {d.codigoLote || '-'}{d.idLote ? ` (#${d.idLote})` : ''}</div>
+                              <div className="grid grid-cols-2 gap-1 text-xs">
+                                <div><span className="text-gray-500 dark:text-gray-400">Enviado:</span> {Number(d.cantidadEnviada).toFixed(2)}</div>
+                                <div><span className="text-gray-500 dark:text-gray-400">Devuelto:</span> {Number(d.cantidadDevuelta).toFixed(2)}</div>
+                                <div><span className="text-gray-500 dark:text-gray-400">Vendido:</span> {Number(d.cantidadVendida).toFixed(2)}</div>
+                                <div><span className="text-gray-500 dark:text-gray-400">Precio:</span> {formatMoney(d.precioUnitario)}</div>
+                              </div>
+                              <div className="mt-1 text-right font-semibold text-green-600 dark:text-green-400">Total: {formatMoney(d.montoTotal)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -1750,7 +2039,7 @@ export default function Ventas({ API, userRole }) {
             </div>
             
             <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-sm font-medium mb-1 dark:text-gray-300">Fecha de retorno</label>
                   <input
@@ -1759,6 +2048,18 @@ export default function Ventas({ API, userRole }) {
                     onChange={(e) => setFinalizandoEntrega({ ...finalizandoEntrega, fechaRetorno: e.target.value })}
                     className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white"
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1 dark:text-gray-300">Método de pago</label>
+                  <select
+                    value={finalizandoEntrega.metodo_pago}
+                    onChange={(e) => setFinalizandoEntrega({ ...finalizandoEntrega, metodo_pago: e.target.value })}
+                    className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white"
+                  >
+                    <option value="Contado">Contado</option>
+                    <option value="Transferencia">Transferencia</option>
+                    <option value="Credito">Crédito</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1 dark:text-gray-300">Observaciones</label>
@@ -1871,11 +2172,24 @@ export default function Ventas({ API, userRole }) {
         </div>
       )}
 
-      {/* Filtros */}
+  {/* Filtros */}
       {showFilters && (
         <div className="mb-4 p-4 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
           <h3 className="text-lg font-semibold mb-3 dark:text-white">Filtros</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1 dark:text-gray-300">Estado Pago</label>
+              <select
+                value={fEstadoPago}
+                onChange={e => setFEstadoPago(e.target.value)}
+                className="w-full border dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:text-white"
+              >
+                <option value="">Todos</option>
+                <option value="Pendiente">Pendiente</option>
+                <option value="Parcial">Parcial</option>
+                <option value="Pagado">Pagado</option>
+              </select>
+            </div>
             <div>
               <label className="block text-sm font-medium mb-1 dark:text-gray-300">Desde</label>
               <input
@@ -2146,6 +2460,8 @@ export default function Ventas({ API, userRole }) {
                   <th className="p-3 text-left dark:text-gray-200">Tipo</th>
                   <th className="p-3 text-left dark:text-gray-200">Pago</th>
                   <th className="p-3 text-right dark:text-gray-200">Monto</th>
+                  <th className="p-3 text-right dark:text-gray-200">Saldo Pendiente</th>
+                  <th className="p-3 text-center dark:text-gray-200">Estado Pago</th>
                   <th className="p-3 text-center dark:text-gray-200">Estado</th>
                   <th className="p-3 text-center dark:text-gray-200">Acciones</th>
                 </tr>
@@ -2168,6 +2484,20 @@ export default function Ventas({ API, userRole }) {
                         <td className="p-3">{v.tipoVenta || '-'}</td>
                         <td className="p-3">{v.tipoPago || '-'}</td>
                         <td className="p-3 text-right font-semibold">{formatMoney(v.montoTotal)}</td>
+                        <td className="p-3 text-right font-semibold">{formatMoney((v.montoTotal || 0) - (v.montoPagado || 0))}</td>
+                        <td className="p-3 text-center">
+                          {/* Estado de pago y progreso */}
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="text-xs">{formatMoney(v.montoPagado || 0)} / {formatMoney(v.montoTotal || 0)}</div>
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                              (v.estado_pago || '').toLowerCase() === 'pagado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' :
+                              (v.estado_pago || '').toLowerCase() === 'parcial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' :
+                              'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                            }`}>
+                              {v.estado_pago || 'Pendiente'}
+                            </span>
+                          </div>
+                        </td>
                         <td className="p-3 text-center">
                           <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
                             v.estado === 1 
@@ -2178,9 +2508,21 @@ export default function Ventas({ API, userRole }) {
                           </span>
                         </td>
                         <td className="p-3 text-center">
-                          <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
-                            {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
-                          </button>
+                          <div className="flex gap-2 justify-center">
+                            <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
+                              {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
+                            </button>
+                            {v.estado === 1 && (userRole === 'admin' || userRole === 'editor' || userRole === 'superadmin') && (
+                              <button onClick={() => registrarPagoVenta(v)} className="px-2 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700">
+                                💵 Pagar
+                              </button>
+                            )}
+                            {v.estado === 1 && (userRole === 'admin' || userRole === 'superadmin') && (
+                              <button onClick={() => anularVenta(v.idVenta)} className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700">
+                                ❌ Anular
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {ventasExpanded[v.idVenta] && (
@@ -2239,9 +2581,16 @@ export default function Ventas({ API, userRole }) {
                         {v.estado === 1 ? 'Activa' : 'Anulada'}
                       </span>
                     </div>
-                    <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="ml-3 px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
-                      {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
-                    </button>
+                    <div className="flex gap-2">
+                      <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
+                        {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver'}
+                      </button>
+                      {v.estado === 1 && (userRole === 'admin' || userRole === 'superadmin') && (
+                        <button onClick={() => anularVenta(v.idVenta)} className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700">
+                          ❌
+                        </button>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="space-y-2 text-sm">
@@ -2269,6 +2618,25 @@ export default function Ventas({ API, userRole }) {
                       <span className="font-semibold text-gray-600 dark:text-gray-400 w-24 flex-shrink-0">Monto:</span>
                       <span className="text-lg font-bold text-green-600 dark:text-green-400">{formatMoney(v.montoTotal)}</span>
                     </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs mt-2 p-2 rounded bg-gray-50 dark:bg-gray-700/40 border border-gray-200 dark:border-gray-700">
+                      <div className="text-gray-600 dark:text-gray-400">Pagado</div>
+                      <div className="text-right text-gray-900 dark:text-gray-100 font-medium">{formatMoney(v.montoPagado || 0)} / {formatMoney(v.montoTotal || 0)}</div>
+                      <div className="text-gray-600 dark:text-gray-400">Estado pago</div>
+                      <div className="text-right">
+                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                          (v.estado_pago || '').toLowerCase() === 'pagado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' :
+                          (v.estado_pago || '').toLowerCase() === 'parcial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' :
+                          'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                        }`}>
+                          {v.estado_pago || 'Pendiente'}
+                        </span>
+                      </div>
+                    </div>
+                    {(v.estado === 1) && (userRole === 'admin' || userRole === 'editor' || userRole === 'superadmin') && (
+                      <div className="mt-2 flex gap-2">
+                        <button onClick={() => registrarPagoVenta(v)} className="flex-1 px-3 py-2 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700">💵 Registrar pago</button>
+                      </div>
+                    )}
                     {ventasExpanded[v.idVenta] && (
                       <div className="mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
                         <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>

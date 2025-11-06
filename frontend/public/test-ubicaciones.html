@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Ubicaciones - Sistema Ollantay</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button.secondary {
+            background: #2196F3;
+        }
+        button.secondary:hover {
+            background: #0b7dda;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+        .result.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .result.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .personas-list {
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .persona-item {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+        }
+        .persona-item:hover {
+            background: #f0f0f0;
+        }
+        .info {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗺️ Agregar Ubicaciones de Prueba</h1>
+        
+        <div class="info">
+            <strong>ℹ️ Instrucciones:</strong>
+            <ul>
+                <li>Este formulario te permite agregar ubicaciones de prueba para ver personas en el mapa</li>
+                <li>Primero carga las personas de tu empresa haciendo clic en "Cargar Personas"</li>
+                <li>Luego selecciona una persona y ajusta las coordenadas (o usa tu ubicación actual)</li>
+                <li>Las coordenadas por defecto son de Santa Cruz, Bolivia</li>
+            </ul>
+        </div>
+
+        <button type="button" class="secondary" onclick="cargarPersonas()">📋 Cargar Personas</button>
+        <button type="button" class="secondary" onclick="obtenerUbicacionActual()">📍 Usar Mi Ubicación</button>
+
+        <div id="personas-list" class="personas-list" style="display: none;"></div>
+
+        <form id="ubicacionForm" onsubmit="enviarUbicacion(event)">
+            <div class="form-group">
+                <label for="id_persona">ID Persona:</label>
+                <input type="number" id="id_persona" name="id_persona" required min="1">
+            </div>
+            
+            <div class="form-group">
+                <label for="lat">Latitud:</label>
+                <input type="number" id="lat" name="lat" step="0.000001" value="-17.783300" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="lng">Longitud:</label>
+                <input type="number" id="lng" name="lng" step="0.000001" value="-63.182100" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="accuracy">Precisión (metros):</label>
+                <input type="number" id="accuracy" name="accuracy" value="10" required min="0">
+            </div>
+            
+            <button type="submit">💾 Guardar Ubicación</button>
+            <button type="button" class="secondary" onclick="agregarVariasAleatorias()">🎲 Agregar 5 Aleatorias</button>
+        </form>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        let personas = [];
+
+        async function cargarPersonas() {
+            try {
+                const response = await fetch('/api/personas/persons', {
+                    credentials: 'include'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Error ${response.status}: ${response.statusText}`);
+                }
+                
+                personas = await response.json();
+                mostrarPersonas(personas);
+                mostrarResultado('success', `✅ Se cargaron ${personas.length} personas`);
+            } catch (error) {
+                mostrarResultado('error', `❌ Error al cargar personas: ${error.message}`);
+            }
+        }
+
+        function mostrarPersonas(personas) {
+            const container = document.getElementById('personas-list');
+            container.style.display = 'block';
+            container.innerHTML = '<h3 style="padding: 10px; margin: 0; background: #f5f5f5;">Selecciona una persona:</h3>';
+            
+            personas.forEach(p => {
+                const div = document.createElement('div');
+                div.className = 'persona-item';
+                div.innerHTML = `
+                    <strong>${p.nombres_persona} ${p.apellido_paternoPersona || ''}</strong><br>
+                    <small>ID: ${p.id_persona} | CI: ${p.ci_persona} | Empresa: ${p.id_empresa || 'N/A'}</small>
+                `;
+                div.onclick = () => {
+                    document.getElementById('id_persona').value = p.id_persona;
+                    mostrarResultado('success', `✅ Persona seleccionada: ${p.nombres_persona}`);
+                };
+                container.appendChild(div);
+            });
+        }
+
+        function obtenerUbicacionActual() {
+            if ("geolocation" in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        document.getElementById('lat').value = position.coords.latitude.toFixed(6);
+                        document.getElementById('lng').value = position.coords.longitude.toFixed(6);
+                        document.getElementById('accuracy').value = Math.round(position.coords.accuracy);
+                        mostrarResultado('success', '✅ Ubicación actual obtenida');
+                    },
+                    (error) => {
+                        mostrarResultado('error', `❌ Error al obtener ubicación: ${error.message}`);
+                    }
+                );
+            } else {
+                mostrarResultado('error', '❌ Geolocalización no disponible en este navegador');
+            }
+        }
+
+        async function enviarUbicacion(event) {
+            event.preventDefault();
+            
+            const formData = new FormData(event.target);
+            const data = {
+                id_persona: parseInt(formData.get('id_persona')),
+                lat: parseFloat(formData.get('lat')),
+                lng: parseFloat(formData.get('lng')),
+                accuracy: parseFloat(formData.get('accuracy'))
+            };
+            
+            try {
+                const response = await fetch(`/api/personas/persons/${data.id_persona}/ubicacion`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Error ${response.status}: ${errorText}`);
+                }
+                
+                const result = await response.json();
+                mostrarResultado('success', `✅ Ubicación guardada exitosamente para persona ID ${data.id_persona}`);
+                console.log('Respuesta:', result);
+            } catch (error) {
+                mostrarResultado('error', `❌ Error: ${error.message}`);
+            }
+        }
+
+        async function agregarVariasAleatorias() {
+            if (personas.length === 0) {
+                mostrarResultado('error', '❌ Primero carga las personas con el botón "Cargar Personas"');
+                return;
+            }
+
+            const centerLat = -17.7833;
+            const centerLng = -63.1821;
+            const radius = 0.05; // Aproximadamente 5km de radio
+
+            let count = 0;
+            const maxPersonas = Math.min(5, personas.length);
+
+            for (let i = 0; i < maxPersonas; i++) {
+                const persona = personas[i];
+                const lat = centerLat + (Math.random() - 0.5) * radius;
+                const lng = centerLng + (Math.random() - 0.5) * radius;
+                
+                try {
+                    const response = await fetch(`/api/personas/persons/${persona.id_persona}/ubicacion`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            id_persona: persona.id_persona,
+                            lat: lat,
+                            lng: lng,
+                            accuracy: Math.random() * 20 + 5
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        count++;
+                    }
+                } catch (error) {
+                    console.error(`Error al agregar ubicación para persona ${persona.id_persona}:`, error);
+                }
+            }
+
+            mostrarResultado('success', `✅ Se agregaron ${count} ubicaciones aleatorias. Recarga la página "Personas en Mapa" para verlas.`);
+        }
+
+        function mostrarResultado(tipo, mensaje) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = `result ${tipo}`;
+            resultDiv.textContent = mensaje;
+            resultDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                resultDiv.style.display = 'none';
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

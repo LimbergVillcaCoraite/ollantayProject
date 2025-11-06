@@ -161,6 +161,80 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "Restart entregas_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"entregas_service"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend image",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"up",
+				"--build",
+				"-d",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend image",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"up",
+				"--build",
+				"-d",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend image",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"up",
+				"--build",
+				"-d",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend image",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"up",
+				"--build",
+				"-d",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend (auto)",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

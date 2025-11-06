@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import date, datetime
 from decimal import Decimal
 import os
+import json
+import asyncio
 import mysql.connector
 from mysql.connector import Error as mysql_errors
 import jwt
@@ -114,6 +116,43 @@ class FinalizarEntregaIn(BaseModel):
     fechaRetorno: str  # ISO date
     devoluciones: List[DevolucionIn]
     observaciones: Optional[str] = None
+    # Se recibe desde frontend; backend actual lo ignora en caja (solo informativo)
+    metodo_pago: Optional[str] = None
+
+
+# ========================
+# Tracking en vivo (ubicación)
+# ========================
+
+class UbicacionIn(BaseModel):
+    lat: float
+    lng: float
+    accuracy: Optional[float] = None
+
+
+class UbicacionOut(UbicacionIn):
+    updated_at: str
+
+
+# Mapa de conexiones WebSocket por entrega
+ws_conns: Dict[int, List[WebSocket]] = {}
+
+
+def ensure_ubicacion_table(conn):
+    cur = conn.cursor()
+    cur.execute(
+        '''CREATE TABLE IF NOT EXISTS entrega_ubicacion_O (
+            idEntrega INT PRIMARY KEY,
+            idEmpresa INT NOT NULL,
+            lat DECIMAL(10,7) NOT NULL,
+            lng DECIMAL(10,7) NOT NULL,
+            accuracy FLOAT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            CONSTRAINT fk_entrega FOREIGN KEY (idEntrega) REFERENCES entrega_ruta_O(idEntrega) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'''
+    )
+    conn.commit()
+    cur.close()
 
 
 # ========================
@@ -808,3 +847,186 @@ def registrar_venta_encargado(
         cur.close()
         conn.close()
         raise HTTPException(status_code=500, detail=f'Database error: {e}')
+
+
+# ========================
+# Endpoints de rastreo en vivo
+# ========================
+
+@app.post('/entregas/{id}/ubicacion', response_model=UbicacionOut)
+def actualizar_ubicacion(id: int, payload: UbicacionIn, x_user_role: str = Header(None), request: Request = None):
+    """Actualiza la última ubicación de la entrega y la transmite por WebSocket"""
+    context = get_user_context(x_user_role, request)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute('SELECT idEntrega, idEmpresa, idEncargado, estado FROM entrega_ruta_O WHERE idEntrega = %s', (id,))
+        entrega = cur.fetchone()
+        if not entrega:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+
+        # Scoping multiempresa
+        if context['role'] != 'superadmin' and entrega['idEmpresa'] != context['idEmpresa']:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No tiene permisos')
+
+        # Permisos: admin/editor/superadmin o el propio encargado
+        if context['role'] not in ('admin', 'editor', 'superadmin') and context.get('id_persona') != entrega['idEncargado']:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+
+        ensure_ubicacion_table(conn)
+
+        ins = conn.cursor()
+        # upsert por PK idEntrega
+        ins.execute(
+            '''INSERT INTO entrega_ubicacion_O (idEntrega, idEmpresa, lat, lng, accuracy)
+               VALUES (%s, %s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE lat=VALUES(lat), lng=VALUES(lng), accuracy=VALUES(accuracy), updated_at=CURRENT_TIMESTAMP''',
+            (id, entrega['idEmpresa'], float(payload.lat), float(payload.lng), (None if payload.accuracy is None else float(payload.accuracy)))
+        )
+        conn.commit()
+
+        # Obtener fila actualizada
+        cur.execute('SELECT idEntrega, lat, lng, accuracy, updated_at FROM entrega_ubicacion_O WHERE idEntrega = %s', (id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+
+        data = {
+            'idEntrega': id,
+            'lat': float(row['lat']),
+            'lng': float(row['lng']),
+            'accuracy': (None if row['accuracy'] is None else float(row['accuracy'])),
+            'updated_at': row['updated_at'].isoformat() if row.get('updated_at') else datetime.utcnow().isoformat()
+        }
+
+        # Broadcast a clientes WebSocket conectados
+        for ws in list(ws_conns.get(id, [])):
+            try:
+                asyncio.create_task(ws.send_text(json.dumps(data)))
+            except RuntimeError:
+                # conexión posiblemente cerrada
+                try:
+                    ws_conns.get(id, []).remove(ws)
+                except Exception:
+                    pass
+
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f'Error: {e}')
+
+
+@app.get('/entregas/{id}/ubicacion/ultima', response_model=Optional[UbicacionOut])
+def obtener_ultima_ubicacion(id: int, x_user_role: str = Header(None), request: Request = None):
+    """Devuelve la última ubicación registrada para una entrega"""
+    context = get_user_context(x_user_role, request)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute('SELECT idEntrega, idEmpresa FROM entrega_ruta_O WHERE idEntrega = %s', (id,))
+        entrega = cur.fetchone()
+        if not entrega:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+
+        if context['role'] != 'superadmin' and entrega['idEmpresa'] != context['idEmpresa']:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No tiene permisos')
+
+        ensure_ubicacion_table(conn)
+        cur.execute('SELECT lat, lng, accuracy, updated_at FROM entrega_ubicacion_O WHERE idEntrega = %s', (id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return None
+        return {
+            'lat': float(row['lat']),
+            'lng': float(row['lng']),
+            'accuracy': (None if row['accuracy'] is None else float(row['accuracy'])),
+            'updated_at': row['updated_at'].isoformat() if row.get('updated_at') else datetime.utcnow().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f'Error: {e}')
+
+
+@app.websocket('/ws/entregas/{id}/ubicacion')
+async def ws_entrega_ubicacion(websocket: WebSocket, id: int):
+    # Autenticación: token como query param o primer mensaje
+    token = websocket.query_params.get('token')
+    await websocket.accept()
+    try:
+        if not token:
+            # esperar primer mensaje con {token}
+            msg = await websocket.receive_text()
+            try:
+                obj = json.loads(msg)
+                token = obj.get('token')
+            except Exception:
+                token = None
+        if not token:
+            await websocket.send_text(json.dumps({'error': 'auth required'}))
+            await websocket.close()
+            return
+
+        # Validar JWT y scoping empresa vs entrega
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        except Exception:
+            await websocket.send_text(json.dumps({'error': 'invalid token'}))
+            await websocket.close()
+            return
+
+        idEmpresa = payload.get('company_id')
+        role = (payload.get('role') or 'viewer').lower()
+
+        # Validar contra la entrega
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT idEntrega, idEmpresa FROM entrega_ruta_O WHERE idEntrega = %s', (id,))
+        entrega = cur.fetchone()
+        cur.close(); conn.close()
+        if not entrega:
+            await websocket.send_text(json.dumps({'error': 'Entrega no encontrada'}))
+            await websocket.close()
+            return
+        if role != 'superadmin' and entrega['idEmpresa'] != idEmpresa:
+            await websocket.send_text(json.dumps({'error': 'forbidden'}))
+            await websocket.close()
+            return
+
+        # Registrar conexión
+        ws_conns.setdefault(id, []).append(websocket)
+        await websocket.send_text(json.dumps({'ok': True, 'message': 'connected', 'idEntrega': id}))
+
+        # Esperar mensajes del cliente (pings) y mantener viva la conexión
+        while True:
+            try:
+                _ = await websocket.receive_text()
+                # Ignorar; los updates vienen desde REST y se hacen broadcast
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                # Si el cliente no envía nada, dormir un poco para mantener el loop
+                await asyncio.sleep(5)
+    finally:
+        # Limpiar conexión
+        try:
+            if id in ws_conns and websocket in ws_conns[id]:
+                ws_conns[id].remove(websocket)
+        except Exception:
+            pass

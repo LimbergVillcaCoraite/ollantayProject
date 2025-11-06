@@ -20,20 +20,21 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
       const url = `${base}/auth/login`
       const res = await fetch(url, {method:'POST', credentials: 'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})})
       if(!res.ok){
-        // try parse json, otherwise read text for debugging (404 might return HTML)
-        const j = await res.json().catch(async ()=> ({raw: await res.text()}))
-        const msg = j?.detail || j?.raw || res.statusText || `Status ${res.status}`
-        
+        // Parse error body safely by reading text once
+        const raw = await res.text();
+        let j = null;
+        try { j = JSON.parse(raw); } catch(_) { /* not JSON */ }
+        const msg = (j?.detail || raw || res.statusText || `Status ${res.status}`).toString().slice(0,300);
         // Mostrar mensajes específicos
-        let popupMsg = `❌ Error de inicio de sesión: ${msg}`
+        let popupMsg = `❌ Error de inicio de sesión: ${msg}`;
         if(res.status === 401){
-          popupMsg = '❌ Usuario o contraseña incorrectos'
+          popupMsg = '❌ Usuario o contraseña incorrectos';
         } else if(res.status === 403){
           // Si el backend indica usuario inactivo, mostrar ese texto
           if(typeof j?.detail === 'string' && j.detail.toLowerCase().includes('inactivo')){
-            popupMsg = '🚫 Usuario inactivo. Contacte al administrador.'
+            popupMsg = '🚫 Usuario inactivo. Contacte al administrador.';
           } else {
-            popupMsg = '❌ Acceso denegado'
+            popupMsg = '❌ Acceso denegado';
           }
         }
         try { 
@@ -43,12 +44,42 @@ export default function Login({API_PERSONA = (import.meta?.env?.VITE_API_PERSONS
             (await import('../toast')).showToast(popupMsg, 'error', 4000) 
           } catch(_){} 
         }
-        
-        throw new Error(msg)
+        throw new Error(msg);
       }
       const data = await res.json()
       console.log('Login response:', data) // DEBUG
       console.log('Profile photo received:', data.profilePhoto) // DEBUG
+      
+      // Enviar ubicación automáticamente después del login
+      if (data.id_persona && "geolocation" in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            try {
+              const ubicacionRes = await fetch(`${base}/persons/${data.id_persona}/ubicacion`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id_persona: data.id_persona,
+                  lat: position.coords.latitude,
+                  lng: position.coords.longitude,
+                  accuracy: position.coords.accuracy || 0
+                })
+              });
+              if (ubicacionRes.ok) {
+                console.log('✓ Ubicación enviada automáticamente al login');
+              }
+            } catch (e) {
+              console.log('No se pudo enviar ubicación:', e);
+            }
+          },
+          (error) => {
+            console.log('No se pudo obtener ubicación:', error.message);
+          },
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+      }
+      
       onLogin(data)
     }catch(err){
       // Normalize some common network/CORS messages for clarity and show popup

@@ -13,6 +13,8 @@ import Proveedores from './components/Proveedores'
 import Productos from './components/Productos'
 import Rutas from './components/Rutas'
 import Cuentas from './components/Cuentas'
+import PersonasEnMapa from './components/PersonasEnMapa'
+import AutoLocationTracker from './components/AutoLocationTracker'
 import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
@@ -287,6 +289,7 @@ export default function App(){
 
   return (
     <ToastProvider>
+      <AutoLocationTracker API_PERSONAS={API_PERSONS} loggedUser={loggedUser} enabled={!!loggedUser} />
     <div className={`min-h-screen flex flex-col ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       {/* Header con hamburguesa */}
       <header className={`fixed top-0 left-0 right-0 z-50 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
@@ -367,10 +370,16 @@ export default function App(){
               </button>
             )}
             {canViewPage('personas') && (
-              <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
-                Personas
-              </button>
+              <>
+                <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
+                  Personas
+                </button>
+                <button onClick={()=>{setView('personas_mapa'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas_mapa' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3a7 7 0 110 14 7 7 0 010-14zm0 2a5 5 0 100 10 5 5 0 000-10zm0 2a3 3 0 110 6 3 3 0 010-6z"/></svg>
+                  Personas en Mapa
+                </button>
+              </>
             )}
             {canViewPage('empresas') && (
               <button onClick={()=>{setView('empresas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
@@ -527,6 +536,7 @@ export default function App(){
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
           {view === 'tipos' && canViewPage('tipos') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
+          {view === 'personas_mapa' && canViewPage('personas') && <PersonasEnMapa API_PERSONAS={API_PERSONS} userRole={userRole} />}
           {view === 'empresas' && canViewPage('empresas') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
           {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
           {view === 'caja' && canViewPage('caja') && <Caja />}

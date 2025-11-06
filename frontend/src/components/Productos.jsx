@@ -25,8 +25,8 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [previewImage, setPreviewImage] = useState(null)
   const [showUSD, setShowUSD] = useState(false) // Toggle para mostrar USD
   const TASA_CAMBIO = 6.96 // 1 USD = 6.96 Bs (Bolivia)
-  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa din�mica desde API
-  const [removeBg, setRemoveBg] = useState(false) // Opci�n para remover fondo localmente
+  const [tasaCambio, setTasaCambio] = useState(6.96) // Tasa dinámica desde API
+  const [removeBg, setRemoveBg] = useState(false) // Opción para remover fondo localmente
   const [lotesPorProducto, setLotesPorProducto] = useState({});
   const [showCreateLote, setShowCreateLote] = useState({}); // { [idProducto]: true/false }
   const [createLoteForm, setCreateLoteForm] = useState({}); // { [idProducto]: { idProveedor, fechaCompra, fechaVencimiento, precioCompra, cantidadCajas } }
@@ -36,7 +36,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   const [selectedLoteId, setSelectedLoteId] = useState({}) // { [idProducto]: idLote } - lote seleccionado por producto
   // Cargar/alternar lotes para un producto
   const loadLotesForProducto = async (idProducto) => {
-    // Alternar: si ya est�n cargados, ocultar
+    // Alternar: si ya están cargados, ocultar
     if (lotesPorProducto[idProducto]) {
       setLotesPorProducto(prev => {
         const next = { ...prev }
@@ -56,7 +56,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   };
 
-  // Abrir modal (cargar si no est� cargado)
+  // Abrir modal (cargar si no está cargado)
   const openLotesModal = async (idProducto) => {
     if (!lotesPorProducto[idProducto]) {
       await loadLotesForProducto(idProducto)
@@ -68,7 +68,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   // Crear lote para un producto
   const handleCreateLote = async (idProducto) => {
     const f = createLoteForm[idProducto] || {}
-    // Validaci�n m�nima
+    // Validación mínima
     if (!f || !f.fechaCompra || !f.precioCompra || !f.cantidadCajas) {
       toast.push('Complete fecha de compra, precio y cantidad', 'error')
       return

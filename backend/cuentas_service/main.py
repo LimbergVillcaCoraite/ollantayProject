@@ -125,10 +125,15 @@ def list_cuentas(
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
+        # Agregar resumen de movimientos pendientes por persona y empresa
         query = '''
             SELECT 
-                cc.idCuentaCorriente AS idCuenta, cc.idPersona, cc.idEmpresa, CASE WHEN cc.tipo='cliente' THEN 'C' ELSE 'P' END AS tipoCuenta,
-                cc.saldo, cc.fechaMovimiento AS fechaApertura, cc.estado,
+                cc.idPersona, cc.idEmpresa,
+                CASE WHEN cc.tipo = 'cliente' THEN 'C' ELSE 'P' END AS tipoCuenta,
+                SUM(CASE WHEN cc.tipo = 'cliente' THEN cc.debe ELSE 0 END) - 
+                SUM(CASE WHEN cc.tipo = 'cliente' THEN cc.haber ELSE 0 END) AS saldo,
+                MIN(cc.fechaMovimiento) AS fechaApertura,
+                MAX(cc.estado) AS estado,
                 CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombrePersona,
                 e.nombre_empresa AS nombreEmpresa
             FROM cuenta_corriente_O cc
@@ -139,38 +144,44 @@ def list_cuentas(
         where = []
         params = []
 
-        # Scoping multiempresa
-        if role != 'superadmin' and user_company is not None:
-            where.append('cc.idEmpresa = %s')
-            params.append(user_company)
+        # MULTI-EMPRESA: Filtrado obligatorio por empresa para roles no superadmin
+        if role != 'superadmin':
+            if user_company is not None:
+                where.append('cc.idEmpresa = %s')
+                params.append(user_company)
+            else:
+                # Sin empresa asignada = sin acceso a cuentas
+                where.append('1 = 0')  # Retorna vacío por seguridad
+        
+        # Solo mostrar movimientos activos
+        where.append('cc.estado = 1')
 
         # Filtros
         if idPersona is not None:
             where.append('cc.idPersona = %s')
             params.append(idPersona)
         if tipoCuenta:
-            # Mapear filtro de alias ('C'/'P') al campo real ENUM('cliente','proveedor')
+            # Mapear filtro de alias ('C'/'P') al campo real ENUM('cliente','proveedor','caja')
             if tipoCuenta == 'C':
                 where.append("cc.tipo = 'cliente'")
             elif tipoCuenta == 'P':
                 where.append("cc.tipo = 'proveedor'")
             else:
                 where.append('1=0')  # fuerza vacío si valor inválido
-        if estado is not None:
-            where.append('cc.estado = %s')
-            params.append(estado)
 
         if where:
             query += ' WHERE ' + ' AND '.join(where)
         
-        # Usar columnas reales en ORDER BY (no alias) y el PK correcto
-        query += ' ORDER BY cc.fechaMovimiento DESC, cc.idCuentaCorriente DESC LIMIT %s OFFSET %s'
+        # GROUP BY para consolidar movimientos por persona y empresa
+        query += ' GROUP BY cc.idPersona, cc.idEmpresa, cc.tipo HAVING saldo != 0'
+        query += ' ORDER BY nombrePersona ASC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
 
         cur.execute(query, tuple(params))
         rows = cur.fetchall() or []
-        # Convertir tipos
+        # Convertir tipos y agregar idCuenta virtual (usamos idPersona como identificador)
         for r in rows:
+            r['idCuenta'] = r['idPersona']  # Usar idPersona como identificador de la cuenta
             r['saldo'] = float(r['saldo']) if r.get('saldo') else 0.0
             r['fechaApertura'] = r['fechaApertura'].isoformat() if r.get('fechaApertura') else None
 
@@ -181,27 +192,33 @@ def list_cuentas(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get('/cuentas/{id}', response_model=CuentaCorrienteOut)
-def get_cuenta(id: int, x_user_role: str = Header(None), request: Request = None):
-    """Obtener cuenta por ID."""
+@app.get('/cuentas/persona/{id_persona}', response_model=CuentaCorrienteOut)
+def get_cuenta_by_persona(id_persona: int, x_user_role: str = Header(None), request: Request = None):
+    """Obtener resumen de cuenta por ID de persona (suma de movimientos)."""
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
+        # Calcular saldo actual sumando movimientos
         query = '''
             SELECT 
-                cc.idCuentaCorriente AS idCuenta, cc.idPersona, cc.idEmpresa, CASE WHEN cc.tipo='cliente' THEN 'C' ELSE 'P' END AS tipoCuenta,
-                cc.saldo, cc.fechaMovimiento AS fechaApertura, cc.estado,
+                cc.idPersona,
+                cc.idEmpresa,
+                CASE WHEN cc.tipo = 'cliente' THEN 'C' ELSE 'P' END AS tipoCuenta,
+                SUM(CASE WHEN cc.tipo = 'cliente' THEN cc.debe - cc.haber ELSE cc.haber - cc.debe END) AS saldo,
+                MIN(cc.fechaMovimiento) AS fechaApertura,
+                MAX(cc.estado) AS estado,
                 CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombrePersona,
                 e.nombre_empresa AS nombreEmpresa
             FROM cuenta_corriente_O cc
             LEFT JOIN persona_O p ON cc.idPersona = p.id_persona
             LEFT JOIN empresa_O e ON cc.idEmpresa = e.id_empresa
-            WHERE cc.idCuentaCorriente = %s
+            WHERE cc.idPersona = %s AND cc.estado = 1
+            GROUP BY cc.idPersona, cc.idEmpresa, cc.tipo
         '''
-        cur.execute(query, (id,))
+        cur.execute(query, (id_persona,))
         cuenta = cur.fetchone()
         
         if not cuenta:
@@ -215,7 +232,8 @@ def get_cuenta(id: int, x_user_role: str = Header(None), request: Request = None
             conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
 
-        # Convertir tipos
+        # Convertir tipos y agregar idCuenta virtual
+        cuenta['idCuenta'] = cuenta['idPersona']
         cuenta['saldo'] = float(cuenta['saldo']) if cuenta.get('saldo') else 0.0
         cuenta['fechaApertura'] = cuenta['fechaApertura'].isoformat() if cuenta.get('fechaApertura') else None
 
@@ -228,214 +246,74 @@ def get_cuenta(id: int, x_user_role: str = Header(None), request: Request = None
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post('/cuentas', response_model=CuentaCorrienteOut, status_code=201)
-def create_cuenta(payload: CuentaCorrienteIn, x_user_role: str = Header(None), request: Request = None):
-    """Crear cuenta corriente."""
-    role = get_role(x_user_role, request)
-    if role not in ('admin', 'editor', 'superadmin'):
-        raise HTTPException(status_code=403, detail='Permission denied')
-
-    if payload.tipoCuenta not in ('C', 'P'):
-        raise HTTPException(status_code=400, detail='tipoCuenta debe ser C o P')
-
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
-        
-        # Determinar empresa
-        user_company = get_company_id_from_request(request)
-        if role == 'superadmin':
-            # Usar empresa de la persona
-            cur.execute('SELECT id_empresa FROM persona_O WHERE id_persona = %s', (payload.idPersona,))
-            pers = cur.fetchone()
-            if not pers or not pers.get('id_empresa'):
-                cur.close()
-                conn.close()
-                raise HTTPException(status_code=400, detail='Persona no tiene empresa asignada')
-            target_company = pers['id_empresa']
-        else:
-            if user_company is None:
-                cur.close()
-                conn.close()
-                raise HTTPException(status_code=400, detail='Usuario sin empresa')
-            target_company = user_company
-
-        # Validar persona
-        cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona = %s', (payload.idPersona,))
-        pers = cur.fetchone()
-        if not pers:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail='Persona no existe')
-        
-        if role != 'superadmin' and pers['id_empresa'] != target_company:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail='Persona no pertenece a su empresa')
-
-        fechaApertura = payload.fechaApertura or date.today().isoformat()
-
-        # Insertar
-        ins = conn.cursor()
-        ins.execute('''
-            INSERT INTO cuenta_corriente_O (idPersona, idEmpresa, tipoCuenta, saldo, fechaApertura, estado)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        ''', (payload.idPersona, target_company, payload.tipoCuenta, float(payload.saldo), 
-              fechaApertura, payload.estado))
-        conn.commit()
-        new_id = ins.lastrowid
-        ins.close()
-        cur.close()
-        conn.close()
-
-        return get_cuenta(new_id, x_user_role, request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put('/cuentas/{id}', response_model=CuentaCorrienteOut)
-def update_cuenta(id: int, payload: CuentaCorrienteIn, x_user_role: str = Header(None), request: Request = None):
-    """Actualizar cuenta (solo saldo y estado)."""
-    role = get_role(x_user_role, request)
-    if role not in ('admin', 'editor', 'superadmin'):
-        raise HTTPException(status_code=403, detail='Permission denied')
-
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
-        user_company = get_company_id_from_request(request)
-
-        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
-        cuenta = cur.fetchone()
-        if not cuenta:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail='Cuenta no encontrada')
-
-        if role != 'superadmin' and user_company is not None and cuenta['idEmpresa'] != user_company:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=403, detail='No autorizado')
-
-        # Solo actualizar saldo y estado
-        upd = conn.cursor()
-        upd.execute('''
-            UPDATE cuenta_corriente_O 
-            SET saldo = %s, estado = %s
-            WHERE idCuentaCorriente = %s
-        ''', (float(payload.saldo), payload.estado, id))
-        conn.commit()
-        upd.close()
-        cur.close()
-        conn.close()
-
-        return get_cuenta(id, x_user_role, request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete('/cuentas/{id}', status_code=204)
-def delete_cuenta(id: int, x_user_role: str = Header(None), request: Request = None):
-    """Eliminar/cerrar cuenta."""
-    role = get_role(x_user_role, request)
-    if role not in ('admin', 'superadmin'):
-        raise HTTPException(status_code=403, detail='Permission denied')
-
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
-        user_company = get_company_id_from_request(request)
-
-        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
-        cuenta = cur.fetchone()
-        if not cuenta:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail='Cuenta no encontrada')
-
-        if role != 'superadmin' and user_company is not None and cuenta['idEmpresa'] != user_company:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=403, detail='No autorizado')
-
-        if role == 'superadmin':
-            # Eliminar físicamente
-            d = conn.cursor()
-            d.execute('DELETE FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
-            conn.commit()
-            d.close()
-        else:
-            # Cerrar (estado=0)
-            upd = conn.cursor()
-            upd.execute('UPDATE cuenta_corriente_O SET estado = 0 WHERE idCuentaCorriente = %s', (id,))
-            conn.commit()
-            upd.close()
-
-        cur.close()
-        conn.close()
-        return None
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ========================
-# Endpoints de Pagos
-# ========================
-
-@app.get('/cuentas/{id}/pagos', response_model=List[PagoOut])
-def list_pagos(id: int, x_user_role: str = Header(None), request: Request = None):
-    """Listar pagos de una cuenta."""
+@app.get('/cuentas/persona/{id_persona}/movimientos')
+def get_movimientos_persona(id_persona: int, x_user_role: str = Header(None), request: Request = None):
+    """Obtener todos los movimientos de una persona (historial de cuenta corriente)."""
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
-        # Validar que la cuenta existe y tenemos acceso
-        cur.execute('SELECT idCuentaCorriente AS idCuenta, idEmpresa FROM cuenta_corriente_O WHERE idCuentaCorriente = %s', (id,))
-        cuenta = cur.fetchone()
-        if not cuenta:
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail='Cuenta no encontrada')
-
-        if role != 'superadmin' and user_company is not None and cuenta['idEmpresa'] != user_company:
-            cur.close()
-            conn.close()
+        # Validar acceso a la persona
+        cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona = %s', (id_persona,))
+        persona = cur.fetchone()
+        if not persona:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Persona no encontrada')
+        
+        if role != 'superadmin' and user_company is not None and persona['id_empresa'] != user_company:
+            cur.close(); conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
 
-        # Obtener pagos
+        # Obtener movimientos ordenados por fecha
         cur.execute('''
-            SELECT idPago, idCuenta, monto, fecha_pago, tipo_pago, observaciones
-            FROM pago_O
-            WHERE idCuenta = %s
-            ORDER BY fecha_pago DESC, idPago DESC
-        ''', (id,))
-        pagos = cur.fetchall() or []
+            SELECT 
+                idCuentaCorriente AS idCuenta, tipo, fechaMovimiento, tipoMovimiento, idReferencia,
+                debe, haber, saldo AS saldoMovimiento, descripcion, estado
+            FROM cuenta_corriente_O
+            WHERE idPersona = %s AND idEmpresa = %s
+            ORDER BY fechaMovimiento DESC, idCuentaCorriente DESC
+        ''', (id_persona, persona['id_empresa']))
         
-        # Convertir tipos
-        for p in pagos:
-            p['monto'] = float(p['monto']) if p.get('monto') else 0.0
-            p['fecha_pago'] = p['fecha_pago'].isoformat() if p.get('fecha_pago') else None
-
-        cur.close()
-        conn.close()
-        return pagos
+        movimientos = cur.fetchall() or []
+        
+        # Calcular saldo acumulado
+        saldo_acumulado = 0
+        for mov in reversed(movimientos):  # Calcular desde el más antiguo
+            debe = float(mov['debe']) if mov.get('debe') else 0.0
+            haber = float(mov['haber']) if mov.get('haber') else 0.0
+            if mov['tipo'] == 'cliente':
+                saldo_acumulado += debe - haber
+            else:
+                saldo_acumulado += haber - debe
+            mov['saldoAcumulado'] = saldo_acumulado
+            mov['debe'] = debe
+            mov['haber'] = haber
+            mov['fechaMovimiento'] = mov['fechaMovimiento'].isoformat() if mov.get('fechaMovimiento') else None
+        
+        # Revertir para mostrar más recientes primero
+        movimientos.reverse()
+        
+        cur.close(); conn.close()
+        return {'persona': persona, 'movimientos': movimientos, 'saldoActual': saldo_acumulado}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post('/pagos', response_model=PagoOut, status_code=201)
-def create_pago(payload: PagoIn, x_user_role: str = Header(None), request: Request = None):
-    """Registrar un pago/cobro y crear movimiento en cuenta corriente."""
+# Las cuentas se crean automáticamente al registrar ventas/compras a crédito
+# No se crean manualmente
+
+
+# ========================
+# Endpoints de Pagos y Cobros
+# ========================
+
+@app.post('/pagos-cobros', status_code=201)
+def registrar_pago_cobro(payload: PagoIn, x_user_role: str = Header(None), request: Request = None):
+    """Registrar pago o cobro de una cuenta corriente (reduce el saldo pendiente)."""
     role = get_role(x_user_role, request)
     if role not in ('admin', 'editor', 'superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
@@ -480,35 +358,43 @@ def create_pago(payload: PagoIn, x_user_role: str = Header(None), request: Reque
 
         fechaPago = payload.fechaPago or date.today().isoformat()
         
-        # Generar numeroPago único
-        import random
-        numeroPago = f"PG{target_company}{random.randint(100000, 999999)}"
+        # Generar numeroPago único: EMPRESA-TIPO-YYYY-MM-DD-NNN
+        cur.execute('SELECT nombre_empresa FROM empresa_O WHERE id_empresa = %s', (target_company,))
+        emp = cur.fetchone() or {}
+        nombre_empresa = (emp.get('nombre_empresa') or '').upper()
+        empresa_slug = ''.join(ch for ch in nombre_empresa if ch.isalnum())[:5]
+        from datetime import datetime
+        f = datetime.fromisoformat(fechaPago) if isinstance(fechaPago, str) else datetime.utcnow()
+        tipo_abbr = 'COB' if payload.tipo == 'cobro' else 'PAG'
+        prefix = f"{empresa_slug}-{tipo_abbr}-{f.year}-{f.month:02d}-{f.day:02d}-"
+        
+        # Obtener secuencia
+        cur.execute('''
+            SELECT MAX(CAST(SUBSTRING_INDEX(descripcion, '-', -1) AS UNSIGNED)) AS max_seq
+            FROM cuenta_corriente_O
+            WHERE descripcion LIKE %s
+        ''', (prefix + '%',))
+        row = cur.fetchone() or {}
+        next_seq = int(row.get('max_seq') or 0) + 1
+        numeroPago = f"{prefix}{next_seq:03d}"
 
-        # Insertar pago
-        ins = conn.cursor()
-        ins.execute('''
-            INSERT INTO pago_O (numeroPago, fechaPago, tipo, idPersona, idProveedor, idEmpresa, monto, idTipoPago, numeroReferencia, observaciones)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (numeroPago, fechaPago, payload.tipo, payload.idPersona, payload.idProveedor, 
-              target_company, float(payload.monto), payload.idTipoPago, payload.numeroReferencia, payload.observaciones))
-        conn.commit()
-        new_id = ins.lastrowid
-        ins.close()
-
-        # Crear movimiento en cuenta corriente
+        # Crear movimiento en cuenta corriente que REDUCE la deuda
         mov = conn.cursor()
         if payload.tipo == 'cobro':
             # Cobro: haber (reduce deuda del cliente)
+            # Los clientes tienen debe (lo que deben), el haber reduce esa deuda
             mov.execute('''
                 INSERT INTO cuenta_corriente_O 
                 (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
-                VALUES ('cliente', %s, %s, %s, 'cobro', %s, 0, %s, -%s, %s, 1)
-            ''', (payload.idPersona, target_company, fechaPago, new_id, 
+                VALUES ('cliente', %s, %s, %s, 'cobro', NULL, 0, %s, -%s, %s, 1)
+            ''', (payload.idPersona, target_company, fechaPago, 
                   float(payload.monto), float(payload.monto), 
-                  f'Cobro #{numeroPago}'))
+                  f'{numeroPago} - {payload.observaciones or "Cobro de cuenta"}'))
+            
+            # No registramos 'caja' en este módulo; se debe manejar en módulo de caja/banco.
         else:  # pago
             # Pago: debe (reduce deuda con proveedor)
-            # Necesitamos idPersona del proveedor si es persona
+            # Los proveedores tienen haber (lo que les debemos), el debe reduce esa deuda
             cur.execute('SELECT idPersona FROM proveedor_O WHERE idProveedor = %s', (payload.idProveedor,))
             prov_data = cur.fetchone()
             id_persona_prov = prov_data.get('idPersona') if prov_data else None
@@ -517,19 +403,20 @@ def create_pago(payload: PagoIn, x_user_role: str = Header(None), request: Reque
                 mov.execute('''
                     INSERT INTO cuenta_corriente_O 
                     (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
-                    VALUES ('proveedor', %s, %s, %s, 'pago', %s, %s, 0, -%s, %s, 1)
-                ''', (id_persona_prov, target_company, fechaPago, new_id, 
+                    VALUES ('proveedor', %s, %s, %s, 'pago', NULL, %s, 0, -%s, %s, 1)
+                ''', (id_persona_prov, target_company, fechaPago, 
                       float(payload.monto), float(payload.monto), 
-                      f'Pago #{numeroPago}'))
+                      f'{numeroPago} - {payload.observaciones or "Pago a proveedor"}'))
+            
+            # No registramos 'caja' en este módulo; se debe manejar en módulo de caja/banco.
         
         conn.commit()
         mov.close()
         cur.close()
         conn.close()
 
-        # Retornar pago creado
+        msg = ('Cobro' if payload.tipo == 'cobro' else 'Pago') + ' registrado exitosamente'
         return {
-            'idPago': new_id,
             'numeroPago': numeroPago,
             'tipo': payload.tipo,
             'idPersona': payload.idPersona,
@@ -540,12 +427,14 @@ def create_pago(payload: PagoIn, x_user_role: str = Header(None), request: Reque
             'fechaPago': fechaPago,
             'numeroReferencia': payload.numeroReferencia,
             'observaciones': payload.observaciones,
-            'created_at': fechaPago
+            'message': msg
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @app.get('/health')

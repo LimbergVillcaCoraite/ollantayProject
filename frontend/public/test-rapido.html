@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Rápido - Ubicaciones</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #45a049; }
+        pre {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="text-align: center; color: #4CAF50;">🗺️ Test de Ubicaciones en Tiempo Real</h1>
+    
+    <div class="container">
+        <h2>1. Verificar Backend</h2>
+        <button onclick="testHealth()">✓ Test Health</button>
+        <button onclick="testPersonas()">👥 Listar Personas</button>
+        <button onclick="testUbicacionesAll()">📍 Ver Ubicaciones</button>
+        <div id="backend-result"></div>
+    </div>
+
+    <div class="container">
+        <h2>2. Agregar Ubicación de Prueba</h2>
+        <label>ID Persona: <input type="number" id="persona-id" value="1" min="1"></label>
+        <label>Latitud: <input type="number" id="lat" value="-17.7833" step="0.000001"></label>
+        <label>Longitud: <input type="number" id="lng" value="-63.1821" step="0.000001"></label>
+        <button onclick="agregarUbicacion()">➕ Agregar Ubicación</button>
+        <button onclick="agregar5Aleatorias()">🎲 Agregar 5 Aleatorias</button>
+        <div id="add-result"></div>
+    </div>
+
+    <div class="container">
+        <h2>3. WebSocket en Vivo</h2>
+        <button onclick="conectarWebSocket()">🔌 Conectar WebSocket</button>
+        <button onclick="desconectarWebSocket()">⏹️ Desconectar</button>
+        <div id="ws-status" class="status info">WebSocket: Desconectado</div>
+        <h3>Mensajes Recibidos:</h3>
+        <pre id="ws-messages">Esperando conexión...</pre>
+    </div>
+
+    <div class="grid">
+        <div class="container">
+            <h2>📋 Personas</h2>
+            <pre id="personas-list">Haz click en "Listar Personas"</pre>
+        </div>
+        <div class="container">
+            <h2>📍 Ubicaciones</h2>
+            <pre id="ubicaciones-list">Haz click en "Ver Ubicaciones"</pre>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let messageCount = 0;
+
+        async function testHealth() {
+            try {
+                const res = await fetch('/api/personas/health', { credentials: 'include' });
+                const data = await res.json();
+                showResult('backend-result', 'success', `✓ Backend OK: ${JSON.stringify(data)}`);
+            } catch (e) {
+                showResult('backend-result', 'error', `✗ Error: ${e.message}`);
+            }
+        }
+
+        async function testPersonas() {
+            try {
+                const res = await fetch('/api/personas/persons', { credentials: 'include' });
+                const data = await res.json();
+                document.getElementById('personas-list').textContent = JSON.stringify(data, null, 2);
+                showResult('backend-result', 'success', `✓ Cargadas ${data.length} personas`);
+            } catch (e) {
+                showResult('backend-result', 'error', `✗ Error: ${e.message}`);
+            }
+        }
+
+        async function testUbicacionesAll() {
+            try {
+                const res = await fetch('/api/personas/persons/ubicaciones/all', { credentials: 'include' });
+                const data = await res.json();
+                const count = Object.keys(data).length;
+                document.getElementById('ubicaciones-list').textContent = JSON.stringify(data, null, 2);
+                showResult('backend-result', 'success', `✓ Se encontraron ${count} ubicaciones`);
+                
+                if (count === 0) {
+                    showResult('backend-result', 'info', 'ℹ️ No hay ubicaciones. Usa el botón "Agregar 5 Aleatorias" para crear algunas.');
+                }
+            } catch (e) {
+                showResult('backend-result', 'error', `✗ Error: ${e.message}`);
+            }
+        }
+
+        async function agregarUbicacion() {
+            const id = document.getElementById('persona-id').value;
+            const lat = parseFloat(document.getElementById('lat').value);
+            const lng = parseFloat(document.getElementById('lng').value);
+
+            try {
+                const res = await fetch(`/api/personas/persons/${id}/ubicacion`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ id_persona: parseInt(id), lat, lng, accuracy: 10 })
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(`${res.status}: ${text}`);
+                }
+
+                const data = await res.json();
+                showResult('add-result', 'success', `✓ Ubicación agregada: ${JSON.stringify(data)}`);
+                testUbicacionesAll(); // Refrescar lista
+            } catch (e) {
+                showResult('add-result', 'error', `✗ Error: ${e.message}`);
+            }
+        }
+
+        async function agregar5Aleatorias() {
+            try {
+                // Primero obtener personas
+                const res = await fetch('/api/personas/persons', { credentials: 'include' });
+                const personas = await res.json();
+                
+                if (personas.length === 0) {
+                    showResult('add-result', 'error', '✗ No hay personas disponibles');
+                    return;
+                }
+
+                const centerLat = -17.7833;
+                const centerLng = -63.1821;
+                const radius = 0.05;
+
+                let count = 0;
+                const maxPersonas = Math.min(5, personas.length);
+
+                for (let i = 0; i < maxPersonas; i++) {
+                    const persona = personas[i];
+                    const lat = centerLat + (Math.random() - 0.5) * radius;
+                    const lng = centerLng + (Math.random() - 0.5) * radius;
+                    
+                    try {
+                        const response = await fetch(`/api/personas/persons/${persona.id_persona}/ubicacion`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                                id_persona: persona.id_persona,
+                                lat: lat,
+                                lng: lng,
+                                accuracy: Math.random() * 20 + 5
+                            })
+                        });
+                        
+                        if (response.ok) count++;
+                    } catch (error) {
+                        console.error(`Error para persona ${persona.id_persona}:`, error);
+                    }
+                }
+
+                showResult('add-result', 'success', `✓ Se agregaron ${count} ubicaciones aleatorias`);
+                testUbicacionesAll(); // Refrescar lista
+            } catch (e) {
+                showResult('add-result', 'error', `✗ Error: ${e.message}`);
+            }
+        }
+
+        function conectarWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                showWSStatus('info', 'Ya estás conectado');
+                return;
+            }
+
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const host = window.location.host;
+            const url = `${scheme}://${host}/api/personas/ws/ubicaciones`;
+            
+            ws = new WebSocket(url);
+            messageCount = 0;
+            document.getElementById('ws-messages').textContent = 'Conectando...';
+
+            ws.onopen = () => {
+                showWSStatus('success', 'WebSocket: ✓ Conectado');
+                document.getElementById('ws-messages').textContent = 'Esperando mensajes...\n';
+            };
+
+            ws.onmessage = (event) => {
+                messageCount++;
+                const msg = document.getElementById('ws-messages');
+                const data = JSON.parse(event.data);
+                msg.textContent += `\n[${messageCount}] ${new Date().toLocaleTimeString()}: Persona ${data.id_persona} en (${data.lat.toFixed(6)}, ${data.lng.toFixed(6)})`;
+                msg.scrollTop = msg.scrollHeight;
+                
+                // Actualizar la lista de ubicaciones
+                testUbicacionesAll();
+            };
+
+            ws.onerror = (error) => {
+                showWSStatus('error', 'WebSocket: ✗ Error de conexión');
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                showWSStatus('info', 'WebSocket: Desconectado');
+            };
+        }
+
+        function desconectarWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                showWSStatus('info', 'WebSocket: Desconectado');
+            }
+        }
+
+        function showResult(elementId, type, message) {
+            const el = document.getElementById(elementId);
+            el.className = `status ${type}`;
+            el.textContent = message;
+        }
+
+        function showWSStatus(type, message) {
+            const el = document.getElementById('ws-status');
+            el.className = `status ${type}`;
+            el.textContent = message;
+        }
+
+        // Auto-test al cargar
+        window.addEventListener('load', () => {
+            testHealth();
+            setTimeout(testPersonas, 500);
+            setTimeout(testUbicacionesAll, 1000);
+        });
+    </script>
+</body>
+</html>

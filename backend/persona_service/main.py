@@ -1,3 +1,8 @@
+from fastapi import WebSocket, WebSocketDisconnect
+import json
+import asyncio
+# ========== Ubicación en tiempo real de personas (multiempresa) ==========
+from typing import Dict
 from fastapi import FastAPI, HTTPException, Request, Header, Response, APIRouter, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +25,9 @@ origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
+    "http://192.168.1.9",
+    "http://192.168.1.9:3000",
+    "http://192.168.1.9:80",
 ]
 
 app.add_middleware(
@@ -200,6 +208,219 @@ def _startup():
 app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
 
 
+# ========== Ubicación en tiempo real de personas (multiempresa) ==========
+# Nota: esta sección depende de imports y funciones declaradas arriba
+ws_persona_conns: Dict[int, list] = {}
+
+class UbicacionPersonaIn(BaseModel):
+    id_persona: int
+    lat: float
+    lng: float
+    accuracy: float = 0
+
+class UbicacionPersonaOut(UbicacionPersonaIn):
+    updated_at: str
+
+def ensure_ubicacion_persona_table():
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_ubicacion_O (
+                id_persona INT PRIMARY KEY,
+                lat DOUBLE NOT NULL,
+                lng DOUBLE NOT NULL,
+                accuracy DOUBLE DEFAULT 0,
+                updated_at DATETIME NOT NULL,
+                id_empresa INT NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        ''')
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print(f"Error ensure_ubicacion_persona_table: {e}")
+
+@app.on_event('startup')
+def _startup_ubicacion_persona():
+    ensure_ubicacion_persona_table()
+
+# POST: Actualizar ubicación de persona
+@app.post('/persons/{id}/ubicacion', response_model=UbicacionPersonaOut)
+async def actualizar_ubicacion_persona(id: int, body: UbicacionPersonaIn, request: Request):
+    # Auth: persona puede actualizar su propia ubicación, admin/editor/superadmin de la empresa también
+    role = get_role(None, request)
+    jwt_company_id = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT id_empresa FROM persona_O WHERE id_persona = %s', (id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Persona no encontrada')
+        id_empresa = row['id_empresa']
+        # Permisos: superadmin, admin/editor de la empresa, o la propia persona
+        persona_id = None
+        try:
+            token = request.cookies.get('ollantay_token')
+            if token:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                persona_id = payload.get('id_persona')
+        except Exception:
+            pass
+        if not (
+            role == 'superadmin' or
+            (role in ('admin','editor') and jwt_company_id == id_empresa) or
+            (persona_id == id)
+        ):
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+        # Upsert ubicación
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        cur2 = conn.cursor()
+        cur2.execute('REPLACE INTO persona_ubicacion_O (id_persona, lat, lng, accuracy, updated_at, id_empresa) VALUES (%s,%s,%s,%s,%s,%s)',
+            (id, body.lat, body.lng, body.accuracy, now, id_empresa))
+        conn.commit(); cur2.close(); cur.close(); conn.close()
+        # Broadcast a todos los clientes conectados de la empresa
+        msg = json.dumps({ 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now })
+        # Enviar a la empresa específica
+        for ws in ws_persona_conns.get(id_empresa, []):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                pass
+        # Si hay superadmins conectados (company_id = -1), también enviarles
+        for ws in ws_persona_conns.get(-1, []):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                pass
+        return { 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# GET: Última ubicación de persona
+@app.get('/persons/{id}/ubicacion', response_model=UbicacionPersonaOut)
+def obtener_ubicacion_persona(id: int, request: Request):
+    role = get_role(None, request)
+    jwt_company_id = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT * FROM persona_ubicacion_O WHERE id_persona = %s', (id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail='Sin ubicación')
+        # Permisos: superadmin, admin/editor de la empresa, o la propia persona
+        id_empresa = row['id_empresa']
+        persona_id = None
+        try:
+            token = request.cookies.get('ollantay_token')
+            if token:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                persona_id = payload.get('id_persona')
+        except Exception:
+            pass
+        if not (
+            role == 'superadmin' or
+            (role in ('admin','editor') and jwt_company_id == id_empresa) or
+            (persona_id == id)
+        ):
+            raise HTTPException(status_code=403, detail='No autorizado')
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# GET: Todas las ubicaciones de personas de la empresa
+@app.get('/persons/ubicaciones/all')
+def obtener_ubicaciones_empresa(request: Request):
+    """Obtiene todas las ubicaciones de personas de la empresa del usuario"""
+    role = get_role(None, request)
+    jwt_company_id = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        
+        if role == 'superadmin':
+            # Superadmin ve todas las ubicaciones
+            cur.execute('SELECT id_persona, lat, lng, accuracy, updated_at FROM persona_ubicacion_O')
+        elif jwt_company_id is not None:
+            # Otros roles ven solo las de su empresa
+            cur.execute('SELECT id_persona, lat, lng, accuracy, updated_at FROM persona_ubicacion_O WHERE id_empresa = %s', (jwt_company_id,))
+        else:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+        
+        rows = cur.fetchall() or []
+        cur.close(); conn.close()
+        
+        # Convertir a diccionario {id_persona: ubicacion}
+        result = {}
+        for row in rows:
+            result[row['id_persona']] = {
+                'id_persona': row['id_persona'],
+                'lat': row['lat'],
+                'lng': row['lng'],
+                'accuracy': row['accuracy'],
+                'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None
+            }
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# WebSocket: Ubicaciones en tiempo real de todas las personas de la empresa
+@app.websocket('/ws/ubicaciones')
+async def ws_ubicaciones_personas(websocket: WebSocket):
+    # Autenticación por token: query ?token=..., cookie 'ollantay_token', o primer mensaje
+    await websocket.accept()
+    token = None
+    try:
+        # 1) Intentar query param
+        token = websocket.query_params.get('token') if hasattr(websocket, 'query_params') else None
+        # 2) Intentar cookie HttpOnly (en el handshake)
+        if not token:
+            try:
+                token = websocket.cookies.get('ollantay_token') if hasattr(websocket, 'cookies') else None
+            except Exception:
+                token = None
+        # 3) Como último recurso, esperar primer mensaje como token
+        if not token:
+            try:
+                token = (await websocket.receive_text()).strip()
+            except Exception:
+                token = None
+        if not token:
+            await websocket.close(); return
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        role = payload.get('role', '').lower()
+        company_id = payload.get('company_id')
+        
+        # Superadmin sin empresa: usar company_id especial -1 para broadcast global
+        if role == 'superadmin' and not company_id:
+            company_id = -1  # Clave especial para superadmin
+        elif not company_id:
+            await websocket.close(); return
+            
+        company_id = int(company_id)
+        ws_persona_conns.setdefault(company_id, []).append(websocket)
+        try:
+            while True:
+                await asyncio.sleep(60)  # Mantener conexión
+        except WebSocketDisconnect:
+            pass
+        finally:
+            try:
+                ws_persona_conns[company_id].remove(websocket)
+            except Exception:
+                pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 def create_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
@@ -270,9 +491,12 @@ def options_login():
 
 @router.post('/auth/login')
 async def login(request: Request):
-    """Accepts JSON or form data. Avoids 500 on bad JSON by falling back to form and returning 400 if still invalid."""
+    """Accepts JSON or form data. Reads body only once to avoid stream errors."""
     content_type = (request.headers.get('content-type') or '').lower()
-    username = None; password = None
+    username = None
+    password = None
+    
+    # Try JSON first if content-type indicates it
     if content_type.startswith('application/json'):
         try:
             body = await request.json()
@@ -280,27 +504,16 @@ async def login(request: Request):
                 username = body.get('username')
                 password = body.get('password')
         except Exception:
-            # Bad JSON payload. Try to fallback to form; if not present, raise 400
-            try:
-                form = await request.form()
-                username = form.get('username')
-                password = form.get('password')
-            except Exception:
-                raise HTTPException(status_code=400, detail='Invalid JSON payload')
+            raise HTTPException(status_code=400, detail='Invalid JSON payload')
+    # Otherwise try form data
     else:
         try:
             form = await request.form()
             username = form.get('username')
             password = form.get('password')
         except Exception:
-            # Final fallback: try JSON without relying on header
-            try:
-                body = await request.json()
-                if isinstance(body, dict):
-                    username = body.get('username')
-                    password = body.get('password')
-            except Exception:
-                pass
+            raise HTTPException(status_code=400, detail='Invalid form data')
+    
     if not username or not password:
         raise HTTPException(status_code=400, detail='Username y password requeridos')
     try:
@@ -1942,16 +2155,19 @@ def update_role_permissions(
             conn.close()
             raise HTTPException(status_code=403, detail='No puedes modificar permisos del superadmin')
         
-        # Eliminar permisos existentes para este rol y empresa específica
+        # Nota importante sobre PK: role_permission_O tiene PK (role_id, perm_id) en esta base.
+        # Para evitar errores 500 por duplicidad entre global (NULL) y por empresa, antes de insertar
+        # siempre eliminamos por (role_id, perm_id) sin importar empresa.
+        # Primero, si recibimos una lista vacía, eliminamos TODOS los permisos de ese ámbito.
         if role == 'superadmin':
-            # Superadmin elimina permisos globales (NULL) o para empresa específica si se proporciona
-            target_company = payload.get('target_company_id', None)  # Allow superadmin to specify target company
+            target_company = payload.get('target_company_id', None)
             if target_company is None:
+                # Limpiar globales (NULL) para el rol
                 cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa IS NULL', (role_id,))
             else:
+                # Limpiar permisos de la empresa específica
                 cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa = %s', (role_id, target_company))
         else:
-            # Admin solo puede eliminar permisos de su propia empresa
             cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND id_empresa = %s', (role_id, company_id))
         
         # Agregar nuevos permisos
@@ -1979,11 +2195,12 @@ def update_role_permissions(
                 conn.close()
                 raise HTTPException(status_code=400, detail='No se encontraron permisos válidos en la base de datos')
             
-            values = [(role_id, perm_id, target_company) for perm_id in valid_perm_ids]
-            if values:
-                cursor.executemany(
+            # Para cada permiso, eliminar cualquier fila existente (cualquier empresa o NULL) y luego insertar
+            for perm_id in valid_perm_ids:
+                cursor.execute('DELETE FROM role_permission_O WHERE role_id = %s AND perm_id = %s', (role_id, perm_id))
+                cursor.execute(
                     'INSERT INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s, %s, %s)',
-                    values
+                    (role_id, perm_id, target_company)
                 )
         
         conn.commit()

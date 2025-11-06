@@ -72,6 +72,7 @@ export function usePermissions(loggedUser) {
     const viewPermissions = {
       'tipos': has('tipos', 'view'),
       'personas': has('personas', 'view'),
+      'personas_mapa': has('personas', 'view'), // Same permission as personas view
       'empresas': has('empresas', 'view'),
       'prestamos': has('prestamos', 'view'),
       'productos': has('productos', 'view'),

@@ -171,17 +171,61 @@ def caja_resumen(
         cur.execute(q_vc, tuple(params))
         ventas_contado = float(cur.fetchone()[0] or 0)
 
-        # Cobros (ingresos)
-        q_cob = """
-            SELECT COALESCE(SUM(monto),0) FROM pago_O 
-            WHERE tipo = 'cobro' AND fechaPago BETWEEN %s AND %s
+        # Ventas a crédito (NO suman a ingresos de caja, se muestran aparte)
+        q_vcred = """
+            SELECT COALESCE(SUM(v.montoTotal),0)
+            FROM venta_O v
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            WHERE v.estado = 1 AND v.fechaVenta BETWEEN %s AND %s AND LOWER(tp.nombrePago) LIKE '%credito%'
         """
         params = [start, end]
         if effective_company is not None:
-            q_cob += ' AND idEmpresa = %s'
+            q_vcred += ' AND v.idEmpresa = %s'
             params.append(effective_company)
-        cur.execute(q_cob, tuple(params))
-        cobros = float(cur.fetchone()[0] or 0)
+        cur.execute(q_vcred, tuple(params))
+        ventas_credito = float(cur.fetchone()[0] or 0)
+
+        # Ventas en ruta (entregas finalizadas): sumar montoTotal de detalles
+        q_vr = """
+            SELECT COALESCE(SUM(d.montoTotal),0)
+            FROM entrega_ruta_O e
+            JOIN entrega_ruta_detalle_O d ON d.idEntrega = e.idEntrega
+            WHERE e.estado = 'finalizado' AND e.fechaRetorno BETWEEN %s AND %s
+        """
+        params = [start, end]
+        if effective_company is not None:
+            q_vr += ' AND e.idEmpresa = %s'
+            params.append(effective_company)
+        cur.execute(q_vr, tuple(params))
+        ventas_ruta = float(cur.fetchone()[0] or 0)
+
+        # Cobros efectivo (ingresos)
+        q_cob_efectivo = """
+            SELECT COALESCE(SUM(p.monto),0) FROM pago_O p
+            LEFT JOIN tipoPago tp ON p.idTipoPago = tp.idPago
+            WHERE p.tipo = 'cobro' AND p.fechaPago BETWEEN %s AND %s 
+            AND (tp.nombrePago IS NULL OR LOWER(tp.nombrePago) NOT LIKE '%transfer%')
+        """
+        params = [start, end]
+        if effective_company is not None:
+            q_cob_efectivo += ' AND p.idEmpresa = %s'
+            params.append(effective_company)
+        cur.execute(q_cob_efectivo, tuple(params))
+        cobros_efectivo = float(cur.fetchone()[0] or 0)
+
+        # Cobros transferencia (ingresos)
+        q_cob_transfer = """
+            SELECT COALESCE(SUM(p.monto),0) FROM pago_O p
+            LEFT JOIN tipoPago tp ON p.idTipoPago = tp.idPago
+            WHERE p.tipo = 'cobro' AND p.fechaPago BETWEEN %s AND %s 
+            AND LOWER(tp.nombrePago) LIKE '%transfer%'
+        """
+        params = [start, end]
+        if effective_company is not None:
+            q_cob_transfer += ' AND p.idEmpresa = %s'
+            params.append(effective_company)
+        cur.execute(q_cob_transfer, tuple(params))
+        cobros_transferencia = float(cur.fetchone()[0] or 0)
 
         # Compras contado (detecta Contado por nombre, no por id)
         q_cc = """
@@ -197,24 +241,41 @@ def caja_resumen(
         cur.execute(q_cc, tuple(params))
         compras_contado = float(cur.fetchone()[0] or 0)
 
-        # Pagos (egresos)
-        q_pag = """
-            SELECT COALESCE(SUM(monto),0) FROM pago_O 
-            WHERE tipo = 'pago' AND fechaPago BETWEEN %s AND %s
+        # Pagos efectivo (egresos)
+        q_pag_efectivo = """
+            SELECT COALESCE(SUM(p.monto),0) FROM pago_O p
+            LEFT JOIN tipoPago tp ON p.idTipoPago = tp.idPago
+            WHERE p.tipo = 'pago' AND p.fechaPago BETWEEN %s AND %s
+            AND (tp.nombrePago IS NULL OR LOWER(tp.nombrePago) NOT LIKE '%transfer%')
         """
         params = [start, end]
         if effective_company is not None:
-            q_pag += ' AND idEmpresa = %s'
+            q_pag_efectivo += ' AND p.idEmpresa = %s'
             params.append(effective_company)
-        cur.execute(q_pag, tuple(params))
-        pagos = float(cur.fetchone()[0] or 0)
+        cur.execute(q_pag_efectivo, tuple(params))
+        pagos_efectivo = float(cur.fetchone()[0] or 0)
+
+        # Pagos transferencia (egresos)
+        q_pag_transfer = """
+            SELECT COALESCE(SUM(p.monto),0) FROM pago_O p
+            LEFT JOIN tipoPago tp ON p.idTipoPago = tp.idPago
+            WHERE p.tipo = 'pago' AND p.fechaPago BETWEEN %s AND %s
+            AND LOWER(tp.nombrePago) LIKE '%transfer%'
+        """
+        params = [start, end]
+        if effective_company is not None:
+            q_pag_transfer += ' AND p.idEmpresa = %s'
+            params.append(effective_company)
+        cur.execute(q_pag_transfer, tuple(params))
+        pagos_transferencia = float(cur.fetchone()[0] or 0)
+
+        # Totales
+        ingresos = ventas_contado + ventas_ruta + cobros_efectivo + cobros_transferencia  # crédito NO suma a ingresos
+        egresos = compras_contado + pagos_efectivo + pagos_transferencia
+        balance = ingresos - egresos
 
         cur.close()
         conn.close()
-
-        ingresos = ventas_contado + cobros
-        egresos = compras_contado + pagos
-        balance = ingresos - egresos
 
         return {
             'period': period,
@@ -223,10 +284,14 @@ def caja_resumen(
             'idEmpresa': effective_company,
             'ingresos': round(ingresos, 2),
             'ingresosVentasContado': round(ventas_contado, 2),
-            'ingresosCobros': round(cobros, 2),
+            'ingresosVentasRuta': round(ventas_ruta, 2),
+            'ingresosCobrosEfectivo': round(cobros_efectivo, 2),
+            'ingresosCobrosTransferencia': round(cobros_transferencia, 2),
+            'ventasCredito': round(ventas_credito, 2),
             'egresos': round(egresos, 2),
             'egresosComprasContado': round(compras_contado, 2),
-            'egresosPagos': round(pagos, 2),
+            'egresosPagosEfectivo': round(pagos_efectivo, 2),
+            'egresosPagosTransferencia': round(pagos_transferencia, 2),
             'balance': round(balance, 2),
         }
     except HTTPException:
@@ -267,7 +332,7 @@ def caja_detalle(
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
 
-        # Ventas contado
+     # Ventas contado
         q_v = '''
             SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.idTipoPago, tp.nombrePago AS tipoPago,
                    v.codigoVenta, v.numeroVenta,
@@ -289,8 +354,53 @@ def caja_detalle(
             v['montoTotal'] = float(v.get('montoTotal') or 0)
             v['fechaVenta'] = v['fechaVenta'].isoformat() if v.get('fechaVenta') else None
 
-        # Cobros
-        q_cob = '''
+        # Ventas a crédito
+        q_vc = '''
+            SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.idTipoPago, tp.nombrePago AS tipoPago,
+                   v.codigoVenta, v.numeroVenta,
+                   v.idCliente, CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona,'')) AS nombreCliente,
+                   v.idEmpresa
+            FROM venta_O v
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+              WHERE v.estado = 1 AND v.fechaVenta BETWEEN %s AND %s AND LOWER(tp.nombrePago) LIKE '%credito%'
+        '''
+        params = [start, end]
+        if effective_company is not None:
+            q_vc += ' AND v.idEmpresa = %s'
+            params.append(effective_company)
+        q_vc += ' ORDER BY v.fechaVenta DESC, v.idVenta DESC'
+        cur.execute(q_vc, tuple(params))
+        ventas_credito = cur.fetchall() or []
+        for vc in ventas_credito:
+            vc['montoTotal'] = float(vc.get('montoTotal') or 0)
+            vc['fechaVenta'] = vc['fechaVenta'].isoformat() if vc.get('fechaVenta') else None
+
+        # Ventas en ruta (detalle consolidado por entrega)
+        q_vruta = '''
+            SELECT e.idEntrega, e.numeroEntrega, e.fechaRetorno, e.idEmpresa,
+                   r.nombreRuta,
+                   CONCAT(pe.nombres_persona,' ',COALESCE(pe.apellido_paternoPersona,'')) AS nombreEncargado,
+                   COALESCE(SUM(d.montoTotal),0) AS totalVendido
+            FROM entrega_ruta_O e
+            LEFT JOIN entrega_ruta_detalle_O d ON d.idEntrega = e.idEntrega
+            LEFT JOIN ruta_O r ON e.idRuta = r.idRuta
+            LEFT JOIN persona_O pe ON e.idEncargado = pe.id_persona
+            WHERE e.estado = 'finalizado' AND e.fechaRetorno BETWEEN %s AND %s
+        '''
+        params = [start, end]
+        if effective_company is not None:
+            q_vruta += ' AND e.idEmpresa = %s'
+            params.append(effective_company)
+        q_vruta += ' GROUP BY e.idEntrega ORDER BY e.fechaRetorno DESC, e.idEntrega DESC'
+        cur.execute(q_vruta, tuple(params))
+        ventas_ruta = cur.fetchall() or []
+        for vr in ventas_ruta:
+            vr['totalVendido'] = float(vr.get('totalVendido') or 0)
+            vr['fechaRetorno'] = vr['fechaRetorno'].isoformat() if vr.get('fechaRetorno') else None
+
+        # Cobros efectivo
+        q_cob_e = '''
             SELECT pg.idPago, pg.numeroPago, pg.fechaPago, pg.monto, pg.idTipoPago, tp.nombrePago AS tipoPago,
                    pg.idPersona, CONCAT(p.nombres_persona,' ',COALESCE(p.apellido_paternoPersona,'')) AS nombrePersona,
                    pg.idEmpresa
@@ -298,15 +408,38 @@ def caja_detalle(
             LEFT JOIN tipoPago tp ON pg.idTipoPago = tp.idPago
             LEFT JOIN persona_O p ON pg.idPersona = p.id_persona
             WHERE pg.tipo = 'cobro' AND pg.fechaPago BETWEEN %s AND %s
+              AND (tp.nombrePago IS NULL OR LOWER(tp.nombrePago) NOT LIKE '%transfer%')
         '''
         params = [start, end]
         if effective_company is not None:
-            q_cob += ' AND pg.idEmpresa = %s'
+            q_cob_e += ' AND pg.idEmpresa = %s'
             params.append(effective_company)
-        q_cob += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
-        cur.execute(q_cob, tuple(params))
-        cobros = cur.fetchall() or []
-        for c in cobros:
+        q_cob_e += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
+        cur.execute(q_cob_e, tuple(params))
+        cobros_efectivo = cur.fetchall() or []
+        for c in cobros_efectivo:
+            c['monto'] = float(c.get('monto') or 0)
+            c['fechaPago'] = c['fechaPago'].isoformat() if c.get('fechaPago') else None
+
+        # Cobros transferencia
+        q_cob_t = '''
+            SELECT pg.idPago, pg.numeroPago, pg.fechaPago, pg.monto, pg.idTipoPago, tp.nombrePago AS tipoPago,
+                   pg.idPersona, CONCAT(p.nombres_persona,' ',COALESCE(p.apellido_paternoPersona,'')) AS nombrePersona,
+                   pg.idEmpresa
+            FROM pago_O pg
+            LEFT JOIN tipoPago tp ON pg.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON pg.idPersona = p.id_persona
+            WHERE pg.tipo = 'cobro' AND pg.fechaPago BETWEEN %s AND %s
+              AND LOWER(tp.nombrePago) LIKE '%transfer%'
+        '''
+        params = [start, end]
+        if effective_company is not None:
+            q_cob_t += ' AND pg.idEmpresa = %s'
+            params.append(effective_company)
+        q_cob_t += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
+        cur.execute(q_cob_t, tuple(params))
+        cobros_transferencia = cur.fetchall() or []
+        for c in cobros_transferencia:
             c['monto'] = float(c.get('monto') or 0)
             c['fechaPago'] = c['fechaPago'].isoformat() if c.get('fechaPago') else None
 
@@ -330,37 +463,69 @@ def caja_detalle(
             c['montoTotal'] = float(c.get('montoTotal') or 0)
             c['fechaCompra'] = c['fechaCompra'].isoformat() if c.get('fechaCompra') else None
 
-        # Pagos
-        q_pag = '''
+        # Pagos efectivo
+        q_pag_e = '''
             SELECT pg.idPago, pg.numeroPago, pg.fechaPago, pg.monto, pg.idTipoPago, tp.nombrePago AS tipoPago,
                    pg.idProveedor, pr.nombreComercial AS nombreProveedor, pg.idEmpresa
             FROM pago_O pg
             LEFT JOIN tipoPago tp ON pg.idTipoPago = tp.idPago
             LEFT JOIN proveedor_O pr ON pg.idProveedor = pr.idProveedor
             WHERE pg.tipo = 'pago' AND pg.fechaPago BETWEEN %s AND %s
+              AND (tp.nombrePago IS NULL OR LOWER(tp.nombrePago) NOT LIKE '%transfer%')
         '''
         params = [start, end]
         if effective_company is not None:
-            q_pag += ' AND pg.idEmpresa = %s'
+            q_pag_e += ' AND pg.idEmpresa = %s'
             params.append(effective_company)
-        q_pag += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
-        cur.execute(q_pag, tuple(params))
-        pagos = cur.fetchall() or []
-        for p in pagos:
+        q_pag_e += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
+        cur.execute(q_pag_e, tuple(params))
+        pagos_efectivo = cur.fetchall() or []
+        for p in pagos_efectivo:
+            p['monto'] = float(p.get('monto') or 0)
+            p['fechaPago'] = p['fechaPago'].isoformat() if p.get('fechaPago') else None
+
+        # Pagos transferencia
+        q_pag_t = '''
+            SELECT pg.idPago, pg.numeroPago, pg.fechaPago, pg.monto, pg.idTipoPago, tp.nombrePago AS tipoPago,
+                   pg.idProveedor, pr.nombreComercial AS nombreProveedor, pg.idEmpresa
+            FROM pago_O pg
+            LEFT JOIN tipoPago tp ON pg.idTipoPago = tp.idPago
+            LEFT JOIN proveedor_O pr ON pg.idProveedor = pr.idProveedor
+            WHERE pg.tipo = 'pago' AND pg.fechaPago BETWEEN %s AND %s
+              AND LOWER(tp.nombrePago) LIKE '%transfer%'
+        '''
+        params = [start, end]
+        if effective_company is not None:
+            q_pag_t += ' AND pg.idEmpresa = %s'
+            params.append(effective_company)
+        q_pag_t += ' ORDER BY pg.fechaPago DESC, pg.idPago DESC'
+        cur.execute(q_pag_t, tuple(params))
+        pagos_transferencia = cur.fetchall() or []
+        for p in pagos_transferencia:
             p['monto'] = float(p.get('monto') or 0)
             p['fechaPago'] = p['fechaPago'].isoformat() if p.get('fechaPago') else None
 
         cur.close()
         conn.close()
+        # Unificados para compatibilidad
+        cobros = (cobros_efectivo or []) + (cobros_transferencia or [])
+        pagos = (pagos_efectivo or []) + (pagos_transferencia or [])
+
         return {
             'period': period,
             'desde': start.isoformat(),
             'hasta': end.isoformat(),
             'idEmpresa': effective_company,
             'ventasContado': ventas,
+            'ventasCredito': ventas_credito,
+            'ventasRuta': ventas_ruta,
             'cobros': cobros,
+            'cobrosEfectivo': cobros_efectivo,
+            'cobrosTransferencia': cobros_transferencia,
             'comprasContado': compras,
             'pagos': pagos,
+            'pagosEfectivo': pagos_efectivo,
+            'pagosTransferencia': pagos_transferencia,
         }
     except HTTPException:
         raise

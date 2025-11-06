@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi.responses import Response, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -83,6 +84,56 @@ def get_id_persona_from_request(request: Request = None) -> Optional[int]:
         return None
 
 
+def has_permission(request: Request, resource: str, action: Optional[str] = None) -> bool:
+    """Check if current user's role has a specific permission for the current company.
+
+    Supports both has_permission(req, 'ventas', 'delete') and has_permission(req, 'ventas:delete').
+    Superadmin always has permissions.
+    """
+    try:
+        # Support 'resource:action' as single param
+        res = resource
+        act = action
+        if action is None and ':' in resource:
+            parts = resource.split(':', 1)
+            res, act = parts[0], parts[1]
+
+        role = get_role(None, request)
+        if role == 'superadmin':
+            return True
+        company_id = get_company_id_from_request(request)
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # Resolve role id
+        cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close();
+            return False
+        if company_id is not None:
+            cur.execute('''
+                SELECT 1
+                FROM role_permission_O rp
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                WHERE rp.role_id = %s AND p.resource = %s AND p.action = %s
+                  AND (rp.id_empresa = %s OR rp.id_empresa IS NULL)
+                LIMIT 1
+            ''', (r['idrole'], res, act, company_id))
+        else:
+            cur.execute('''
+                SELECT 1
+                FROM role_permission_O rp
+                JOIN permission_O p ON rp.perm_id = p.id_perm
+                WHERE rp.role_id = %s AND p.resource = %s AND p.action = %s
+                  AND rp.id_empresa IS NULL
+                LIMIT 1
+            ''', (r['idrole'], res, act))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return bool(row)
+    except Exception:
+        return False
+
+
 # ========================
 # Modelos para Ventas
 # ========================
@@ -126,6 +177,8 @@ class VentaOut(BaseModel):
     idEmpresa: int
     nombreEmpresa: Optional[str] = None
     montoTotal: Decimal
+    montoPagado: Optional[Decimal] = 0
+    estado_pago: Optional[str] = None
     estado: int
     observaciones: Optional[str] = None
     detalles: List[DetalleVentaOut] = []
@@ -164,7 +217,7 @@ def list_ventas(
                 v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
                 CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
                 v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                v.montoTotal, v.estado, v.observaciones
+                v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
             FROM venta_O v
             LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
             LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
@@ -177,7 +230,7 @@ def list_ventas(
                 v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
                 CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
                 v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                v.montoTotal, v.estado, v.observaciones
+                v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
             FROM venta_O v
             LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
             LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
@@ -251,6 +304,9 @@ def list_ventas(
             
             v['fechaVenta'] = v['fechaVenta'].isoformat() if v.get('fechaVenta') else None
             v['montoTotal'] = float(v['montoTotal']) if v.get('montoTotal') else 0.0
+            # Optional payment fields
+            if 'montoPagado' in v:
+                v['montoPagado'] = float(v['montoPagado']) if v.get('montoPagado') is not None else 0.0
             
             for d in detalles:
                 d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
@@ -280,7 +336,7 @@ def get_venta(id: int, x_user_role: str = Header(None), request: Request = None)
                     v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
                     CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
                     v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                    v.montoTotal, v.estado, v.observaciones
+                    v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
                 FROM venta_O v
                 LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
                 LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
@@ -297,7 +353,7 @@ def get_venta(id: int, x_user_role: str = Header(None), request: Request = None)
                         v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
                         CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
                         v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                        v.montoTotal, v.estado, v.observaciones
+                        v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
                     FROM venta_O v
                     LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
                     LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
@@ -333,6 +389,8 @@ def get_venta(id: int, x_user_role: str = Header(None), request: Request = None)
         
         venta['fechaVenta'] = venta['fechaVenta'].isoformat() if venta.get('fechaVenta') else None
         venta['montoTotal'] = float(venta['montoTotal']) if venta.get('montoTotal') else 0.0
+        if 'montoPagado' in venta:
+            venta['montoPagado'] = float(venta['montoPagado']) if venta.get('montoPagado') is not None else 0.0
         
         for d in detalles:
             d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
@@ -623,15 +681,8 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
             ''', (payload.idCliente, target_company, fechaVenta, new_id, 
                   float(payload.montoTotal), float(payload.montoTotal), 
                   f'Venta #{new_id} a crédito'))
-        else:  # contado (idTipoPago == 2) o transferencia (idTipoPago == 7)
-            # Registrar ingreso a caja: tipo=caja, haber=montoTotal (entrada de efectivo)
-            ins3.execute('''
-                INSERT INTO cuenta_corriente_O 
-                (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
-                VALUES ('caja', NULL, %s, %s, 'venta', %s, 0, %s, %s, %s, 1)
-            ''', (target_company, fechaVenta, new_id, 
-                  float(payload.montoTotal), float(payload.montoTotal),
-                  f'Venta #{new_id} al contado'))
+        else:  # contado / transferencia: no se registra en cuenta_corriente_O del cliente
+            pass
         
         conn.commit()
         ins3.close()
@@ -743,6 +794,139 @@ def delete_venta(id: int, x_user_role: str = Header(None), request: Request = No
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/ventas/{id}/anular')
+def anular_venta(id: int, x_user_role: str = Header(None), request: Request = None):
+    """
+    Anular una venta: 
+    - Revierte el stock a los lotes
+    - Anula los movimientos en cuenta corriente
+    - Marca montoTotal=0 y estado=0
+    Solo admin/superadmin con permiso ventas:delete
+    """
+    role = (x_user_role or '').lower()
+    if role not in ['admin', 'superadmin']:
+        raise HTTPException(status_code=403, detail='Permission denied: admin required')
+
+    # Check explicit permission
+    if not has_permission(request, 'ventas:delete'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+
+        # Obtener venta con sus detalles y verificar scoping
+        cur.execute('SELECT idVenta, idEmpresa, estado, montoTotal, idTipoPago, idCliente FROM venta_O WHERE idVenta = %s', (id,))
+        venta = cur.fetchone()
+        if not venta:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+
+        # Validar scoping multi-empresa
+        if role != 'superadmin' and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado para esta empresa')
+
+        # Validar que no esté ya anulada
+        if venta['estado'] == 0:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail='Esta venta ya está anulada')
+
+        # 1. Obtener detalles de la venta antes de anular
+        cur.execute('''
+            SELECT idDetalleVenta, idProducto, cantidad_caja, precio_unitario
+            FROM detalle_venta_O
+            WHERE idVenta = %s
+        ''', (id,))
+        detalles = cur.fetchall() or []
+
+        # 2. Revertir stock a lotes usando FEFO (devolver al lote más próximo a vencer)
+        for det in detalles:
+            cantidad_a_devolver = det['cantidad_caja']
+            
+            # Obtener lotes ordenados igual que al vender (FEFO)
+            cur_lotes = conn.cursor(dictionary=True)
+            cur_lotes.execute('''
+                SELECT idLote, stockActual
+                FROM lote_producto
+                WHERE idProducto = %s AND idEmpresa = %s
+                ORDER BY fechaVencimiento IS NULL, fechaVencimiento ASC, fechaCompra ASC, idLote ASC
+            ''', (det['idProducto'], venta['idEmpresa']))
+            lotes = cur_lotes.fetchall() or []
+            cur_lotes.close()
+
+            if not lotes:
+                # Si no hay lotes, crear error pero continuar (puede pasar si se eliminaron lotes)
+                # O se podría crear un lote genérico, pero por ahora solo logging
+                pass
+
+            # Devolver stock a los mismos lotes en orden FEFO
+            for lote in lotes:
+                if cantidad_a_devolver <= 0:
+                    break
+                # Devolver todo lo posible a este lote
+                upd_lote = conn.cursor()
+                upd_lote.execute('UPDATE lote_producto SET stockActual = stockActual + %s WHERE idLote = %s', 
+                               (cantidad_a_devolver, lote['idLote']))
+                upd_lote.close()
+                cantidad_a_devolver = 0  # Devolvemos todo al primer lote disponible
+                break
+
+        # 3. Revertir movimientos en cuenta corriente
+        # Buscar movimientos de esta venta
+        cur.execute('''
+            SELECT idCuenta, tipo, debe, haber
+            FROM cuenta_corriente_O
+            WHERE tipoMovimiento = 'venta' AND idReferencia = %s AND estado = 1
+        ''', (id,))
+        movimientos = cur.fetchall() or []
+
+        for mov in movimientos:
+            # Marcar movimiento original como anulado (estado=0)
+            upd_cc = conn.cursor()
+            upd_cc.execute('UPDATE cuenta_corriente_O SET estado = 0 WHERE idCuenta = %s', (mov['idCuenta'],))
+            
+            # Crear movimiento inverso para compensar
+            if mov['tipo'] == 'cliente':
+                # Era una venta a crédito: revertir la deuda (haber = lo que debe se convierte en crédito)
+                upd_cc.execute('''
+                    INSERT INTO cuenta_corriente_O 
+                    (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                    VALUES ('cliente', %s, %s, NOW(), 'ajuste', %s, 0, %s, -%s, %s, 1)
+                ''', (venta['idCliente'], venta['idEmpresa'], id, mov['debe'], mov['debe'], f'Anulación venta #{id}'))
+            elif mov['tipo'] == 'caja':
+                # Era venta al contado: revertir el ingreso a caja (debe = salida de efectivo)
+                upd_cc.execute('''
+                    INSERT INTO cuenta_corriente_O 
+                    (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                    VALUES ('caja', NULL, %s, NOW(), 'ajuste', %s, %s, 0, -%s, %s, 1)
+                ''', (venta['idEmpresa'], id, mov['haber'], mov['haber'], f'Anulación venta #{id}'))
+            
+            upd_cc.close()
+
+        # 4. Marcar venta como anulada: montoTotal=0, estado=0
+        upd_venta = conn.cursor()
+        upd_venta.execute('UPDATE venta_O SET estado = 0, montoTotal = 0 WHERE idVenta = %s', (id,))
+        upd_venta.close()
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {"message": "Venta anulada exitosamente", "idVenta": id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f'Error al anular venta: {str(e)}')
 
 
 # ========================
@@ -897,7 +1081,11 @@ def obtener_entrega(id_venta: int, x_user_role: str = Header(None), request: Req
 
 @app.put('/ventas/{id_venta}/entrega')
 def actualizar_entrega(id_venta: int, payload: EntregaUpdate, x_user_role: str = Header(None), request: Request = None):
-    """Actualizar productos entregados. El chofer marca qué productos entregó."""
+    """Actualizar productos entregados. El chofer marca qué productos entregó.
+    
+    Si metodo_pago es 'Contado' o 'Transferencia' y todos los productos fueron entregados,
+    registra el pago automáticamente en cuenta_corriente_O y actualiza montoPagado/estado_pago.
+    """
     role = get_role(x_user_role, request)
     
     try:
@@ -933,11 +1121,42 @@ def actualizar_entrega(id_venta: int, payload: EntregaUpdate, x_user_role: str =
             WHERE idVenta = %s
         ''', (productos_json, estado, payload.observaciones, id_venta))
         
-        # Si se especifica método de pago y todos los productos fueron entregados, actualizar venta
-        # NOTA: Las columnas metodo_pago y estado_pago no existen en venta_O actual
-        # Se usa estado (tinyint) y idTipoPago existentes
-        if payload.metodo_pago and todos_entregados:
-            # Por ahora solo actualizamos el estado a 1 (activo/completado)
+        # Si método de pago es Contado o Transferencia y todos entregados, registrar pago
+        metodo_lower = (payload.metodo_pago or '').lower()
+        if metodo_lower in ('contado', 'transferencia') and todos_entregados:
+            # Obtener venta completa para registrar pago
+            cur.execute('''
+                SELECT idVenta, idEmpresa, idCliente, montoTotal, montoPagado, estado_pago
+                FROM venta_O WHERE idVenta = %s
+            ''', (id_venta,))
+            venta = cur.fetchone()
+            if venta:
+                monto_total = float(venta.get('montoTotal') or 0)
+                pagado_actual = float(venta.get('montoPagado') or 0)
+                monto_pago = monto_total - pagado_actual  # Pagar el saldo restante
+                
+                if monto_pago > 0:
+                    nuevo_pagado = monto_total  # Pagado completo
+                    nuevo_estado = 'Pagado'
+                    
+                    fecha_mov = datetime.utcnow().strftime('%Y-%m-%d')
+                    descripcion = f"Pago en entrega #{id_venta} ({payload.metodo_pago})"
+                    
+                    # Actualizar venta
+                    upd.execute('''
+                        UPDATE venta_O
+                        SET montoPagado = %s, estado_pago = %s, estado = 1
+                        WHERE idVenta = %s
+                    ''', (nuevo_pagado, nuevo_estado, id_venta))
+                    
+                    # Insertar movimiento en cuenta corriente (cobro)
+                    upd.execute('''
+                        INSERT INTO cuenta_corriente_O 
+                        (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                        VALUES ('cliente', %s, %s, %s, 'cobro', %s, 0, %s, -%s, %s, 1)
+                    ''', (venta['idCliente'], venta['idEmpresa'], fecha_mov, id_venta, monto_pago, monto_pago, descripcion))
+        elif payload.metodo_pago and todos_entregados:
+            # Si es crédito u otro, solo marcar la entrega como completada sin registrar pago
             upd.execute('''
                 UPDATE venta_O 
                 SET estado = 1
@@ -954,5 +1173,440 @@ def actualizar_entrega(id_venta: int, payload: EntregaUpdate, x_user_role: str =
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================
+# Registro de pagos/cobros de ventas (créditos)
+# ========================
+
+class PagoVentaIn(BaseModel):
+    monto: Decimal = Field(..., gt=0)
+    metodo: Optional[str] = Field(None, description="contado|transferencia|otro")
+    referencia: Optional[str] = Field(None, max_length=100)
+    observaciones: Optional[str] = Field(None, max_length=300)
+    fecha: Optional[str] = Field(None, description="ISO date YYYY-MM-DD (opcional)")
+
+
+@app.post('/ventas/{id}/registrar-pago')
+def registrar_pago_venta(id: int, payload: PagoVentaIn, x_user_role: str = Header(None), request: Request = None):
+    """Registrar un pago/cobro de una venta.
+
+    - Actualiza montoPagado y estado_pago en venta_O.
+    - Inserta movimiento en cuenta_corriente_O para el cliente (haber) reduciendo la deuda.
+    - Inserta movimiento en caja (haber) como ingreso.
+    - Respeta el scoping multiempresa.
+    """
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'editor', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+
+        # 1) Obtener venta y validar scoping
+        cur.execute('''
+            SELECT idVenta, idEmpresa, idCliente, montoTotal, montoPagado, estado, idTipoPago
+            FROM venta_O WHERE idVenta = %s
+        ''', (id,))
+        venta = cur.fetchone()
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+
+        if role != 'superadmin' and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado para esta empresa')
+
+        if venta['estado'] == 0:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=400, detail='La venta está anulada')
+
+        # 2) Calcular nuevos montos y estado
+        monto_total = float(venta.get('montoTotal') or 0)
+        pagado_actual = float(venta.get('montoPagado') or 0)
+        pago = float(payload.monto)
+        nuevo_pagado = pagado_actual + pago
+        if nuevo_pagado < 0:
+            nuevo_pagado = 0
+        estado_pago = 'Pendiente'
+        if nuevo_pagado >= monto_total and monto_total > 0:
+            estado_pago = 'Pagado'
+            nuevo_pagado = monto_total
+        elif nuevo_pagado > 0 and nuevo_pagado < monto_total:
+            estado_pago = 'Parcial'
+
+        # 3) Iniciar transacción
+        upd = conn.cursor()
+
+        # 3.a) Actualizar venta
+        upd.execute('''
+            UPDATE venta_O
+            SET montoPagado = %s, estado_pago = %s
+            WHERE idVenta = %s
+        ''', (nuevo_pagado, estado_pago, id))
+
+        # 3.b) Insertar movimiento en cuenta corriente (cliente - haber)
+        fecha_mov = payload.fecha or datetime.utcnow().strftime('%Y-%m-%d')
+        descripcion_cli = f"Cobro venta #{id}"
+        if payload.metodo:
+            descripcion_cli += f" ({payload.metodo})"
+        if payload.referencia:
+            descripcion_cli += f" Ref:{payload.referencia}"
+        if payload.observaciones:
+            descripcion_cli += f" - {payload.observaciones}"
+
+        ins_cc = conn.cursor()
+        ins_cc.execute('''
+            INSERT INTO cuenta_corriente_O 
+            (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+            VALUES ('cliente', %s, %s, %s, 'cobro', %s, 0, %s, -%s, %s, 1)
+        ''', (venta['idCliente'], venta['idEmpresa'], fecha_mov, id, pago, pago, descripcion_cli))
+        mov_id = ins_cc.lastrowid
+
+        # Generate a simple receipt number: RCB-YYYYMMDD-######
+        fecha_compact = fecha_mov.replace('-', '')
+        numero_recibo = f"RCB-{fecha_compact}-{mov_id:06d}"
+
+        # 3.c) (Opcional) Registrar ingreso en un módulo de caja/banco si existe. No se registra en cuenta_corriente_O.
+
+        conn.commit()
+        ins_cc.close(); upd.close(); cur.close(); conn.close()
+
+        # Retornar datos para impresión de recibo y venta actualizada
+        venta_actualizada = get_venta(id, x_user_role, request)
+        return JSONResponse({
+            'ok': True,
+            'idMovimiento': mov_id,
+            'numeroRecibo': numero_recibo,
+            'venta': venta_actualizada
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/{id}/recibo/{mov_id}')
+def obtener_recibo_pago(id: int, mov_id: int, x_user_role: str = Header(None), request: Request = None, format: Optional[str] = 'html'):
+    """Devuelve un recibo imprimible para un pago de venta específico.
+
+    - Verifica scoping multiempresa.
+    - Construye HTML simple con datos de empresa, cliente, venta y pago.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        role = get_role(x_user_role, request)
+        user_company = get_company_id_from_request(request)
+
+        # Obtener venta
+        cur.execute('''
+            SELECT v.idVenta, v.idEmpresa, v.idCliente, v.fechaVenta, v.montoTotal,
+                   e.nombre_empresa AS nombreEmpresa,
+                   CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente
+            FROM venta_O v
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            WHERE v.idVenta = %s
+        ''', (id,))
+        venta = cur.fetchone()
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+
+        if role != 'superadmin' and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado para esta empresa')
+
+        # Obtener movimiento del pago
+        cur.execute('''
+            SELECT idCuentaCorriente AS id, fechaMovimiento, haber AS monto, descripcion
+            FROM cuenta_corriente_O
+            WHERE idCuentaCorriente = %s AND tipoMovimiento = 'cobro' AND idReferencia = %s AND estado = 1
+        ''', (mov_id, id))
+        mov = cur.fetchone()
+        if not mov:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Movimiento de pago no encontrado')
+
+        # Generar número de recibo
+        fmov = mov['fechaMovimiento']
+        if hasattr(fmov, 'isoformat'):
+            fecha_mov_str = fmov.date().isoformat()
+        else:
+            fecha_mov_str = str(fmov)[:10]
+        numero_recibo = f"RCB-{fecha_mov_str.replace('-', '')}-{mov['id']:06d}"
+
+        # Construir HTML simple
+        html = f"""
+<!DOCTYPE html>
+<html lang=\"es\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Recibo {numero_recibo}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 24px; color: #111; }}
+        .header {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }}
+        .empresa {{ font-size: 18px; font-weight: bold; }}
+        .recibo {{ font-family: monospace; background:#f5f5f5; padding:8px 12px; border-radius:6px; }}
+        table {{ width:100%; border-collapse: collapse; margin-top: 12px; }}
+        td, th {{ padding: 8px; border-bottom: 1px solid #ddd; text-align:left; }}
+        .right {{ text-align:right; }}
+        .total {{ font-weight:bold; font-size: 16px; }}
+        .muted {{ color:#555; }}
+        .small {{ font-size: 12px; }}
+        .print {{ margin-top: 16px; }}
+    </style>
+    <script>window.addEventListener('load',()=>{{ setTimeout(()=>window.print(), 300); }});</script>
+</head>
+<body>
+    <div class=\"header\">
+        <div class=\"empresa\">{venta.get('nombreEmpresa', 'Sistema Ollantay')}</div>
+        <div class=\"recibo\">Recibo: {numero_recibo}</div>
+    </div>
+    <h2>Comprobante de Pago</h2>
+    <table>
+        <tr><td class=\"muted\">Cliente:</td><td>{venta.get('nombreCliente', 'Sin nombre')}</td></tr>
+        <tr><td class=\"muted\">Venta #:</td><td>{venta['idVenta']}</td></tr>
+        <tr><td class=\"muted\">Fecha Venta:</td><td>{venta['fechaVenta']}</td></tr>
+        <tr><td class=\"muted\">Fecha Pago:</td><td>{fecha_mov_str}</td></tr>
+        <tr><td class=\"muted\">Monto Total:</td><td class=\"right\">{venta['montoTotal']:.2f}</td></tr>
+        <tr><td class=\"muted\">Monto Pagado:</td><td class=\"right total\">{mov['monto']:.2f}</td></tr>
+        <tr><td class=\"muted\">Descripción:</td><td class=\"small\">{mov.get('descripcion', '')}</td></tr>
+    </table>
+    <div class=\"print small muted\" style=\"margin-top:32px; text-align:center;\">
+        Generado automáticamente por Sistema Ollantay
+    </div>
+</body>
+</html>
+"""
+
+        cur.close()
+        conn.close()
+
+        if format == 'json':
+            return {'ok': True, 'numeroRecibo': numero_recibo, 'venta': dict(venta), 'movimiento': dict(mov)}
+        
+        return HTMLResponse(content=html, status_code=200)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== ENTREGA ====================
+
+class ProductoEntregado(BaseModel):
+    idProducto: int
+    cantidad: int
+    entregado: bool = False
+
+
+class EntregaIn(BaseModel):
+    idVenta: int
+    id_chofer: Optional[int] = None
+    productos: List[ProductoEntregado]
+    observaciones: Optional[str] = None
+
+
+class EntregaUpdate(BaseModel):
+    productos: List[ProductoEntregado]
+    metodo_pago: Optional[str] = None  # 'Contado', 'Credito', 'Transferencia'
+    observaciones: Optional[str] = None
+
+
+@app.post('/ventas/{id_venta}/entrega')
+def crear_entrega(id_venta: int, payload: EntregaIn, x_user_role: str = Header(None), request: Request = None):
+    """Iniciar proceso de entrega para una venta. El chofer podrá marcar productos como entregados."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin', 'editor', 'superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Verificar que la venta existe
+        cur.execute('SELECT idVenta, idEmpresa FROM venta_O WHERE idVenta = %s', (id_venta,))
+        venta = cur.fetchone()
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+        
+        # Verificar que no exista ya una entrega para esta venta
+        cur.execute('SELECT id_entrega FROM entrega_venta WHERE idVenta = %s', (id_venta,))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=400, detail='Ya existe una entrega para esta venta')
+        
+        # Crear JSON con productos
+        import json
+        productos_json = json.dumps([p.dict() for p in payload.productos])
+        
+        # Insertar entrega
+        ins = conn.cursor()
+        ins.execute('''
+            INSERT INTO entrega_venta (idVenta, id_chofer, productos_entregados, estado_entrega, observaciones)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (id_venta, payload.id_chofer, productos_json, 'Pendiente', payload.observaciones))
+        conn.commit()
+        id_entrega = ins.lastrowid
+        ins.close()
+        cur.close()
+        conn.close()
+        
+        return {'id_entrega': id_entrega, 'idVenta': id_venta, 'estado': 'Pendiente'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/{id_venta}/entrega')
+def obtener_entrega(id_venta: int, x_user_role: str = Header(None), request: Request = None):
+    """Obtener información de entrega de una venta."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        cur.execute('''
+            SELECT e.*, p.nombres_persona, p.apellido_paternoPersona
+            FROM entrega_venta e
+            LEFT JOIN persona_O p ON e.id_chofer = p.id_persona
+            WHERE e.idVenta = %s
+        ''', (id_venta,))
+        entrega = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not entrega:
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+        
+        # Parse JSON
+        import json
+        if entrega.get('productos_entregados'):
+            entrega['productos_entregados'] = json.loads(entrega['productos_entregados'])
+        
+        return entrega
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/ventas/{id_venta}/entrega')
+def actualizar_entrega(id_venta: int, payload: EntregaUpdate, x_user_role: str = Header(None), request: Request = None):
+    """Actualizar productos entregados. El chofer marca qué productos entregó.
+    
+    Si metodo_pago es 'Contado' o 'Transferencia' y todos los productos fueron entregados,
+    registra el pago automáticamente en cuenta_corriente_O y actualiza montoPagado/estado_pago.
+    """
+    role = get_role(x_user_role, request)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Obtener entrega actual
+        cur.execute('SELECT id_entrega FROM entrega_venta WHERE idVenta = %s', (id_venta,))
+        entrega = cur.fetchone()
+        if not entrega:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Entrega no encontrada')
+        
+        # Calcular estado de entrega basado en productos
+        import json
+        todos_entregados = all(p.entregado for p in payload.productos)
+        alguno_entregado = any(p.entregado for p in payload.productos)
+        
+        if todos_entregados:
+            estado = 'Entregado'
+        elif alguno_entregado:
+            estado = 'Parcial'
+        else:
+            estado = 'Pendiente'
+        
+        productos_json = json.dumps([p.dict() for p in payload.productos])
+        
+        # Actualizar entrega
+        upd = conn.cursor()
+        upd.execute('''
+            UPDATE entrega_venta 
+            SET productos_entregados = %s, estado_entrega = %s, observaciones = %s, fecha_entrega = NOW()
+            WHERE idVenta = %s
+        ''', (productos_json, estado, payload.observaciones, id_venta))
+        
+        # Si método de pago es Contado o Transferencia y todos entregados, registrar pago
+        metodo_lower = (payload.metodo_pago or '').lower()
+        if metodo_lower in ('contado', 'transferencia') and todos_entregados:
+            # Obtener venta completa para registrar pago
+            cur.execute('''
+                SELECT idVenta, idEmpresa, idCliente, montoTotal, montoPagado, estado_pago
+                FROM venta_O WHERE idVenta = %s
+            ''', (id_venta,))
+            venta = cur.fetchone()
+            if venta:
+                monto_total = float(venta.get('montoTotal') or 0)
+                pagado_actual = float(venta.get('montoPagado') or 0)
+                monto_pago = monto_total - pagado_actual  # Pagar el saldo restante
+                
+                if monto_pago > 0:
+                    nuevo_pagado = monto_total  # Pagado completo
+                    nuevo_estado = 'Pagado'
+                    
+                    fecha_mov = datetime.utcnow().strftime('%Y-%m-%d')
+                    descripcion = f"Pago en entrega #{id_venta} ({payload.metodo_pago})"
+                    
+                    # Actualizar venta
+                    upd.execute('''
+                        UPDATE venta_O
+                        SET montoPagado = %s, estado_pago = %s, estado = 1
+                        WHERE idVenta = %s
+                    ''', (nuevo_pagado, nuevo_estado, id_venta))
+                    
+                    # Insertar movimiento en cuenta corriente (cobro)
+                    upd.execute('''
+                        INSERT INTO cuenta_corriente_O 
+                        (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                        VALUES ('cliente', %s, %s, %s, 'cobro', %s, 0, %s, -%s, %s, 1)
+                    ''', (venta['idCliente'], venta['idEmpresa'], fecha_mov, id_venta, monto_pago, monto_pago, descripcion))
+        elif payload.metodo_pago and todos_entregados:
+            # Si es crédito u otro, solo marcar la entrega como completada sin registrar pago
+            upd.execute('''
+                UPDATE venta_O 
+                SET estado = 1
+                WHERE idVenta = %s
+            ''', (id_venta,))
+        
+        conn.commit()
+        upd.close()
+        cur.close()
+        conn.close()
+        
+        return {'ok': True, 'estado': estado, 'metodo_pago': payload.metodo_pago if todos_entregados else None}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================
+# Registro de pagos/cobros de ventas (créditos)
+# ========================
+
+class PagoVentaIn(BaseModel):
+    monto: Decimal = Field(..., gt=0)
+    metodo: Optional[str] = Field(None, description="contado|transferencia|otro")
+    referencia: Optional[str] = Field(None, max_length=100)
+    observaciones: Optional[str] = Field(None, max_length=300)
+    fecha: Optional[str] = Field(None, description="ISO date YYYY-MM-DD (opcional)")
 
 
