@@ -268,6 +268,24 @@ docker compose restart reverse_proxy
 ```
 La renovación automática corre cada 12h dentro del contenedor `certbot`.
 
+Para Windows/PowerShell incluimos scripts de ayuda:
+
+- Emisión inicial (PowerShell):
+  ```powershell
+  cd reverse-proxy
+  ./issue-cert.ps1 -Domain archsoft-system.duck.dns.org
+  docker compose restart reverse_proxy
+  ```
+
+- Renovación manual (PowerShell) y recarga de Nginx para aplicar los nuevos certificados:
+  ```powershell
+  cd reverse-proxy
+  ./renew-certs.ps1
+  docker compose exec reverse_proxy nginx -s reload
+  ```
+
+Configuración alternativa lista para producción: `reverse-proxy/nginx.prod.conf` usa directamente los certificados de Let's Encrypt. Puedes montar este archivo en lugar de `nginx.conf` en producción una vez emitidos los certificados.
+
 ### Avatares en el Mapa
 Las fotos de personas se sirven desde `persona_service` bajo `/api/personas/uploads/`. El componente `PersonasEnMapa.jsx` crea marcadores con:
 - Foto redondeada con gradiente y anillo de estado.
