@@ -45,6 +45,9 @@ function ProductDropdownPortal({ anchorEl, open, children }) {
 }
 
 export default function Compras({ API, userRole }) {
+  // Vista/Tab state
+  const [activeTab, setActiveTab] = useState('compras') // 'compras' | 'creditos'
+  
   // Edit-details workflow for full purchase edit (clone-and-cancel)
   const startEditDetalles = (compra) => {
     setShowForm(true);
@@ -136,6 +139,14 @@ export default function Compras({ API, userRole }) {
   const [loadingLotes, setLoadingLotes] = useState({})
   const [comprasPorDia, setComprasPorDia] = useState({})
   const [estadisticas, setEstadisticas] = useState(null)
+  
+  // Créditos state
+  const [comprasPendientes, setComprasPendientes] = useState([])
+  const [loadingPendientes, setLoadingPendientes] = useState(false)
+  const [pagoModal, setPagoModal] = useState(null) // {compra, pagos}
+  const [loadingPagos, setLoadingPagos] = useState(false)
+  const [nuevoPago, setNuevoPago] = useState({ monto: '', fecha: new Date().toISOString().slice(0,10), observaciones: '' })
+  const [submittingPago, setSubmittingPago] = useState(false)
 
   const canManage = ['admin','editor','superadmin'].includes((userRole||'').toLowerCase())
 
@@ -383,6 +394,120 @@ export default function Compras({ API, userRole }) {
   }, [showForm])
 
   useEffect(() => { loadProveedores(); loadTiposPago() }, [])
+  
+  // Cargar compras pendientes de pago (crédito)
+  const loadComprasPendientes = useCallback(async () => {
+    setLoadingPendientes(true)
+    try {
+      const res = await fetch(`${API}/pendientes`, { 
+        credentials: 'include', 
+        headers: userRole ? { 'X-User-Role': userRole } : {} 
+      })
+      if (!res.ok) throw new Error(`Error ${res.status}`)
+      const data = await res.json()
+      setComprasPendientes(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error('Error al cargar compras pendientes:', e)
+      showToast('Error al cargar compras pendientes', 'error')
+    } finally {
+      setLoadingPendientes(false)
+    }
+  }, [API, userRole])
+  
+  // Abrir modal de pagos para una compra
+  const openPagoModal = async (compra) => {
+    setLoadingPagos(true)
+    setPagoModal({ compra, pagos: [] })
+    setNuevoPago({ monto: '', fecha: new Date().toISOString().slice(0,10), observaciones: '' })
+    
+    try {
+      const res = await fetch(`${API}/${compra.idCompra}/pagos`, {
+        credentials: 'include',
+        headers: userRole ? { 'X-User-Role': userRole } : {}
+      })
+      if (!res.ok) throw new Error(`Error ${res.status}`)
+      const pagos = await res.json()
+      setPagoModal(prev => ({ ...prev, pagos: Array.isArray(pagos) ? pagos : [] }))
+    } catch (e) {
+      console.error('Error al cargar pagos:', e)
+      showToast('Error al cargar historial de pagos', 'error')
+    } finally {
+      setLoadingPagos(false)
+    }
+  }
+  
+  // Registrar un nuevo pago
+  const handleRegistrarPago = async () => {
+    if (!pagoModal) return
+    
+    const monto = parseFloat(nuevoPago.monto)
+    if (isNaN(monto) || monto <= 0) {
+      showToast('Ingresa un monto válido', 'error')
+      return
+    }
+    
+    const saldoPendiente = pagoModal.compra.total - (pagoModal.compra.montoPagado || 0)
+    if (monto > saldoPendiente) {
+      showToast(`El monto no puede exceder el saldo pendiente (Bs. ${saldoPendiente.toFixed(2)})`, 'error')
+      return
+    }
+    
+    setSubmittingPago(true)
+    try {
+      const res = await fetch(`${API}/${pagoModal.compra.idCompra}/pagos`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(userRole ? { 'X-User-Role': userRole } : {})
+        },
+        body: JSON.stringify({
+          monto: monto,
+          fecha: nuevoPago.fecha,
+          observaciones: nuevoPago.observaciones
+        })
+      })
+      
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || `Error ${res.status}`)
+      }
+      
+      showToast('Pago registrado correctamente', 'success')
+      
+      // Recargar pagos
+      const resPagos = await fetch(`${API}/${pagoModal.compra.idCompra}/pagos`, {
+        credentials: 'include',
+        headers: userRole ? { 'X-User-Role': userRole } : {}
+      })
+      const pagosActualizados = await resPagos.json()
+      
+      // Actualizar modal
+      setPagoModal(prev => ({
+        ...prev,
+        pagos: Array.isArray(pagosActualizados) ? pagosActualizados : []
+      }))
+      
+      // Limpiar form
+      setNuevoPago({ monto: '', fecha: new Date().toISOString().slice(0,10), observaciones: '' })
+      
+      // Recargar lista de pendientes
+      loadComprasPendientes()
+      
+    } catch (e) {
+      console.error('Error al registrar pago:', e)
+      showToast(e.message || 'Error al registrar el pago', 'error')
+    } finally {
+      setSubmittingPago(false)
+    }
+  }
+  
+  // Cargar pendientes cuando se cambia a tab de créditos
+  useEffect(() => {
+    if (activeTab === 'creditos') {
+      loadComprasPendientes()
+    }
+  }, [activeTab, loadComprasPendientes])
 
   const resetForm = () => {
     setFechaCompra(new Date().toISOString().slice(0,10))
@@ -724,6 +849,40 @@ export default function Compras({ API, userRole }) {
           >{showForm ? 'Cerrar' : 'Nueva compra'}</button>
         )}
       </div>
+      
+      {/* Pestañas */}
+      <div className="mb-4 border-b border-gray-200 dark:border-gray-700">
+        <nav className="flex space-x-4">
+          <button
+            onClick={() => setActiveTab('compras')}
+            className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'compras'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            📦 Compras
+          </button>
+          <button
+            onClick={() => setActiveTab('creditos')}
+            className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'creditos'
+                ? 'border-orange-500 text-orange-600 dark:text-orange-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            💳 Créditos Pendientes
+            {comprasPendientes.length > 0 && (
+              <span className="ml-2 px-2 py-0.5 text-xs bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded-full">
+                {comprasPendientes.length}
+              </span>
+            )}
+          </button>
+        </nav>
+      </div>
+      
+      {/* Contenido según tab activa */}
+      {activeTab === 'compras' && (<>
       {showForm && (
         <div className="mb-6 p-4 rounded-lg border dark:border-gray-700 bg-white dark:bg-gray-800">
           <form onSubmit={handleCreate} className="space-y-4">
@@ -1778,6 +1937,217 @@ export default function Compras({ API, userRole }) {
               <button onClick={handleUpdate} disabled={uploading} className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-500">
                 {uploading ? 'Subiendo...' : 'Guardar'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </>)}
+      
+      {/* Tab de Créditos Pendientes */}
+      {activeTab === 'creditos' && (
+        <div className="space-y-4">
+          {loadingPendientes ? (
+            <div className="text-center py-8 text-gray-500">Cargando compras pendientes...</div>
+          ) : comprasPendientes.length === 0 ? (
+            <div className="text-center py-12 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div className="text-6xl mb-4">✅</div>
+              <p className="text-gray-600 dark:text-gray-400 text-lg">No hay compras pendientes de pago</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {comprasPendientes.map(compra => {
+                const total = Number(compra.total || 0)
+                const pagado = Number(compra.montoPagado || 0)
+                const pendiente = total - pagado
+                const progreso = total > 0 ? (pagado / total) * 100 : 0
+                
+                return (
+                  <div key={compra.idCompra} className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-lg font-bold text-gray-900 dark:text-white">
+                            Compra #{compra.idCompra}
+                          </span>
+                          <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                            compra.estado_pago === 'Pagado' 
+                              ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
+                              : compra.estado_pago === 'Parcial'
+                              ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
+                              : 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200'
+                          }`}>
+                            {compra.estado_pago || 'Pendiente'}
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                          <div><strong>Proveedor:</strong> {compra.nombreProveedor}</div>
+                          <div><strong>Fecha:</strong> {compra.fechaCompra}</div>
+                          <div><strong>Empresa:</strong> {compra.nombreEmpresa}</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => openPagoModal(compra)}
+                        className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 font-medium text-sm transition-colors"
+                      >
+                        💳 Registrar Pago
+                      </button>
+                    </div>
+                    
+                    {/* Barra de progreso */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm font-medium">
+                        <span className="text-gray-600 dark:text-gray-400">Pagado: Bs. {pagado.toFixed(2)}</span>
+                        <span className="text-orange-600 dark:text-orange-400">Pendiente: Bs. {pendiente.toFixed(2)}</span>
+                      </div>
+                      <div className="relative w-full h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div 
+                          className="absolute top-0 left-0 h-full bg-gradient-to-r from-green-500 to-green-600 transition-all duration-500"
+                          style={{ width: `${progreso}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                        <span>0%</span>
+                        <span className="font-bold">{progreso.toFixed(1)}% pagado</span>
+                        <span>100%</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-lg font-bold text-gray-900 dark:text-white">
+                          Total: Bs. {total.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Modal de Registro de Pago */}
+      {pagoModal && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black bg-opacity-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 px-6 py-4 flex justify-between items-center">
+              <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+                Pagos de Compra #{pagoModal.compra.idCompra}
+              </h3>
+              <button
+                onClick={() => setPagoModal(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              {/* Información de la compra */}
+              <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4 space-y-2">
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div><strong>Proveedor:</strong> {pagoModal.compra.nombreProveedor}</div>
+                  <div><strong>Fecha:</strong> {pagoModal.compra.fechaCompra}</div>
+                  <div><strong>Total:</strong> Bs. {Number(pagoModal.compra.total).toFixed(2)}</div>
+                  <div><strong>Pagado:</strong> Bs. {Number(pagoModal.compra.montoPagado || 0).toFixed(2)}</div>
+                </div>
+                <div className="pt-2 border-t dark:border-gray-700">
+                  <div className="text-lg font-bold text-orange-600 dark:text-orange-400">
+                    Saldo Pendiente: Bs. {(Number(pagoModal.compra.total) - Number(pagoModal.compra.montoPagado || 0)).toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Formulario de nuevo pago */}
+              <div className="border dark:border-gray-700 rounded-lg p-4">
+                <h4 className="font-semibold mb-3 text-gray-900 dark:text-white">Registrar Nuevo Pago</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Monto (Bs.)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max={Number(pagoModal.compra.total) - Number(pagoModal.compra.montoPagado || 0)}
+                      value={nuevoPago.monto}
+                      onChange={e => setNuevoPago(p => ({ ...p, monto: e.target.value }))}
+                      className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-900"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Fecha
+                    </label>
+                    <input
+                      type="date"
+                      value={nuevoPago.fecha}
+                      onChange={e => setNuevoPago(p => ({ ...p, fecha: e.target.value }))}
+                      className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-900"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Observaciones (Opcional)
+                    </label>
+                    <textarea
+                      value={nuevoPago.observaciones}
+                      onChange={e => setNuevoPago(p => ({ ...p, observaciones: e.target.value }))}
+                      className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-900"
+                      rows="2"
+                      placeholder="Detalles del pago..."
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    onClick={() => setNuevoPago({ monto: '', fecha: new Date().toISOString().slice(0,10), observaciones: '' })}
+                    className="px-4 py-2 border dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
+                  >
+                    Limpiar
+                  </button>
+                  <button
+                    onClick={handleRegistrarPago}
+                    disabled={submittingPago}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 font-medium"
+                  >
+                    {submittingPago ? 'Guardando...' : '✓ Registrar Pago'}
+                  </button>
+                </div>
+              </div>
+              
+              {/* Historial de pagos */}
+              <div>
+                <h4 className="font-semibold mb-3 text-gray-900 dark:text-white">Historial de Pagos</h4>
+                {loadingPagos ? (
+                  <div className="text-center py-4 text-gray-500">Cargando...</div>
+                ) : pagoModal.pagos.length === 0 ? (
+                  <div className="text-center py-4 text-gray-500">No hay pagos registrados</div>
+                ) : (
+                  <div className="space-y-2">
+                    {pagoModal.pagos.map((pago, idx) => (
+                      <div key={idx} className="flex justify-between items-start p-3 bg-gray-50 dark:bg-gray-900 rounded border dark:border-gray-700">
+                        <div className="flex-1">
+                          <div className="font-medium text-gray-900 dark:text-white">
+                            Bs. {Number(pago.monto).toFixed(2)}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400">
+                            {pago.fecha}
+                          </div>
+                          {pago.observaciones && (
+                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              {pago.observaciones}
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          {new Date(pago.created_at).toLocaleString('es-BO')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
