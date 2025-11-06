@@ -459,7 +459,8 @@ def listar_pagos_compra(id: int, x_user_role: str = Header(None), request: Reque
 
 @app.post('/compras/{id}/pagos', response_model=PagoCompraOut, status_code=201)
 def registrar_pago_compra(id: int, payload: PagoCompraIn, x_user_role: str = Header(None), request: Request = None):
-    """Registra un abono/pago a una compra a crédito y actualiza estado_pago y montoPagado."""
+    """Registra un abono/pago a una compra a crédito y actualiza estado_pago y montoPagado.
+    También registra el movimiento en la tabla pago_O para que aparezca en reportes de caja."""
     role = get_role(x_user_role, request)
     if role not in ('admin','editor','superadmin'):
         raise HTTPException(status_code=403, detail='Permission denied')
@@ -467,7 +468,15 @@ def registrar_pago_compra(id: int, payload: PagoCompraIn, x_user_role: str = Hea
         conn = get_db_connection(); ensure_pagos_table(conn)
         cur = conn.cursor(dictionary=True)
         user_company = get_company_id_from_request(request)
-        cur.execute('SELECT idEmpresa, montoTotal, montoPagado FROM compra_O WHERE idCompra = %s', (id,))
+        
+        # Obtener datos de la compra y proveedor
+        cur.execute('''
+            SELECT c.idEmpresa, c.montoTotal, c.montoPagado, c.idProveedor,
+                   pr.idPersona AS proveedorPersonaId
+            FROM compra_O c
+            LEFT JOIN proveedor_O pr ON c.idProveedor = pr.idProveedor
+            WHERE c.idCompra = %s
+        ''', (id,))
         comp = cur.fetchone()
         if not comp: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Compra no encontrada')
         if role != 'superadmin' and user_company is not None and comp['idEmpresa'] != user_company:
@@ -475,7 +484,8 @@ def registrar_pago_compra(id: int, payload: PagoCompraIn, x_user_role: str = Hea
 
         monto = float(payload.monto)
         if monto <= 0: cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Monto inválido')
-        # Registrar pago
+        
+        # Registrar pago en compra_pago_O
         ins = conn.cursor()
         ins.execute('''
             INSERT INTO compra_pago_O (idCompra, monto, metodo, observaciones, idUsuario)
@@ -489,6 +499,33 @@ def registrar_pago_compra(id: int, payload: PagoCompraIn, x_user_role: str = Hea
         upd = conn.cursor()
         upd.execute('UPDATE compra_O SET montoPagado = %s, estado_pago = %s WHERE idCompra = %s', (nuevo_pagado, estado_pago, id))
         conn.commit(); upd.close()
+
+        # Registrar movimiento en pago_O para reportes de caja
+        # Determinar idTipoPago según método (efectivo=2, transferencia=7)
+        id_tipo_pago = 7 if payload.metodo and 'transfer' in payload.metodo.lower() else 2
+        id_persona_prov = comp.get('proveedorPersonaId')
+        
+        ins_pago = conn.cursor()
+        try:
+            ins_pago.execute('''
+                INSERT INTO pago_O (tipo, idPersona, idEmpresa, fechaPago, monto, idTipoPago, observaciones)
+                VALUES ('pago', %s, %s, NOW(), %s, %s, %s)
+            ''', (id_persona_prov, comp['idEmpresa'], monto, id_tipo_pago, 
+                  f"Pago compra #{id}" + (f" - {payload.observaciones}" if payload.observaciones else "")))
+            conn.commit()
+        except Exception as e_pago:
+            # Si falla por restricción de idPersona NULL, intentar sin idPersona
+            try:
+                ins_pago.execute('''
+                    INSERT INTO pago_O (tipo, idEmpresa, fechaPago, monto, idTipoPago, observaciones)
+                    VALUES ('pago', %s, NOW(), %s, %s, %s)
+                ''', (comp['idEmpresa'], monto, id_tipo_pago, 
+                      f"Pago compra #{id}" + (f" - {payload.observaciones}" if payload.observaciones else "")))
+                conn.commit()
+            except Exception:
+                # No fallar el pago si no se puede registrar en pago_O
+                pass
+        ins_pago.close()
 
         # Responder pago creado
         cur.execute('SELECT idPago, idCompra, monto, fecha, metodo, observaciones FROM compra_pago_O WHERE idPago = %s', (idPago,))

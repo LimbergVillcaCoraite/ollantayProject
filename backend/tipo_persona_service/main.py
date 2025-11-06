@@ -30,6 +30,8 @@ def get_db_connection():
         user=os.getenv('DATABASE_USER', 'root'),
         password=os.getenv('DATABASE_PASSWORD', os.getenv('MYSQL_ROOT_PASSWORD', 'P4assw@rd')),
         database=os.getenv('DATABASE_NAME', 'SystemaOllantay'),
+        charset='utf8mb4',
+        use_unicode=True
     )
 
 
