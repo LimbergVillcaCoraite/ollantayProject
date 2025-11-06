@@ -273,13 +273,15 @@ async def actualizar_ubicacion_persona(id: int, body: UbicacionPersonaIn, reques
             cur.close(); conn.close()
             raise HTTPException(status_code=403, detail='No autorizado')
         # Upsert ubicación
-        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        now_dt = datetime.utcnow()
+        now = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+        now_iso = now_dt.isoformat() + 'Z'  # Formato ISO con Z para UTC
         cur2 = conn.cursor()
         cur2.execute('REPLACE INTO persona_ubicacion_O (id_persona, lat, lng, accuracy, updated_at, id_empresa) VALUES (%s,%s,%s,%s,%s,%s)',
             (id, body.lat, body.lng, body.accuracy, now, id_empresa))
         conn.commit(); cur2.close(); cur.close(); conn.close()
-        # Broadcast a todos los clientes conectados de la empresa
-        msg = json.dumps({ 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now })
+        # Broadcast a todos los clientes conectados de la empresa (usando ISO format para consistencia)
+        msg = json.dumps({ 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now_iso })
         # Enviar a la empresa específica
         for ws in ws_persona_conns.get(id_empresa, []):
             try:
@@ -292,7 +294,7 @@ async def actualizar_ubicacion_persona(id: int, body: UbicacionPersonaIn, reques
                 await ws.send_text(msg)
             except Exception:
                 pass
-        return { 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now }
+        return { 'id_persona': id, 'lat': body.lat, 'lng': body.lng, 'accuracy': body.accuracy, 'updated_at': now_iso }
     except HTTPException:
         raise
     except Exception as e:
@@ -356,12 +358,25 @@ def obtener_ubicaciones_empresa(request: Request):
         # Convertir a diccionario {id_persona: ubicacion}
         result = {}
         for row in rows:
+            # Asegurar formato ISO con Z para UTC
+            updated_at_iso = None
+            if row['updated_at']:
+                if hasattr(row['updated_at'], 'isoformat'):
+                    updated_at_iso = row['updated_at'].isoformat() + 'Z'
+                else:
+                    # Si es string, parsearlo y convertir a ISO
+                    try:
+                        dt = datetime.strptime(str(row['updated_at']), '%Y-%m-%d %H:%M:%S')
+                        updated_at_iso = dt.isoformat() + 'Z'
+                    except:
+                        updated_at_iso = str(row['updated_at'])
+            
             result[row['id_persona']] = {
                 'id_persona': row['id_persona'],
                 'lat': row['lat'],
                 'lng': row['lng'],
                 'accuracy': row['accuracy'],
-                'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None
+                'updated_at': updated_at_iso
             }
         return result
     except HTTPException:

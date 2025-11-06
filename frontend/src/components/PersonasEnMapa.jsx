@@ -4,10 +4,18 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Función para crear iconos personalizados con foto de la persona
+function resolvePersonaPhoto(API_PERSONAS, foto) {
+  if (!foto || foto === 'null') return null;
+  try {
+    if (/^https?:\/\//i.test(foto)) return foto;
+    if (foto.startsWith('/uploads')) return `${API_PERSONAS}${foto}`;
+    if (!foto.startsWith('/')) return `${API_PERSONAS}/uploads/${foto}`;
+    return `${API_PERSONAS}${foto}`;
+  } catch { return null; }
+}
+
 function createPersonIcon(fotoUrl, API_PERSONAS) {
-  const photoUrl = fotoUrl && fotoUrl !== 'null' && fotoUrl !== '' 
-    ? `${API_PERSONAS}/uploads/personas/${fotoUrl}` 
-    : null;
+  const photoUrl = resolvePersonaPhoto(API_PERSONAS, fotoUrl);
   
   const iconHtml = photoUrl
     ? `<div style="width: 40px; height: 40px; border-radius: 50%; overflow: hidden; border: 3px solid #3b82f6; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
@@ -116,11 +124,34 @@ export default function PersonasEnMapa({ API_PERSONAS, userRole }) {
   const ACTIVE_WINDOW_MS = 5 * 60 * 1000; // 5 minutos como "reciente"
   const personasActivasRecientes = personasConUbicacion.filter(p => {
     const u = ubicaciones[p.id_persona];
-    if (!u || !u.updated_at) return false;
-    const td = Date.now() - new Date(u.updated_at).getTime();
-    return td >= 0 && td < ACTIVE_WINDOW_MS;
+    if (!u) return false;
+    
+    // Si no tiene fecha, considerarla activa (acaba de llegar)
+    if (!u.updated_at) return true;
+    
+    try {
+      const ubicTime = new Date(u.updated_at).getTime();
+      if (isNaN(ubicTime)) {
+        console.warn('Fecha inválida para persona', p.id_persona, u.updated_at);
+        return true; // Si la fecha es inválida, mostrarla como activa
+      }
+      const now = Date.now();
+      const td = now - ubicTime;
+      
+      // Log para debug
+      console.log(`Persona ${p.id_persona}: now=${new Date(now).toISOString()}, ubic=${new Date(ubicTime).toISOString()}, diff=${Math.round(td/1000)}s`);
+      
+      // Permitir ubicaciones hasta 5 minutos en el pasado, o hasta 1 minuto en el futuro (por desfases de reloj)
+      return td >= -60000 && td < ACTIVE_WINDOW_MS;
+    } catch (e) {
+      console.error('Error procesando fecha para persona', p.id_persona, e);
+      return true; // En caso de error, mostrarla
+    }
   });
   const personasActivas = showAll ? personasConUbicacion : personasActivasRecientes;
+  
+  // Debug log
+  console.log(`📊 Personas con ubicación: ${personasConUbicacion.length}, Activas recientes: ${personasActivasRecientes.length}, Mostrando: ${personasActivas.length}`);
 
   return (
     <div className="p-4">
@@ -213,7 +244,7 @@ export default function PersonasEnMapa({ API_PERSONAS, userRole }) {
                       <div className="flex-shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-green-500 bg-gray-200">
                         {p.fotoPersona && p.fotoPersona !== 'null' && p.fotoPersona !== '' ? (
                           <img 
-                            src={`${API_PERSONAS}/uploads/personas/${p.fotoPersona}`} 
+                            src={resolvePersonaPhoto(API_PERSONAS, p.fotoPersona) || ''} 
                             alt={p.nombres_persona}
                             className="w-full h-full object-cover"
                             onError={(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'flex'; }}

@@ -23,6 +23,20 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
   const [searchQ, setSearchQ] = useState('')
   const [filterTipo, setFilterTipo] = useState('')
   
+  // Normaliza la URL de foto almacenada en BD a una URL accesible vía proxy
+  const resolvePhotoUrl = (fp) => {
+    if (!fp) return ''
+    try{
+      // Si ya es absoluta (http/https), retornarla
+      if (/^https?:\/\//i.test(fp)) return fp
+      // Si comienza con /uploads, prefijar /api/personas
+      if (fp.startsWith('/uploads')) return `/api/personas${fp}`
+      // Si es un nombre simple, asumir /uploads/<nombre>
+      if (!fp.startsWith('/')) return `/api/personas/uploads/${fp}`
+      return fp
+    }catch{ return '' }
+  }
+  
 
   // debounce helper
   React.useEffect(()=>{
@@ -363,7 +377,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
               {editingId && persons.length > 0 && (()=>{
                 const persona = persons.find(p=>p.id_persona===editingId)
                 if(persona && persona.fotoPersona){
-                  return <img src={persona.fotoPersona} alt="Foto actual" className="mt-2 w-16 h-16 rounded-full object-cover border" />
+                  return <img src={resolvePhotoUrl(persona.fotoPersona)} alt="Foto actual" className="mt-2 w-16 h-16 rounded-full object-cover border" />
                 }
                 return null
               })()}
@@ -395,7 +409,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
                 <td className="px-4 py-2 flex items-center gap-2">
                   {p.fotoPersona ? (
                     <img 
-                      src={p.fotoPersona} 
+                      src={resolvePhotoUrl(p.fotoPersona)} 
                       alt="Foto" 
                       className="w-8 h-8 rounded-full object-cover border flex-shrink-0"
                       onError={(e)=>{
@@ -435,7 +449,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
             <div className="flex items-start gap-3 mb-3">
               {p.fotoPersona ? (
                 <img 
-                  src={p.fotoPersona} 
+                  src={resolvePhotoUrl(p.fotoPersona)} 
                   alt="Foto" 
                   className="w-16 h-16 rounded-full object-cover border-2 flex-shrink-0"
                   onError={(e)=>{

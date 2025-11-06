@@ -144,9 +144,9 @@ def ensure_ubicacion_table(conn):
         '''CREATE TABLE IF NOT EXISTS entrega_ubicacion_O (
             idEntrega INT PRIMARY KEY,
             idEmpresa INT NOT NULL,
-            lat DECIMAL(10,7) NOT NULL,
-            lng DECIMAL(10,7) NOT NULL,
-            accuracy FLOAT NULL,
+            lat DOUBLE NOT NULL,
+            lng DOUBLE NOT NULL,
+            accuracy DOUBLE NULL,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             CONSTRAINT fk_entrega FOREIGN KEY (idEntrega) REFERENCES entrega_ruta_O(idEntrega) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'''

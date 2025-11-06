@@ -138,6 +138,42 @@ class CompraOut(BaseModel):
     detalles: List[DetalleCompraOut] = []
     comprobantes: Optional[List[dict]] = []
 
+# ========================
+# Créditos: pagos de compras a crédito
+# ========================
+
+class PagoCompraIn(BaseModel):
+    monto: Decimal = Field(gt=0)
+    metodo: Optional[str] = Field(default='efectivo', max_length=50)
+    observaciones: Optional[str] = Field(default=None, max_length=255)
+
+class PagoCompraOut(BaseModel):
+    idPago: int
+    idCompra: int
+    monto: Decimal
+    fecha: str
+    metodo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+def ensure_pagos_table(conn):
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS compra_pago_O (
+            idPago INT NOT NULL AUTO_INCREMENT,
+            idCompra INT NOT NULL,
+            monto DECIMAL(10,2) NOT NULL,
+            fecha DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            metodo VARCHAR(50) NULL,
+            observaciones VARCHAR(255) NULL,
+            idUsuario INT NULL,
+            PRIMARY KEY (idPago),
+            KEY idx_compra (idCompra),
+            CONSTRAINT fk_pago_compra FOREIGN KEY (idCompra) REFERENCES compra_O(idCompra) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+    conn.commit()
+    cur.close()
+
 
 # ========================
 # Endpoints de Compras
@@ -273,6 +309,48 @@ def list_compras(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get('/compras/pendientes', response_model=List[CompraOut])
+def list_compras_pendientes(
+    offset: int = 0,
+    limit: int = 100,
+    x_user_role: str = Header(None),
+    request: Request = None,
+    response: Response = None
+):
+    """Compras a crédito con estado Pendiente o Parcial."""
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        role = get_role(x_user_role, request)
+        user_company = get_company_id_from_request(request)
+        where = ["c.estado = 1", "c.estado_pago IN ('Pendiente','Parcial')"]
+        params = []
+        if role != 'superadmin' and user_company is not None:
+            where.append('c.idEmpresa = %s')
+            params.append(user_company)
+        base = '''
+            SELECT c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
+                   c.idTipoPago, tp.nombrePago AS tipoPago, c.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                   c.montoTotal, c.montoPagado, c.saldo, c.estado_pago, c.estado, c.observaciones
+            FROM compra_O c
+            LEFT JOIN proveedor_O prov ON c.idProveedor = prov.idProveedor
+            LEFT JOIN tipoPago tp ON c.idTipoPago = tp.idPago
+            LEFT JOIN empresa_O e ON c.idEmpresa = e.id_empresa
+        '''
+        if where:
+            base += ' WHERE ' + ' AND '.join(where)
+        count_q = 'SELECT COUNT(*) total FROM (' + base + ') t'
+        cur.execute(count_q, tuple(params)); total = int((cur.fetchone() or {}).get('total', 0))
+        if response is not None: response.headers['X-Total-Count'] = str(total)
+        page_q = base + ' ORDER BY c.fechaCompra DESC, c.idCompra DESC LIMIT %s OFFSET %s'
+        cur.execute(page_q, tuple(params + [limit, offset])); rows = cur.fetchall() or []
+        for r in rows:
+            r['fechaCompra'] = r['fechaCompra'].isoformat() if r.get('fechaCompra') else None
+            for k in ('montoTotal','montoPagado','saldo'): r[k] = float(r[k]) if r.get(k) is not None else 0.0
+        cur.close(); conn.close(); return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get('/compras/{id}', response_model=CompraOut)
 def get_compra(id: int, x_user_role: str = Header(None), request: Request = None):
     """Obtener compra por ID."""
@@ -354,6 +432,71 @@ def get_compra(id: int, x_user_role: str = Header(None), request: Request = None
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/compras/{id}/pagos', response_model=List[PagoCompraOut])
+def listar_pagos_compra(id: int, x_user_role: str = Header(None), request: Request = None):
+    """Lista pagos registrados para una compra."""
+    try:
+        conn = get_db_connection(); ensure_pagos_table(conn)
+        cur = conn.cursor(dictionary=True)
+        role = get_role(x_user_role, request); user_company = get_company_id_from_request(request)
+        cur.execute('SELECT idEmpresa FROM compra_O WHERE idCompra = %s', (id,)); comp = cur.fetchone()
+        if not comp: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Compra no encontrada')
+        if role != 'superadmin' and user_company is not None and comp['idEmpresa'] != user_company:
+            cur.close(); conn.close(); raise HTTPException(status_code=403, detail='No autorizado')
+        cur.execute('SELECT idPago, idCompra, monto, fecha, metodo, observaciones FROM compra_pago_O WHERE idCompra = %s ORDER BY idPago', (id,))
+        rows = cur.fetchall() or []
+        for r in rows:
+            r['monto'] = float(r['monto']) if r.get('monto') is not None else 0.0
+            r['fecha'] = r['fecha'].isoformat() if r.get('fecha') else None
+        cur.close(); conn.close(); return rows
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/compras/{id}/pagos', response_model=PagoCompraOut, status_code=201)
+def registrar_pago_compra(id: int, payload: PagoCompraIn, x_user_role: str = Header(None), request: Request = None):
+    """Registra un abono/pago a una compra a crédito y actualiza estado_pago y montoPagado."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_pagos_table(conn)
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        cur.execute('SELECT idEmpresa, montoTotal, montoPagado FROM compra_O WHERE idCompra = %s', (id,))
+        comp = cur.fetchone()
+        if not comp: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Compra no encontrada')
+        if role != 'superadmin' and user_company is not None and comp['idEmpresa'] != user_company:
+            cur.close(); conn.close(); raise HTTPException(status_code=403, detail='No autorizado')
+
+        monto = float(payload.monto)
+        if monto <= 0: cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Monto inválido')
+        # Registrar pago
+        ins = conn.cursor()
+        ins.execute('''
+            INSERT INTO compra_pago_O (idCompra, monto, metodo, observaciones, idUsuario)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (id, monto, payload.metodo, payload.observaciones, get_user_id_from_request(request)))
+        conn.commit(); idPago = ins.lastrowid; ins.close()
+
+        # Actualizar acumulados y estado_pago
+        nuevo_pagado = float(comp.get('montoPagado') or 0.0) + monto
+        estado_pago = 'Pagado' if nuevo_pagado + 1e-6 >= float(comp.get('montoTotal') or 0.0) else 'Parcial'
+        upd = conn.cursor()
+        upd.execute('UPDATE compra_O SET montoPagado = %s, estado_pago = %s WHERE idCompra = %s', (nuevo_pagado, estado_pago, id))
+        conn.commit(); upd.close()
+
+        # Responder pago creado
+        cur.execute('SELECT idPago, idCompra, monto, fecha, metodo, observaciones FROM compra_pago_O WHERE idPago = %s', (idPago,))
+        row = cur.fetchone();
+        if row:
+            row['monto'] = float(row['monto']) if row.get('monto') is not None else 0.0
+            row['fecha'] = row['fecha'].isoformat() if row.get('fecha') else None
+        cur.close(); conn.close(); return row or {}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/compras/{id}/comprobantes')

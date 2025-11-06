@@ -599,7 +599,7 @@ export default function App(){
         </div>
       </footer>
     </div>
-      <LogoutConfirm open={showLogoutConfirm} onCancel={handleLogoutConfirm} onConfirm={handleLogoutConfirm} />
+  <LogoutConfirm open={showLogoutConfirm} onCancel={handleLogoutCancel} onConfirm={handleLogoutConfirm} />
     </ToastProvider>
   )
 }
@@ -609,7 +609,7 @@ export default function App(){
 function LogoutConfirm({open, onCancel, onConfirm}){
   if(!open) return null
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black bg-opacity-40">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black bg-opacity-50">
       <div className="bg-white dark:bg-gray-800 p-6 rounded shadow max-w-sm w-full">
         <h3 className="text-lg font-semibold mb-2">Confirmar cierre de sesión</h3>
         <p className="text-sm text-gray-600 mb-4">¿Deseas cerrar la sesión actual?</p>

@@ -35,9 +35,9 @@ DROP TABLE IF EXISTS `entrega_ubicacion_O`;
 CREATE TABLE `entrega_ubicacion_O` (
   `idEntrega` int NOT NULL,
   `idEmpresa` int NOT NULL,
-  `lat` decimal(10,7) NOT NULL,
-  `lng` decimal(10,7) NOT NULL,
-  `accuracy` float DEFAULT NULL,
+  `lat` double NOT NULL,
+  `lng` double NOT NULL,
+  `accuracy` double DEFAULT NULL,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`idEntrega`),
   CONSTRAINT `fk_entrega_ubic_entrega` FOREIGN KEY (`idEntrega`) REFERENCES `entrega_ruta_O` (`idEntrega`) ON DELETE CASCADE
@@ -56,6 +56,36 @@ INSERT INTO `entrega_ubicacion_O` (`idEntrega`, `idEmpresa`, `lat`, `lng`, `accu
   (2, 2, -17.7901200, -63.1765400, 10.0, '2025-11-05 23:59:59'),
   (3, 2, -17.7923450, -63.1743210, 8.0,  '2025-11-05 23:59:59');
 /*!40000 ALTER TABLE `entrega_ubicacion_O` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `compra_pago_O`
+--
+
+DROP TABLE IF EXISTS `compra_pago_O`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `compra_pago_O` (
+  `idPago` int NOT NULL AUTO_INCREMENT,
+  `idCompra` int NOT NULL,
+  `monto` decimal(10,2) NOT NULL,
+  `fecha` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `metodo` varchar(50) DEFAULT NULL,
+  `observaciones` varchar(255) DEFAULT NULL,
+  `idUsuario` int DEFAULT NULL,
+  PRIMARY KEY (`idPago`),
+  KEY `idx_compra_pago_compra` (`idCompra`),
+  CONSTRAINT `fk_pago_compra` FOREIGN KEY (`idCompra`) REFERENCES `compra_O` (`idCompra`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+-- Optional: seed sample payments for demo
+LOCK TABLES `compra_pago_O` WRITE;
+/*!40000 ALTER TABLE `compra_pago_O` DISABLE KEYS */;
+INSERT INTO `compra_pago_O` (`idCompra`, `monto`, `metodo`, `observaciones`) VALUES
+  (1, 200.00, 'efectivo', 'Abono inicial'),
+  (1, 150.00, 'transferencia', 'Abono 2');
+/*!40000 ALTER TABLE `compra_pago_O` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --
