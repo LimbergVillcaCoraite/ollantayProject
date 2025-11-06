@@ -1180,6 +1180,7 @@ async def create_person(
     direccion_persona: str = Form(...),
     tipo_cliente: Optional[str] = Form('minorista'),
     idRuta: Optional[int] = Form(None),
+    id_empresa: Optional[int] = Form(None),
     foto: Optional[UploadFile] = File(None),
     x_user_role: Optional[str] = Header(None),
     request: Request = None
@@ -1216,14 +1217,22 @@ async def create_person(
             cursor.close(); conn.close()
             raise HTTPException(status_code=400, detail='CI ya registrado')
         cur2 = conn.cursor()
-        # Get company_id from JWT token
-        company_id = get_company_id_from_request(request)
-        if company_id is None:
-            cursor.close(); conn.close()
-            raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+        # Determine company for insertion
+        jwt_company_id = get_company_id_from_request(request)
+        target_company_id = None
+        if role == 'superadmin':
+            target_company_id = id_empresa
+            if target_company_id is None:
+                cursor.close(); conn.close()
+                raise HTTPException(status_code=400, detail='Debe especificar la empresa destino')
+        else:
+            target_company_id = jwt_company_id
+            if target_company_id is None:
+                cursor.close(); conn.close()
+                raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
         
         cur2.execute('INSERT INTO persona_O (nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa, tipo_cliente, idRuta) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-            (nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, foto_path, company_id, tipo_cliente, idRuta))
+            (nombres, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci, direccion, foto_path, target_company_id, tipo_cliente, idRuta))
         conn.commit()
         new_id = cur2.lastrowid
         cur2.close(); cursor.close(); conn.close()

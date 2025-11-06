@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import ReactDOM from 'react-dom';
 import { showToast } from '../toast';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import EmpresaSelector from './EmpresaSelector';
 
 // Dropdown renderizado en portal para evitar clipping/overflow
 function ProductDropdownPortal({ anchorEl, open, children }) {
@@ -47,6 +48,9 @@ function ProductDropdownPortal({ anchorEl, open, children }) {
 export default function Compras({ API, userRole }) {
   // Vista/Tab state
   const [activeTab, setActiveTab] = useState('compras') // 'compras' | 'creditos'
+  
+  // Filtro de empresa para superadmin
+  const [selectedEmpresa, setSelectedEmpresa] = useState(null)
   
   // Edit-details workflow for full purchase edit (clone-and-cancel)
   const startEditDetalles = (compra) => {
@@ -157,7 +161,7 @@ export default function Compras({ API, userRole }) {
   }, [detalles])
 
   const loadCompras = useCallback(async () => {
-    console.log('[Compras] loadCompras start', { API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto })
+    console.log('[Compras] loadCompras start', { API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto, selectedEmpresa })
     setLoading(true)
     setError(null)
     try {
@@ -170,6 +174,7 @@ export default function Compras({ API, userRole }) {
       if (fProveedor) params.set('idProveedor', String(fProveedor))
       if (fTipoPago) params.set('idTipoPago', String(fTipoPago))
       if (fIdProducto) params.set('idProducto', String(fIdProducto))
+      if (selectedEmpresa) params.set('idEmpresa', String(selectedEmpresa))
       const url = `${API}?${params.toString()}`
       console.log('[Compras] GET', url)
       const res = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
@@ -189,7 +194,7 @@ export default function Compras({ API, userRole }) {
       console.log('[Compras] loadCompras end')
       setLoading(false)
     }
-  }, [API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto])
+  }, [API, userRole, page, pageSize, fDesde, fHasta, fProveedor, fTipoPago, fIdProducto, selectedEmpresa])
 
    // Funciones de cálculo y agrupación
   const calcularEstadisticas = useCallback(() => {
@@ -840,6 +845,13 @@ export default function Compras({ API, userRole }) {
 
   return (
     <div className="p-4 max-w-7xl mx-auto">
+      {/* Filtro de empresa para superadmin */}
+      <EmpresaSelector 
+        userRole={userRole}
+        selectedEmpresa={selectedEmpresa}
+        onEmpresaChange={setSelectedEmpresa}
+      />
+      
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h2 className="text-xl sm:text-2xl font-bold dark:text-white">Compras</h2>
         {canManage && (

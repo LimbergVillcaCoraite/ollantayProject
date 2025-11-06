@@ -309,6 +309,12 @@ def list_ventas(
             # Optional payment fields
             if 'montoPagado' in v:
                 v['montoPagado'] = float(v['montoPagado']) if v.get('montoPagado') is not None else 0.0
+            # Simplificar estado_pago a solo Pagado / No Pagado
+            raw_estado = (v.get('estado_pago') or '').strip().lower()
+            if raw_estado == 'pagado':
+                v['estado_pago'] = 'Pagado'
+            else:
+                v['estado_pago'] = 'No Pagado'
             
             for d in detalles:
                 d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
@@ -393,6 +399,12 @@ def get_venta(id: int, x_user_role: str = Header(None), request: Request = None)
         venta['montoTotal'] = float(venta['montoTotal']) if venta.get('montoTotal') else 0.0
         if 'montoPagado' in venta:
             venta['montoPagado'] = float(venta['montoPagado']) if venta.get('montoPagado') is not None else 0.0
+        # Simplificar estado_pago
+        raw_estado = (venta.get('estado_pago') or '').strip().lower()
+        if raw_estado == 'pagado':
+            venta['estado_pago'] = 'Pagado'
+        else:
+            venta['estado_pago'] = 'No Pagado'
         
         for d in detalles:
             d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
@@ -689,6 +701,19 @@ def create_venta(payload: VentaIn, x_user_role: str = Header(None), request: Req
         conn.commit()
         ins3.close()
 
+        # Inicializar estado_pago y montoPagado bajo el nuevo esquema simplificado
+        try:
+            init_cur = conn.cursor()
+            if payload.idTipoPago == 1:  # crédito
+                init_cur.execute('UPDATE venta_O SET montoPagado = 0, estado_pago = %s WHERE idVenta = %s', ('No Pagado', new_id))
+            else:  # contado / transferencia
+                init_cur.execute('UPDATE venta_O SET montoPagado = montoTotal, estado_pago = %s WHERE idVenta = %s', ('Pagado', new_id))
+            conn.commit()
+            init_cur.close()
+        except Exception:
+            # Si columnas no existen en algún esquema antiguo, ignorar silenciosamente
+            pass
+
         cur.close()
         conn.close()
         
@@ -914,7 +939,7 @@ def anular_venta(id: int, x_user_role: str = Header(None), request: Request = No
 
         # 4. Marcar venta como anulada: montoTotal=0, estado=0
         upd_venta = conn.cursor()
-        upd_venta.execute('UPDATE venta_O SET estado = 0, montoTotal = 0 WHERE idVenta = %s', (id,))
+        upd_venta.execute('UPDATE venta_O SET estado = 0, montoTotal = 0, montoPagado = 0, estado_pago = %s WHERE idVenta = %s', ('No Pagado', id))
         upd_venta.close()
 
         conn.commit()
@@ -1232,12 +1257,12 @@ def registrar_pago_venta(id: int, payload: PagoVentaIn, x_user_role: str = Heade
         nuevo_pagado = pagado_actual + pago
         if nuevo_pagado < 0:
             nuevo_pagado = 0
-        estado_pago = 'Pendiente'
-        if nuevo_pagado >= monto_total and monto_total > 0:
-            estado_pago = 'Pagado'
+        # Simplificar a dos estados
+        if monto_total > 0 and nuevo_pagado >= monto_total:
             nuevo_pagado = monto_total
-        elif nuevo_pagado > 0 and nuevo_pagado < monto_total:
-            estado_pago = 'Parcial'
+            estado_pago = 'Pagado'
+        else:
+            estado_pago = 'No Pagado'
 
         # 3) Iniciar transacción
         upd = conn.cursor()

@@ -231,6 +231,7 @@ services:
       - cuentas_service
       - rutas_service
       - entregas_service
+      - ai_service
     ports:
       - "80:80"
       - "443:443"
@@ -250,6 +251,42 @@ services:
       - ./reverse-proxy/certbot-www:/var/www/certbot
     entrypoint: /bin/sh
     command: -c "while true; do sleep 12h; certbot renew --webroot -w /var/www/certbot --non-interactive --agree-tos --register-unsafely-without-email || true; done"
+
+  ai_service:
+    build:
+      context: ./backend/ai_service
+      dockerfile: Dockerfile
+    container_name: ai_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8010:8010"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  gastos_service:
+    build:
+      context: ./backend/gastos_service
+      dockerfile: Dockerfile
+    container_name: gastos_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8011:8011"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
 
 volumes:
   mysql8032-data:

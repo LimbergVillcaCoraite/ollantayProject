@@ -8,6 +8,8 @@ function resolvePersonaPhoto(API_PERSONAS, foto) {
   if (!foto || foto === 'null') return null;
   try {
     if (/^https?:\/\//i.test(foto)) return foto;
+    // Si ya tiene el prefijo /api/personas, no agregarlo de nuevo
+    if (foto.startsWith('/api/personas/')) return foto;
     if (foto.startsWith('/uploads')) return `${API_PERSONAS}${foto}`;
     if (!foto.startsWith('/')) return `${API_PERSONAS}/uploads/${foto}`;
     return `${API_PERSONAS}${foto}`;
@@ -16,23 +18,25 @@ function resolvePersonaPhoto(API_PERSONAS, foto) {
 
 function createPersonIcon(fotoUrl, API_PERSONAS) {
   const photoUrl = resolvePersonaPhoto(API_PERSONAS, fotoUrl);
-  
-  const iconHtml = photoUrl
-    ? `<div style="width: 40px; height: 40px; border-radius: 50%; overflow: hidden; border: 3px solid #3b82f6; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-         <img src="${photoUrl}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.parentElement.innerHTML='<div style=\\'width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#3b82f6;color:white;font-weight:bold;\\'>👤</div>'"/>
-       </div>`
-    : `<div style="width: 40px; height: 40px; border-radius: 50%; border: 3px solid #3b82f6; background: white; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-         👤
-       </div>`;
+  const size = 44;
+  const ringColor = photoUrl ? '#10b981' : '#3b82f6';
+  const iconHtml = `
+    <div style="width:${size}px;height:${size}px;position:relative;">
+      <div style="position:absolute;inset:0;border-radius:50%;background:linear-gradient(135deg,${ringColor},#1e3a8a);padding:3px;box-shadow:0 4px 8px rgba(0,0,0,0.35);">
+        <div style="width:100%;height:100%;border-radius:50%;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;color:#374151;font-weight:600;">
+          ${photoUrl ? `<img src='${photoUrl}' style='width:100%;height:100%;object-fit:cover;' onerror="this.style.display='none';this.parentElement.textContent='👤'"/>` : '👤'}
+        </div>
+      </div>
+      <div style="position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);width:12px;height:12px;background:${ringColor};border:2px solid #fff;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>
+    </div>`;
 
   return L.divIcon({
     html: iconHtml,
     className: 'custom-person-marker',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -40],
-    // Asegurar que no tenga z-index alto
-    zIndexOffset: 0
+    iconSize: [size, size + 8],
+    iconAnchor: [size / 2, size / 2 + 8],
+    popupAnchor: [0, -(size / 2)],
+    zIndexOffset: 10
   });
 }
 
@@ -253,10 +257,10 @@ export default function PersonasEnMapa({ API_PERSONAS, userRole }) {
                           />
                         ) : null}
                         <div 
-                          className="w-full h-full flex items-center justify-center bg-blue-500 text-white font-bold text-lg"
+                          className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold text-lg"
                           style={{ display: p.fotoPersona && p.fotoPersona !== 'null' && p.fotoPersona !== '' ? 'none' : 'flex' }}
                         >
-                          👤
+                          {p.nombres_persona?.charAt(0) || '👤'}
                         </div>
                       </div>
                       
@@ -266,7 +270,7 @@ export default function PersonasEnMapa({ API_PERSONAS, userRole }) {
                           {p.nombres_persona} {p.apellido_paternoPersona}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-1">
-                          <span className={`inline-block w-2 h-2 rounded-full ${isRecent ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`}></span>
+                          <span className={`inline-block w-2 h-2 rounded-full ${isRecent ? 'bg-emerald-500 animate-pulse' : 'bg-yellow-500'}`}></span>
                           <span>
                             {u.updated_at 
                               ? new Date(u.updated_at).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })

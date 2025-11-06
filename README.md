@@ -255,6 +255,28 @@ docker compose logs -f --tail=100 persona_service
 
 ## 🔒 Seguridad y Mejores Prácticas
 
+### HTTPS y Cabeceras de Seguridad
+
+El reverse proxy (`reverse-proxy/nginx.conf`) ya incluye:
+- Certificados Let's Encrypt esperados en `/etc/letsencrypt/live/archsoft-system.duck.dns.org/`.
+- Cabeceras: HSTS, CSP (permisiva para evitar romper scripts legacy), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy y COOP/COEP/CORP.
+
+Para emitir certificados inicialmente (si aún no existen):
+```bash
+docker compose run --rm certbot certbot certonly --webroot -w /var/www/certbot -d archsoft-system.duck.dns.org --agree-tos --register-unsafely-without-email
+docker compose restart reverse_proxy
+```
+La renovación automática corre cada 12h dentro del contenedor `certbot`.
+
+### Avatares en el Mapa
+Las fotos de personas se sirven desde `persona_service` bajo `/api/personas/uploads/`. El componente `PersonasEnMapa.jsx` crea marcadores con:
+- Foto redondeada con gradiente y anillo de estado.
+- Fallback a inicial del nombre si no hay foto.
+- WebSocket para ubicación en tiempo real.
+
+### Estado de Pago Simplificado
+`venta_service` normaliza `estado_pago` a solo `Pagado` o `No Pagado` para simplificar la interfaz. Estados anteriores (Pendiente/Parcial) se muestran ahora como `No Pagado`.
+
 ### Recomendaciones de Producción
 
 1. **Cambiar credenciales por defecto**
@@ -286,6 +308,7 @@ mysql8032:
 ```
 
 ## 🐛 Solución de Problemas
+Si la API necesita detectar HTTPS (por ejemplo construcción de URLs absolutas), se propaga el encabezado `X-Forwarded-Proto` desde Nginx. Asegúrate de usarlo en servicios si debes generar enlaces seguros.
 
 ### Problemas Comunes
 

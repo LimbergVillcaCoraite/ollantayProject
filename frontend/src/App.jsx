@@ -19,6 +19,8 @@ import { ToastProvider } from './ToastContext'
 import RoleSelector from './components/RoleSelector'
 import Login from './components/Login'
 import { usePermissions } from './hooks/usePermissions'
+import Predicciones from './components/Predicciones'
+import Gastos from './components/Gastos'
 
 export default function App(){
   const [view, setView] = useState('tipos')
@@ -33,6 +35,7 @@ export default function App(){
   const API_COMPRAS = `${proto}//${host}/api/compras`
   const API_PROVEEDORES = `${proto}//${host}/api/proveedores`
   const API_CUENTAS = `${proto}//${host}/api/cuentas`
+  const API_GASTOS = `${proto}//${host}/api/gastos`
   const [dark, setDark] = useState(() => localStorage.getItem('ollantay-dark') === '1')
   const [userRole, setUserRole] = useState('')
   const [loggedUser, setLoggedUser] = useState(null)
@@ -405,10 +408,22 @@ export default function App(){
                 Ventas
               </button>
             )}
+            {canViewPage('ventas') && (
+              <button onClick={()=>{setView('predicciones'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='predicciones' ? 'bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 4-6"/></svg>
+                Predicciones (IA)
+              </button>
+            )}
             {canViewPage('compras') && (
               <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
                 Compras
+              </button>
+            )}
+            {canViewPage('caja') && (
+              <button onClick={()=>{setView('gastos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='gastos' ? 'bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 8c-3.866 0-7 2.239-7 5s3.134 5 7 5 7-2.239 7-5-3.134-5-7-5z"/><path d="M12 2v6"/></svg>
+                Gastos
               </button>
             )}
             {canViewPage('proveedores') && (
@@ -541,7 +556,9 @@ export default function App(){
           {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
           {view === 'caja' && canViewPage('caja') && <Caja />}
           {view === 'ventas' && canViewPage('ventas') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
+          {view === 'predicciones' && canViewPage('ventas') && <Predicciones userRole={userRole} />}
           {view === 'compras' && canViewPage('compras') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
+          {view === 'gastos' && canViewPage('caja') && <Gastos API={API_GASTOS} userRole={userRole} />}
           {view === 'proveedores' && canViewPage('proveedores') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'productos' && canViewPage('productos') && <Productos API={API_PRESTAMOS} userRole={userRole} permissions={perms} clienteInfo={loggedUser} />}
           {view === 'rutas' && canViewPage('rutas') && <Rutas />}

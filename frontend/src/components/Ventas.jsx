@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useState, useCallback } from 'react';
+import EmpresaSelector from './EmpresaSelector';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { MapContainer, TileLayer, Marker, Circle } from 'react-leaflet';
 import L from 'leaflet';
@@ -16,6 +17,7 @@ L.Icon.Default.mergeOptions({
 
 export default function Ventas({ API, userRole }) {
   const [ventas, setVentas] = useState([]);
+  const [selectedEmpresa, setSelectedEmpresa] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -234,7 +236,8 @@ export default function Ventas({ API, userRole }) {
     if (fTipoPago) params.append('idTipoPago', fTipoPago);
     if (fEstado) params.append('estado', fEstado);
     if (fIdProducto) params.append('idProducto', fIdProducto);
-    params.append('limit', '1000');
+  params.append('limit', '1000');
+  if (selectedEmpresa) params.append('idEmpresa', String(selectedEmpresa));
     
     const url = `${API}?${params.toString()}`;
     
@@ -254,7 +257,7 @@ export default function Ventas({ API, userRole }) {
         setError('No se pudieron cargar las ventas. ' + (e?.message || 'Error desconocido'))
       })
       .finally(() => setLoading(false));
-  }, [API, userRole, fDesde, fHasta, fTipoVenta, fTipoPago, fEstado, fIdProducto]);
+  }, [API, userRole, fDesde, fHasta, fTipoVenta, fTipoPago, fEstado, fIdProducto, selectedEmpresa]);
   
   useEffect(() => {
     loadVentas();
@@ -1089,7 +1092,10 @@ export default function Ventas({ API, userRole }) {
     ? ventas.filter(v => v.nombreCliente?.toLowerCase().includes(fCliente.toLowerCase()))
     : ventas;
   if (fEstadoPago) {
-    ventasFiltradas = ventasFiltradas.filter(v => (v.estado_pago || 'Pendiente').toLowerCase() === fEstadoPago.toLowerCase());
+    ventasFiltradas = ventasFiltradas.filter(v => {
+      const ep = (v.estado_pago || 'No Pagado').toLowerCase();
+      return ep === fEstadoPago.toLowerCase();
+    });
   }
   
   const totalVentas = ventasFiltradas.reduce((sum, v) => sum + Number(v.montoTotal || 0), 0);
@@ -1151,6 +1157,12 @@ export default function Ventas({ API, userRole }) {
 
   return (
     <div className="p-4 max-w-7xl mx-auto">
+      {/* Filtro de empresa para superadmin */}
+      <EmpresaSelector
+        userRole={userRole}
+        selectedEmpresa={selectedEmpresa}
+        onEmpresaChange={setSelectedEmpresa}
+      />
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h2 className="text-xl sm:text-2xl font-bold dark:text-white">Ventas</h2>
@@ -2490,11 +2502,11 @@ export default function Ventas({ API, userRole }) {
                           <div className="flex flex-col items-center gap-1">
                             <div className="text-xs">{formatMoney(v.montoPagado || 0)} / {formatMoney(v.montoTotal || 0)}</div>
                             <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                              (v.estado_pago || '').toLowerCase() === 'pagado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' :
-                              (v.estado_pago || '').toLowerCase() === 'parcial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' :
-                              'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                              (v.estado_pago || '').toLowerCase() === 'pagado'
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                                : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
                             }`}>
-                              {v.estado_pago || 'Pendiente'}
+                              {(v.estado_pago || '').toLowerCase() === 'pagado' ? 'Pagado' : 'No Pagado'}
                             </span>
                           </div>
                         </td>
@@ -2624,11 +2636,11 @@ export default function Ventas({ API, userRole }) {
                       <div className="text-gray-600 dark:text-gray-400">Estado pago</div>
                       <div className="text-right">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                          (v.estado_pago || '').toLowerCase() === 'pagado' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' :
-                          (v.estado_pago || '').toLowerCase() === 'parcial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' :
-                          'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                          (v.estado_pago || '').toLowerCase() === 'pagado'
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                            : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
                         }`}>
-                          {v.estado_pago || 'Pendiente'}
+                          {(v.estado_pago || '').toLowerCase() === 'pagado' ? 'Pagado' : 'No Pagado'}
                         </span>
                       </div>
                     </div>

@@ -1,4 +1,5 @@
 import React, {useState, useEffect} from 'react'
+import Modal from './Modal'
 import { useToast } from '../ToastContext'
 
 export default function Personas({API, API_TYPES, userRole='admin', permissions=[], companyFilter=null, onClearCompanyFilter}){
@@ -98,10 +99,12 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
       return setEmpresas([])
     }
     try {
-      const res = await fetch(`${API}/empresas`, { headers: { 'X-User-Role': userRole } })
+      const res = await fetch(`${API}/empresas`, { headers: { 'X-User-Role': userRole }, credentials:'include' })
       if (!res.ok) throw new Error('Error fetching empresas')
       const data = await res.json()
-      setEmpresas(Array.isArray(data) ? data : [])
+      // Backend returns a paginated shape { items: [...], total, offset, limit }
+      const items = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+      setEmpresas(items)
     } catch (err) {
       console.error('Error loading empresas:', err)
       setEmpresas([])
@@ -295,8 +298,7 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
       </div>
 
   {has('personas','create') && showCreate && (
-        <div className="mb-6 p-4 sm:p-6 border-2 border-blue-200 dark:border-blue-800 rounded-lg bg-blue-50 dark:bg-blue-900/20">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">{editingId ? 'Editar Persona' : 'Nueva Persona'}</h3>
+        <Modal title={editingId ? 'Editar Persona' : 'Nueva Persona'} onClose={()=>setShowCreate(false)} size="xl">
           <form onSubmit={submit} className="grid grid-cols-1 gap-4 sm:grid-cols-2" encType="multipart/form-data">
             <div>
               <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Nombres</label>
@@ -382,12 +384,13 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
                 return null
               })()}
             </div>
-            <div className="sm:col-span-2 flex justify-end">
+            <div className="sm:col-span-2 flex justify-end gap-3 mt-2">
+              <button type="button" onClick={()=>{ setShowCreate(false); setEditingId(null); }} className="px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors">Cancelar</button>
               <button disabled={submitting} className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors">{submitting? 'Procesando...' : (editingId? 'Actualizar' : 'Crear')}</button>
             </div>
             {error && <p className="text-red-600 sm:col-span-2">{error}</p>}
           </form>
-        </div>
+        </Modal>
       )}
 
       {/* Desktop Table View - Hidden on mobile */}
