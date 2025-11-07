@@ -101,12 +101,33 @@ else
     echo "✗ Certificate issuance failed"
     echo "=================================================="
     echo ""
+    echo "Checking what went wrong..."
+    echo ""
+    
+    # Check DNS
+    echo "DNS Check:"
+    DNS_IP=$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}')
+    if [ -z "$DNS_IP" ]; then
+        echo "  ✗ Domain does not resolve: $DOMAIN"
+    else
+        echo "  ✓ Domain resolves to: $DNS_IP"
+    fi
+    
+    # Check public IP
+    PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null || echo "unknown")
+    echo "  Server public IP: $PUBLIC_IP"
+    
+    echo ""
     echo "Common issues:"
-    echo "  - DNS not pointing to this server"
+    echo "  - DNS not pointing to this server (check DuckDNS)"
     echo "  - Firewall blocking ports 80/443"
     echo "  - Nginx not serving /.well-known/acme-challenge/"
     echo "  - Domain already has rate limit (Let's Encrypt)"
     echo ""
-    echo "Check logs with: docker compose logs certbot"
+    echo "Detailed diagnostics:"
+    echo "  ./check-ssl-ready.sh $DOMAIN"
+    echo ""
+    echo "Check logs:"
+    echo "  docker compose logs certbot | tail -100"
     exit 1
 fi

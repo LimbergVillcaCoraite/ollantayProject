@@ -8,21 +8,28 @@ echo "=================================================="
 echo "Switching to Production SSL Certificates"
 echo "=================================================="
 
-# Check if LE certificates exist
-if [ ! -f "./letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+# Check if LE certificates exist (relative to reverse-proxy dir)
+CERT_PATH="./letsencrypt/live/$DOMAIN/fullchain.pem"
+if [ ! -f "$CERT_PATH" ]; then
     echo "✗ Let's Encrypt certificates not found!"
-    echo "  Expected: ./letsencrypt/live/$DOMAIN/fullchain.pem"
+    echo "  Expected: $CERT_PATH"
+    echo ""
+    echo "Checking alternate locations..."
+    ls -la ./letsencrypt/live/ 2>/dev/null || echo "  ./letsencrypt/live/ directory not found"
+    echo ""
+    echo "If certificates exist in a different path, check:"
+    echo "  docker compose run --rm --entrypoint sh certbot -c 'ls -la /etc/letsencrypt/live/'"
     echo ""
     echo "Run ./issue-cert.sh first to obtain certificates."
     exit 1
 fi
 
-echo "✓ Let's Encrypt certificates found"
+echo "✓ Let's Encrypt certificates found at: $CERT_PATH"
 echo ""
 
 # Backup current docker-compose.yml
-if [ ! -f "docker-compose.yml.backup" ]; then
-    echo "Creating backup: docker-compose.yml.backup"
+if [ ! -f "../docker-compose.yml.backup" ]; then
+    echo "Creating backup: ../docker-compose.yml.backup"
     cp ../docker-compose.yml ../docker-compose.yml.backup
 fi
 
