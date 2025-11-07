@@ -9,6 +9,10 @@ import os
 import mysql.connector
 from mysql.connector import errors as mysql_errors
 import jwt
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
 
 app = FastAPI()
 
@@ -1420,9 +1424,160 @@ def obtener_recibo_pago(id: int, mov_id: int, x_user_role: str = Header(None), r
 
         if format == 'json':
             return {'ok': True, 'numeroRecibo': numero_recibo, 'venta': dict(venta), 'movimiento': dict(mov)}
-        
+        # Generate PDF if requested
+        if (format or '').lower() == 'pdf':
+            buffer = BytesIO()
+            c = canvas.Canvas(buffer, pagesize=A4)
+            width, height = A4
+            x_margin, y_margin = 20 * mm, 20 * mm
+            y = height - y_margin
+
+            # Header
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(x_margin, y, venta.get('nombreEmpresa', 'Sistema Ollantay'))
+            c.setFont("Helvetica", 10)
+            c.drawRightString(width - x_margin, y, f"Recibo: {numero_recibo}")
+            y -= 18
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 12
+
+            # Title
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(x_margin, y, "Comprobante de Pago")
+            y -= 18
+
+            # Body
+            c.setFont("Helvetica", 11)
+            rows = [
+                ("Cliente:", venta.get('nombreCliente', 'Sin nombre')),
+                ("Venta #:", str(venta['idVenta'])),
+                ("Fecha Venta:", str(venta['fechaVenta'])),
+                ("Fecha Pago:", fecha_mov_str),
+                ("Monto Total:", f"{venta['montoTotal']:.2f}"),
+                ("Monto Pagado:", f"{mov['monto']:.2f}"),
+                ("Descripción:", str(mov.get('descripcion', '') or '')),
+            ]
+
+            label_w = 35 * mm
+            value_w = width - x_margin*2 - label_w
+            for label, value in rows:
+                if y < 40 * mm:
+                    c.showPage(); y = height - y_margin
+                c.setFont("Helvetica", 10)
+                c.drawString(x_margin, y, label)
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(x_margin + label_w, y, value)
+                y -= 16
+
+            # Footer
+            y = max(y, 30 * mm)
+            c.setFont("Helvetica-Oblique", 9)
+            c.drawCentredString(width/2, y, "Generado automáticamente por Sistema Ollantay")
+            c.showPage()
+            c.save()
+
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
+            headers = {
+                'Content-Disposition': f'inline; filename="recibo-{numero_recibo}.pdf"'
+            }
+            return Response(content=pdf_bytes, media_type='application/pdf', headers=headers)
+
         return HTMLResponse(content=html, status_code=200)
     
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/creditos')
+def listar_creditos(
+    idCliente: Optional[int] = None,
+    solo_pendientes: bool = True,
+    x_user_role: str = Header(None),
+    request: Request = None
+):
+    """Listado de ventas a crédito con saldo.
+
+    - Filtra por empresa del usuario (salvo superadmin).
+    - Devuelve saldo calculado (montoTotal - montoPagado).
+    - Si solo_pendientes=True, devuelve solo las que tienen saldo > 0.
+    """
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
+        role = get_role(x_user_role, request)
+        user_company = get_company_id_from_request(request)
+
+        where = ["v.idTipoPago = 1", "v.estado = 1"]
+        params = []
+        if role != 'superadmin' and user_company is not None:
+            where.append('v.idEmpresa = %s'); params.append(user_company)
+        if idCliente is not None:
+            where.append('v.idCliente = %s'); params.append(idCliente)
+
+        query = f'''
+            SELECT 
+              v.idVenta, v.fechaVenta, v.idCliente,
+              CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona,'')) AS nombreCliente,
+              v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+              v.montoTotal, v.montoPagado,
+              (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
+            FROM venta_O v
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE {' AND '.join(where)}
+            ORDER BY v.fechaVenta DESC, v.idVenta DESC
+        '''
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall() or []
+        for r in rows:
+            r['fechaVenta'] = r['fechaVenta'].isoformat() if r.get('fechaVenta') else None
+            r['montoTotal'] = float(r.get('montoTotal') or 0)
+            r['montoPagado'] = float(r.get('montoPagado') or 0)
+            r['saldo'] = float(r.get('saldo') or 0)
+        cur.close(); conn.close()
+        if solo_pendientes:
+            rows = [r for r in rows if r['saldo'] > 0]
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/mis-deudas')
+def mis_deudas(x_user_role: str = Header(None), request: Request = None):
+    """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
+    try:
+        id_persona = get_id_persona_from_request(request)
+        if not id_persona:
+            raise HTTPException(status_code=401, detail='No autenticado como cliente')
+
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
+        user_company = get_company_id_from_request(request)
+
+        where = ["v.idTipoPago = 1", "v.estado = 1", "v.idCliente = %s"]
+        params = [id_persona]
+        if user_company is not None:
+            where.append('v.idEmpresa = %s'); params.append(user_company)
+
+        query = f'''
+            SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado,
+                   (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
+            FROM venta_O v
+            WHERE {' AND '.join(where)}
+            ORDER BY v.fechaVenta DESC, v.idVenta DESC
+        '''
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall() or []
+        total_deuda = 0.0
+        for r in rows:
+            r['fechaVenta'] = r['fechaVenta'].isoformat() if r.get('fechaVenta') else None
+            r['montoTotal'] = float(r.get('montoTotal') or 0)
+            r['montoPagado'] = float(r.get('montoPagado') or 0)
+            r['saldo'] = float(r.get('saldo') or 0)
+            total_deuda += r['saldo']
+        cur.close(); conn.close()
+        return { 'ok': True, 'idCliente': id_persona, 'total_deuda': total_deuda, 'ventas': rows }
     except HTTPException:
         raise
     except Exception as e:

@@ -78,7 +78,9 @@ export function usePermissions(loggedUser) {
       'productos': has('productos', 'view'),
       'caja': has('caja', 'view'),
       'ventas': has('ventas', 'view'),
-        'predicciones': has('ventas', 'view'), // Predicciones require ventas permission
+    'predicciones': has('ventas', 'view'), // Predicciones require ventas permission
+    'creditos': has('ventas', 'view'), // Créditos admin view
+    'misdeudas': true, // Perfil cliente: cualquier usuario autenticado puede ver sus deudas
       'compras': has('compras', 'view'),
         'gastos': has('caja', 'view'), // Gastos require caja permission
       'proveedores': has('proveedores', 'view'),

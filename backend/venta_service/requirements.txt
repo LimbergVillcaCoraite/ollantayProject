@@ -4,3 +4,4 @@ pydantic==2.5.0
 mysql-connector-python==8.2.0
 pyjwt==2.8.0
 python-multipart==0.0.6
+reportlab==3.6.12

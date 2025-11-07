@@ -235,6 +235,17 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "Rebuild frontend",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"frontend"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }
