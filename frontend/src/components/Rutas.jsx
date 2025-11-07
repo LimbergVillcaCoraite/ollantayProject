@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useToast } from '../ToastContext';
+import TableWrapper from './TableWrapper'
 
 export default function Rutas() {
   const [rutas, setRutas] = useState([]);
@@ -305,7 +306,8 @@ export default function Rutas() {
       </div>
 
       {/* Tabla de Rutas */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-x-auto">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <TableWrapper>
         <table className="min-w-full">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
@@ -389,6 +391,7 @@ export default function Rutas() {
             )}
           </tbody>
         </table>
+        </TableWrapper>
       </div>
 
       {/* Modal Crear/Editar Ruta */}
@@ -633,7 +636,8 @@ export default function Rutas() {
             </form>
 
             {/* Tabla de precios */}
-            <div className="border rounded dark:border-gray-600 overflow-x-auto">
+            <div className="border rounded dark:border-gray-600">
+              <TableWrapper>
               <table className="min-w-full">
                 <thead className="bg-gray-100 dark:bg-gray-700">
                   <tr>
@@ -707,6 +711,7 @@ export default function Rutas() {
                   )}
                 </tbody>
               </table>
+              </TableWrapper>
             </div>
           </div>
         </div>
@@ -748,7 +753,8 @@ export default function Rutas() {
             </div>
 
             {/* Tabla de Personas */}
-            <div className="bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
+            <div className="bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <TableWrapper>
               <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                 <thead className="bg-gray-50 dark:bg-gray-700">
                   <tr>
@@ -825,6 +831,7 @@ export default function Rutas() {
                   )}
                 </tbody>
               </table>
+              </TableWrapper>
             </div>
 
             {/* Contador de personas */}
