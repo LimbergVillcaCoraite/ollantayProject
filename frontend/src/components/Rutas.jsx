@@ -305,7 +305,7 @@ export default function Rutas() {
       </div>
 
       {/* Tabla de Rutas */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-x-auto">
         <table className="min-w-full">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
@@ -633,7 +633,7 @@ export default function Rutas() {
             </form>
 
             {/* Tabla de precios */}
-            <div className="border rounded dark:border-gray-600">
+            <div className="border rounded dark:border-gray-600 overflow-x-auto">
               <table className="min-w-full">
                 <thead className="bg-gray-100 dark:bg-gray-700">
                   <tr>
@@ -748,7 +748,7 @@ export default function Rutas() {
             </div>
 
             {/* Tabla de Personas */}
-            <div className="bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                 <thead className="bg-gray-50 dark:bg-gray-700">
                   <tr>

@@ -1,5 +1,6 @@
 import React, {useState, useEffect} from 'react'
 import Modal from './Modal'
+import TableWrapper from './TableWrapper'
 import { useToast } from '../ToastContext'
 
 export default function Personas({API, API_TYPES, userRole='admin', permissions=[], companyFilter=null, onClearCompanyFilter}){
@@ -395,7 +396,8 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
 
       {/* Desktop Table View - Hidden on mobile */}
       <div className="hidden md:block bg-panel rounded shadow text-panel overflow-x-auto">
-        <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
+  <TableWrapper>
+  <table className="min-w-full table-auto text-sm rounded-lg overflow-hidden shadow">
           <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
               <th className="px-4 py-2">ID</th>
@@ -440,7 +442,8 @@ export default function Personas({API, API_TYPES, userRole='admin', permissions=
               </tr>
             ))}
           </tbody>
-        </table>
+  </table>
+  </TableWrapper>
       </div>
 
       {/* Mobile Card View - Visible only on mobile */}

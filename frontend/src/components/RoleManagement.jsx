@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useToast } from '../ToastContext'
 
-export default function RoleManagement({ API, userRole = 'admin', onPermissionsUpdate }) {
+export default function RoleManagement({ API, userRole = 'admin', currentUserPermissions = [], onPermissionsUpdate }) {
   const [roles, setRoles] = useState([])
   const [permissions, setPermissions] = useState([])
   const [rolePermissions, setRolePermissions] = useState({})
@@ -274,7 +274,14 @@ export default function RoleManagement({ API, userRole = 'admin', onPermissionsU
   }
 
   // Agrupar permisos por recurso
-  const groupedPermissions = permissions.reduce((acc, perm) => {
+  // Filter permissions based on user role
+  // Superadmin can grant all permissions
+  // Admin can only grant permissions they have
+  const availablePermissions = userRole === 'superadmin' 
+    ? permissions 
+    : permissions.filter(perm => currentUserPermissions.includes(`${perm.resource}:${perm.action}`))
+
+  const groupedPermissions = availablePermissions.reduce((acc, perm) => {
     if (!acc[perm.resource]) {
       acc[perm.resource] = []
     }

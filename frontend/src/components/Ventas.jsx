@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useState, useCallback } from 'react';
 import EmpresaSelector from './EmpresaSelector';
+import TableWrapper from './TableWrapper'
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { MapContainer, TileLayer, Marker, Circle } from 'react-leaflet';
 import L from 'leaflet';
@@ -2462,7 +2463,8 @@ export default function Ventas({ API, userRole }) {
         <>
           {/* Desktop Table View - Hidden on mobile */}
           <div className="hidden md:block bg-white dark:bg-gray-800 rounded-lg shadow overflow-x-auto">
-            <table className="min-w-full border dark:border-gray-700">
+            <TableWrapper>
+              <table className="min-w-full border dark:border-gray-700">
               <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0 z-10">
                 <tr>
                   <th className="p-3 text-left dark:text-gray-200">C�digo</th>
@@ -2570,7 +2572,8 @@ export default function Ventas({ API, userRole }) {
                   ))
                 )}
               </tbody>
-            </table>
+              </table>
+            </TableWrapper>
           </div>
 
           {/* Mobile Card View - Visible only on mobile */}

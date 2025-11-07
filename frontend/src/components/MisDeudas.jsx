@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import TableWrapper from './TableWrapper'
 
 export default function MisDeudas({ API }){
   const [data, setData] = useState(null)
@@ -40,7 +41,8 @@ export default function MisDeudas({ API }){
               <div className="text-sm text-gray-600 dark:text-gray-300">Ventas a crédito con saldo</div>
             </div>
             <div className="overflow-auto">
-              <table className="min-w-full text-sm">
+              <TableWrapper>
+                <table className="min-w-full text-sm">
                 <thead>
                   <tr className="text-left bg-gray-50 dark:bg-gray-900">
                     <th className="p-2">Fecha</th>
@@ -59,7 +61,8 @@ export default function MisDeudas({ API }){
                     </tr>
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </TableWrapper>
             </div>
           </div>
         </>

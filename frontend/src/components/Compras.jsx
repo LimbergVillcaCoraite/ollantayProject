@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import { showToast } from '../toast';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import EmpresaSelector from './EmpresaSelector';
+import TableWrapper from './TableWrapper'
 
 // Dropdown renderizado en portal para evitar clipping/overflow
 function ProductDropdownPortal({ anchorEl, open, children }) {
@@ -988,7 +989,8 @@ export default function Compras({ API, userRole }) {
                 </div>
               )}
               <div className="overflow-x-auto overflow-y-visible">
-                <table className="min-w-full text-sm border dark:border-gray-700">
+                <TableWrapper>
+                  <table className="min-w-full text-sm border dark:border-gray-700">
                   <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0 z-10">
                     <tr>
                       <th className="p-2 text-left">Producto</th>
@@ -1135,7 +1137,8 @@ export default function Compras({ API, userRole }) {
                       )
                     })}
                   </tbody>
-                </table>
+                  </table>
+                </TableWrapper>
               </div>
               <div className="flex items-center justify-end gap-4 mt-3">
                 <div className="text-sm text-gray-600 dark:text-gray-300">Total:</div>

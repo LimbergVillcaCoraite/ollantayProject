@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import TableWrapper from './TableWrapper'
 
 export default function Creditos({ API, API_PERSONAS, userRole }){
   const [credits, setCredits] = useState([])
@@ -61,7 +62,8 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
             <div className="text-sm">Saldo total: <b className="text-emerald-600 dark:text-emerald-400">Bs {totalSaldo.toFixed(2)}</b></div>
           </div>
           <div className="overflow-auto">
-            <table className="min-w-full text-sm">
+              <TableWrapper>
+                <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left bg-gray-50 dark:bg-gray-900">
                   <th className="p-2">Fecha</th>
@@ -92,6 +94,7 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
                 ))}
               </tbody>
             </table>
+            </TableWrapper>
           </div>
         </div>
       )}

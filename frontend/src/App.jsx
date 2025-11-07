@@ -580,7 +580,7 @@ export default function App(){
           {view === 'rutas' && canViewPage('rutas') && <Rutas />}
           {view === 'cuentas' && canViewPage('cuentas') && <Cuentas />}
           {view === 'usuarios' && canViewPage('usuarios') && <Usuarios API={API_PERSONS} userRole={userRole} />}
-          {view === 'roles' && canViewPage('roles') && <RoleManagement API={API_PERSONS} userRole={userRole} onPermissionsUpdate={refreshUserSession} />}
+          {view === 'roles' && canViewPage('roles') && <RoleManagement API={API_PERSONS} userRole={userRole} currentUserPermissions={perms} onPermissionsUpdate={refreshUserSession} />}
           {view === 'superadmin' && canViewPage('superadmin') && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">
