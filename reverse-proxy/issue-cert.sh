@@ -21,6 +21,22 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
+# Check if we're in the right directory
+if [ ! -f "../docker-compose.yml" ]; then
+    echo "✗ Error: docker-compose.yml not found in parent directory"
+    echo "  Please run this script from the reverse-proxy directory:"
+    echo "  cd reverse-proxy && ./issue-cert.sh"
+    exit 1
+fi
+
+# Check if we're in the right directory
+if [ ! -f "../docker-compose.yml" ]; then
+    echo "✗ Error: docker-compose.yml not found in parent directory"
+    echo "  Please run this script from the reverse-proxy directory:"
+    echo "  cd reverse-proxy && ./issue-cert.sh"
+    exit 1
+fi
+
 echo "Creating webroot directory if not exists..."
 mkdir -p ./certbot-www/.well-known/acme-challenge
 
@@ -39,6 +55,10 @@ rm -f ./certbot-www/.well-known/acme-challenge/test.txt
 
 echo ""
 echo "Running certbot to obtain certificate..."
+echo "Command: docker compose -f ../docker-compose.yml run --rm certbot certbot certonly..."
+echo ""
+
+cd ..
 docker compose run --rm certbot certbot certonly \
     --webroot \
     -w /var/www/certbot \
@@ -47,7 +67,10 @@ docker compose run --rm certbot certbot certonly \
     --register-unsafely-without-email \
     --non-interactive
 
-if [ $? -eq 0 ]; then
+CERTBOT_EXIT=$?
+cd reverse-proxy
+
+if [ $CERTBOT_EXIT -eq 0 ]; then
     echo ""
     echo "=================================================="
     echo "✓ Certificate issued successfully!"
