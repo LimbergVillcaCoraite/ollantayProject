@@ -2,7 +2,7 @@
 # Script to switch from dev certificates to production Let's Encrypt certificates
 # Run this AFTER issuing certificates with issue-cert.sh
 
-DOMAIN="${1:-archsoft-system.duck.dns.org}"
+DOMAIN="${1:-archsoft-system.duckdns.org}"
 
 echo "=================================================="
 echo "Switching to Production SSL Certificates"

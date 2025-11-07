@@ -2,7 +2,7 @@
 # Script to issue Let's Encrypt certificate for production
 # Usage: ./issue-cert.sh [domain]
 
-DOMAIN="${1:-archsoft-system.duck.dns.org}"
+DOMAIN="${1:-archsoft-system.duckdns.org}"
 
 echo "=================================================="
 echo "Issuing Let's Encrypt certificate for: $DOMAIN"
