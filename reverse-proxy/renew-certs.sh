@@ -7,7 +7,7 @@ echo "=================================================="
 echo "Renewing Let's Encrypt certificates..."
 echo "=================================================="
 
-docker compose run --rm certbot certbot renew \
+docker compose run --rm --entrypoint certbot certbot renew \
     --webroot \
     -w /var/www/certbot \
     --non-interactive

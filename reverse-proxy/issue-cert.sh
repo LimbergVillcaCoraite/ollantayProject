@@ -55,11 +55,11 @@ rm -f ./certbot-www/.well-known/acme-challenge/test.txt
 
 echo ""
 echo "Running certbot to obtain certificate..."
-echo "Command: docker compose -f ../docker-compose.yml run --rm certbot certbot certonly..."
+echo "Command: docker compose -f ../docker-compose.yml run --rm --entrypoint certbot certbot certonly ..."
 echo ""
 
 cd ..
-docker compose run --rm certbot certbot certonly \
+docker compose run --rm --entrypoint certbot certbot certonly \
     --webroot \
     -w /var/www/certbot \
     -d "$DOMAIN" \
@@ -81,6 +81,10 @@ if [ $CERTBOT_EXIT -eq 0 ]; then
     echo "  ./letsencrypt/live/$DOMAIN/privkey.pem"
     echo ""
     echo "Next steps:"
+    echo "  1. Run the switch-to-prod script:"
+    echo "     ./switch-to-prod.sh $DOMAIN"
+    echo ""
+    echo "  OR manually:"
     echo "  1. Edit docker-compose.yml to use nginx.prod.conf:"
     echo "     Change: ./reverse-proxy/nginx.conf:/etc/nginx/nginx.conf:ro"
     echo "     To:     ./reverse-proxy/nginx.prod.conf:/etc/nginx/nginx.conf:ro"
