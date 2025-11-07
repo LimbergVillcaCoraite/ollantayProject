@@ -3,6 +3,43 @@ import EmpresaSelector from './EmpresaSelector';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 
 export default function Predicciones({ userRole }) {
+  // Helpers: simple iconography based on rain probability and temperature
+  const WeatherIcon = ({ prob = 0, temp = 25 }) => {
+    const p = Math.min(100, Math.max(0, Math.round((prob || 0) * 100)));
+    const isRainy = p >= 50;
+    const isCloudy = p >= 20 && p < 50;
+    const isHot = temp >= 28;
+    const sunColor = isHot ? '#fde047' : '#fbbf24';
+
+    if (isRainy) {
+      return (
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7 15a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4.5 4.5 0 1 1 19 15H7z" fill="#93c5fd"/>
+          <path d="M8 19c0 .6-.4 1-1 1s-1-.4-1-1 .4-1 1-1 1 .4 1 1zm5 0c0 .6-.4 1-1 1s-1-.4-1-1 .4-1 1-1 1 .4 1 1zm5 0c0 .6-.4 1-1 1s-1-.4-1-1 .4-1 1-1 1 .4 1 1z" fill="#60a5fa"/>
+        </svg>
+      );
+    }
+    if (isCloudy) {
+      return (
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7 16a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4.5 4.5 0 1 1 19 16H7z" fill="#cbd5e1"/>
+        </svg>
+      );
+    }
+    return (
+      <svg width="42" height="42" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="5" fill={sunColor} />
+        <line x1="12" y1="1" x2="12" y2="4" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="12" y1="20" x2="12" y2="23" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="1" y1="12" x2="4" y2="12" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="20" y1="12" x2="23" y2="12" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="4.2" y1="4.2" x2="6.5" y2="6.5" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="17.5" y1="17.5" x2="19.8" y2="19.8" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="4.2" y1="19.8" x2="6.5" y2="17.5" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+        <line x1="17.5" y1="6.5" x2="19.8" y2="4.2" stroke={sunColor} strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+    );
+  };
   const [selectedEmpresa, setSelectedEmpresa] = useState(null);
   const [tipo, setTipo] = useState('ventas'); // 'ventas'|'compras'|'rutas'|'creditos'|'clima'
   const [loading, setLoading] = useState(false);
@@ -296,22 +333,68 @@ export default function Predicciones({ userRole }) {
       )}
 
       {!loading && !error && data && tipo === 'clima' && (
-        <div className="grid grid-cols-1 gap-4">
-          <div className="bg-white dark:bg-gray-800 p-4 rounded border dark:border-gray-700">
-            <h3 className="font-semibold mb-2">Pronóstico 7 días {data.zona ? `(${data.zona})` : ''}</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-              {data.pronostico?.map((d,i)=> (
-                <div key={i} className="p-3 rounded bg-gray-50 dark:bg-gray-900 text-sm">
-                  <div className="font-medium">{d.dia}</div>
-                  <div>Temp: {d.temp_c}°C</div>
-                  <div>Humedad: {d.humedad_pct}%</div>
-                  <div>Prob. lluvia: {Math.round((d.prob_lluvia||0)*100)}%</div>
+        <div className="grid grid-cols-1 gap-6">
+          {/* Hero current conditions */}
+          <div className="relative overflow-hidden rounded-2xl p-6 bg-gradient-to-br from-sky-500 via-cyan-500 to-indigo-500 shadow-xl">
+            <div className="absolute -top-10 -right-10 w-56 h-56 bg-white/10 rounded-full blur-2xl"/>
+            <div className="absolute -bottom-10 -left-10 w-56 h-56 bg-black/10 rounded-full blur-3xl"/>
+            <div className="relative flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-white/90 text-sm">Pronóstico 7 días {data.zona ? `(${data.zona})` : ''}</div>
+                <div className="text-white text-4xl md:text-5xl font-extrabold tracking-tight">
+                  {data.pronostico?.[0]?.temp_c ?? '--'}°C
                 </div>
-              ))}
+                <div className="mt-1 text-white/90 text-sm flex items-center gap-4">
+                  <span className="inline-flex items-center gap-1"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2v20" stroke="white" strokeWidth="2" strokeLinecap="round"/><circle cx="12" cy="16" r="4" stroke="white" strokeWidth="2"/></svg>{data.pronostico?.[0]?.humedad_pct ?? '--'}%</span>
+                  <span className="inline-flex items-center gap-1"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C9 6 6 9 6 12a6 6 0 1 0 12 0c0-3-3-6-6-10z" stroke="white" strokeWidth="2" fill="none"/></svg>{Math.round(((data.pronostico?.[0]?.prob_lluvia)||0)*100)}%</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 text-white">
+                <WeatherIcon prob={data.pronostico?.[0]?.prob_lluvia} temp={data.pronostico?.[0]?.temp_c} />
+              </div>
             </div>
           </div>
-          <div className="bg-white dark:bg-gray-800 p-4 rounded border dark:border-gray-700">
-            <h3 className="font-semibold mb-2">Recomendaciones</h3>
+
+          {/* Forecast cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+            {data.pronostico?.map((d,i)=> (
+              <div key={i} className="group p-4 rounded-xl bg-white/70 dark:bg-gray-800/70 backdrop-blur border border-white/30 dark:border-gray-700 hover:shadow-lg transition-shadow">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-semibold text-gray-800 dark:text-gray-100">{d.dia}</div>
+                  <WeatherIcon prob={d.prob_lluvia} temp={d.temp_c} />
+                </div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">{d.temp_c}°</div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600 dark:text-gray-300">
+                  <div className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-sky-400"/>Humedad</div>
+                  <div className="text-right">{d.humedad_pct}%</div>
+                  <div className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-indigo-400"/>Lluvia</div>
+                  <div className="text-right">{Math.round(((d.prob_lluvia)||0)*100)}%</div>
+                </div>
+                <div className="mt-2 h-1.5 bg-gray-200 dark:bg-gray-700 rounded">
+                  <div className="h-1.5 rounded bg-gradient-to-r from-sky-400 to-indigo-400" style={{ width: `${Math.round(((d.prob_lluvia)||0)*100)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Temperature trend */}
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border dark:border-gray-700">
+            <h3 className="font-semibold mb-2 text-gray-800 dark:text-gray-100">Tendencia de temperatura</h3>
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={data.pronostico || []}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="dia" tick={{ fontSize: 10 }} />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="temp_c" name="Temp °C" stroke="#06b6d4" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Recommendations */}
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border dark:border-gray-700">
+            <h3 className="font-semibold mb-2 text-gray-800 dark:text-gray-100">Recomendaciones</h3>
             <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300">
               {data.recomendaciones?.map((r,i)=>(<li key={i}>{r}</li>))}
             </ul>
