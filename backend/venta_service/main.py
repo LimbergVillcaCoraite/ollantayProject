@@ -50,9 +50,7 @@ JWT_ALG = 'HS256'
 
 
 def get_role(x_user_role: str = Header(None), request: Request = None) -> str:
-    """Resolve effective role for the request."""
-    if x_user_role:
-        return x_user_role.lower()
+    """Resolve effective role for the request from JWT only (ignore headers)."""
     try:
         if request is not None:
             token = request.cookies.get('ollantay_token')
@@ -1506,7 +1504,10 @@ def listar_creditos(
     """
     try:
         conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
-        role = get_role(x_user_role, request)
+        role = get_role(None, request)
+        if role not in ('admin', 'editor', 'superadmin'):
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='Permission denied')
         user_company = get_company_id_from_request(request)
 
         where = ["v.idTipoPago = 1", "v.estado = 1"]
@@ -1548,6 +1549,9 @@ def listar_creditos(
 def mis_deudas(x_user_role: str = Header(None), request: Request = None):
     """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
     try:
+        role = get_role(None, request)
+        if role not in ('admin','editor','superadmin','viewer','cliente'):
+            raise HTTPException(status_code=403, detail='Permission denied')
         id_persona = get_id_persona_from_request(request)
         if not id_persona:
             raise HTTPException(status_code=401, detail='No autenticado como cliente')

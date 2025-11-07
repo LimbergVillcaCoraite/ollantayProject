@@ -12,7 +12,7 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
 
   const loadClientes = async() => {
     try{
-      const res = await fetch(`${API_PERSONAS}/personas?tipo=cliente`, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+  const res = await fetch(`${API_PERSONAS}/personas?tipo=cliente`, { credentials: 'include' })
       if(!res.ok) throw new Error('Error listando clientes')
       const json = await res.json()
       setClientes(json || [])
@@ -24,7 +24,7 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
     try{
       const params = new URLSearchParams()
       if (cliente) params.set('idCliente', cliente)
-      const res = await fetch(`${API}/creditos?${params.toString()}`, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+  const res = await fetch(`${API}/creditos?${params.toString()}`, { credentials: 'include' })
       if(!res.ok) throw new Error(`HTTP ${res.status}`)
       const j = await res.json()
       setCredits(j)
