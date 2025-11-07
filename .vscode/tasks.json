@@ -246,6 +246,17 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "Restart venta_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"venta_service"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }
