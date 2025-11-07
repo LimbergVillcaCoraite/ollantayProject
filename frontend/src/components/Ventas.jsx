@@ -79,7 +79,7 @@ export default function Ventas({ API, userRole }) {
     venderUnidades: false,
     unidades: '',
     unidadesPorPaquete: '',
-    loteInfo: null // Info del lote FEFO (c�digo, vencimiento, precio)
+  loteInfo: null // Info del lote FEFO (código, vencimiento, precio)
   });
   const [productosSugeridos, setProductosSugeridos] = useState([]);
   const [submitting, setSubmitting] = useState(false);
@@ -2467,7 +2467,7 @@ export default function Ventas({ API, userRole }) {
               <table className="min-w-full border dark:border-gray-700">
               <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0 z-10">
                 <tr>
-                  <th className="p-3 text-left dark:text-gray-200">C�digo</th>
+                  <th className="p-3 text-left dark:text-gray-200">Código</th>
                   <th className="p-3 text-left dark:text-gray-200">Fecha</th>
                   <th className="p-3 text-left dark:text-gray-200">Cliente</th>
                   <th className="p-3 text-left dark:text-gray-200">Empresa</th>

@@ -1765,7 +1765,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   <table className="min-w-full text-xs sm:text-sm border dark:border-gray-700">
                     <thead className="sticky top-0 bg-indigo-100 dark:bg-indigo-900/60">
                       <tr>
-                        <th className="p-2 text-left">C�digo</th>
+                        <th className="p-2 text-left">Código</th>
                         <th className="p-2 text-left">Producto</th>
                         <th className="p-2 text-left">Proveedor</th>
                         <th className="p-2 text-right">Precio Compra</th>
