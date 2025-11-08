@@ -2526,6 +2526,20 @@ export default function Ventas({ API, userRole }) {
                             <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
                               {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
                             </button>
+                            <button 
+                              onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
+                              className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                              title="Imprimir Ticket"
+                            >
+                              🧾 Ticket
+                            </button>
+                            <button 
+                              onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
+                              className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                              title="Imprimir A4"
+                            >
+                              📄 A4
+                            </button>
                             {v.estado === 1 && (userRole === 'admin' || userRole === 'editor' || userRole === 'superadmin') && (
                               <button onClick={() => registrarPagoVenta(v)} className="px-2 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700">
                                 💵 Pagar
@@ -2600,6 +2614,20 @@ export default function Ventas({ API, userRole }) {
                       <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
                         {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver'}
                       </button>
+                        <button 
+                          onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
+                          className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                          title="Imprimir Ticket"
+                        >
+                          🧾
+                        </button>
+                        <button 
+                          onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
+                          className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                          title="Imprimir A4"
+                        >
+                          📄
+                        </button>
                       {v.estado === 1 && (userRole === 'admin' || userRole === 'superadmin') && (
                         <button onClick={() => anularVenta(v.idVenta)} className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700">
                           ❌

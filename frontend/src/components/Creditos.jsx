@@ -22,13 +22,37 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
   const fetchCredits = async () => {
     setLoading(true); setError('')
     try{
+      // Build sanitized query params (only send numeric idCliente)
       const params = new URLSearchParams()
-      if (cliente) params.set('idCliente', cliente)
-  const res = await fetch(`${API}/creditos?${params.toString()}`, { credentials: 'include' })
-      if(!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (cliente && /^\d+$/.test(String(cliente))) {
+        params.set('idCliente', String(cliente))
+      }
+      // Always enforce solo_pendientes true explicitly to avoid blank bool coercion issues
+      params.set('solo_pendientes', 'true')
+  // Usar alias /creditos-list para evitar choque con /ventas/{id}
+  let url = `${API}/creditos-list`
+      const qs = params.toString()
+      if (qs) url += `?${qs}`
+
+      let res = await fetch(url, { credentials: 'include' })
+      if (res.status === 422) {
+        // Attempt retry without any filters (fallback) in case query coercion failed
+        console.warn('422 al listar créditos. Reintentando sin parámetros...')
+  res = await fetch(`${API}/creditos-list`, { credentials: 'include' })
+      }
+      if(!res.ok) {
+        // Try to extract FastAPI validation detail if present
+        let detail = ''
+        try { const jsonErr = await res.json(); detail = jsonErr?.detail ? `: ${JSON.stringify(jsonErr.detail)}` : '' } catch {}
+        throw new Error(`HTTP ${res.status}${detail}`)
+      }
       const j = await res.json()
-      setCredits(j)
-    }catch(e){ setError(e.message || 'Error') }
+      setCredits(Array.isArray(j) ? j : [])
+    }catch(e){
+      console.error('Error cargando créditos:', e)
+      setError(e.message || 'Error')
+      setCredits([])
+    }
     finally{ setLoading(false) }
   }
 

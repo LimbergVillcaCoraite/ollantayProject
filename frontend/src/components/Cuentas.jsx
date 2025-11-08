@@ -289,7 +289,7 @@ export default function Cuentas() {
       </div>
 
       {/* Tabla de Cuentas */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-x-auto">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
         <table className="min-w-full">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
@@ -497,7 +497,7 @@ export default function Cuentas() {
               </div>
             </div>
 
-            <div className="border rounded dark:border-gray-600 overflow-x-auto">
+            <div className="border rounded dark:border-gray-600">
               <table className="min-w-full">
                 <thead className="bg-gray-100 dark:bg-gray-700">
                   <tr>

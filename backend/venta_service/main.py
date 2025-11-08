@@ -1491,9 +1491,8 @@ def obtener_recibo_pago(id: int, mov_id: int, x_user_role: str = Header(None), r
 
 @app.get('/ventas/creditos')
 def listar_creditos(
-    idCliente: Optional[int] = None,
-    solo_pendientes: bool = True,
-    x_user_role: str = Header(None),
+    idCliente: Optional[str] = None,
+    solo_pendientes: Optional[str] = 'true',
     request: Request = None
 ):
     """Listado de ventas a crédito con saldo.
@@ -1514,8 +1513,14 @@ def listar_creditos(
         params = []
         if role != 'superadmin' and user_company is not None:
             where.append('v.idEmpresa = %s'); params.append(user_company)
+        # Sanitize idCliente (may arrive as string); ignore invalid values
         if idCliente is not None:
-            where.append('v.idCliente = %s'); params.append(idCliente)
+            try:
+                idc = int(idCliente) if str(idCliente).strip().isdigit() else None
+            except Exception:
+                idc = None
+            if idc is not None:
+                where.append('v.idCliente = %s'); params.append(idc)
 
         query = f'''
             SELECT 
@@ -1538,15 +1543,28 @@ def listar_creditos(
             r['montoPagado'] = float(r.get('montoPagado') or 0)
             r['saldo'] = float(r.get('saldo') or 0)
         cur.close(); conn.close()
-        if solo_pendientes:
+        # Normalize solo_pendientes flag (accept true/false/1/0/yes/no)
+        sp = str(solo_pendientes).strip().lower() if solo_pendientes is not None else 'true'
+        sp_flag = sp in ('1','true','t','yes','y','si','sí')
+        if sp_flag:
             rows = [r for r in rows if r['saldo'] > 0]
         return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Alias para evitar conflicto de enrutamiento con /ventas/{id} en algunos escenarios de proxy.
+# Frontend puede usar /ventas/creditos-list en lugar de /ventas/creditos para esquivar 422 por parseo de path.
+@app.get('/ventas/creditos-list')
+def listar_creditos_alias(
+    idCliente: Optional[str] = None,
+    solo_pendientes: Optional[str] = 'true',
+    request: Request = None
+):
+    return listar_creditos(idCliente=idCliente, solo_pendientes=solo_pendientes, request=request)
+
 
 @app.get('/mis-deudas')
-def mis_deudas(x_user_role: str = Header(None), request: Request = None):
+def mis_deudas(request: Request = None):
     """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
     try:
         role = get_role(None, request)
@@ -1582,6 +1600,487 @@ def mis_deudas(x_user_role: str = Header(None), request: Request = None):
             total_deuda += r['saldo']
         cur.close(); conn.close()
         return { 'ok': True, 'idCliente': id_persona, 'total_deuda': total_deuda, 'ventas': rows }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/{id}/factura')
+def imprimir_factura(
+    id: int,
+    request: Request = None,
+    format: Optional[str] = 'pdf',
+    style: Optional[str] = 'a4',
+    width_mm: Optional[int] = 80
+):
+    """Genera e imprime factura completa de una venta con todos los detalles.
+    
+    Formato: pdf (default) o html
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import mm
+        from reportlab.lib.utils import ImageReader
+        import base64
+        # QR support (optional)
+        try:
+            import qrcode
+        except Exception:
+            qrcode = None
+        
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True, buffered=True)
+        role = get_role(None, request)
+        user_company = get_company_id_from_request(request)
+        
+        # Obtener venta completa
+        cur.execute('''
+            SELECT 
+                v.idVenta, v.codigoVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, ''), ' ', COALESCE(p.apellido_maternoPer,'')) AS nombreCliente,
+                p.ci_persona, p.telefono_persona, p.direccion_persona,
+                v.idEmpresa, e.nombre_empresa AS nombreEmpresa, e.razonSocial, e.nit as nitEmpresa,
+                v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
+            FROM venta_O v
+            LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE v.idVenta = %s
+        ''', (id,))
+        venta = cur.fetchone()
+        
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+        
+        if role not in ('admin','editor','superadmin') and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+        
+        # Obtener detalles
+        cur.execute('''
+            SELECT 
+                dv.idDetalleVenta, dv.idProducto, dv.cantidad_caja, dv.precio_unitario, dv.subtotal,
+                pr.nombreProducto, pr.codigoProducto
+            FROM detalle_venta_O dv
+            LEFT JOIN producto_O pr ON dv.idProducto = pr.idProducto
+            WHERE dv.idVenta = %s
+            ORDER BY dv.idDetalleVenta
+        ''', (id,))
+        detalles = cur.fetchall() or []
+        cur.close(); conn.close()
+        
+        # Generar número de factura
+        fecha_venta_str = venta['fechaVenta'].strftime('%Y%m%d') if venta.get('fechaVenta') else '00000000'
+        numero_factura = f"FAC-{fecha_venta_str}-{venta['idVenta']:06d}"
+        empresa_nombre = venta.get('nombreEmpresa') or venta.get('razonSocial') or 'Empresa'
+        # Cajero desde JWT (si existe)
+        cajero = None
+        try:
+            if request is not None:
+                token = request.cookies.get('ollantay_token')
+                if token:
+                    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                    cajero = payload.get('username') or payload.get('user') or payload.get('email')
+        except Exception:
+            cajero = None
+
+        # Generar QR (si hay librería disponible)
+        qr_png_bytes = None
+        qr_datauri = None
+        if qrcode is not None:
+            qr_text = f"Factura: {numero_factura}\nEmpresa: {empresa_nombre}\nTotal: Bs {float(venta.get('montoTotal') or 0):.2f}"
+            try:
+                img = qrcode.make(qr_text)
+                bio = BytesIO(); img.save(bio, format='PNG')
+                qr_png_bytes = bio.getvalue(); bio.close()
+                qr_datauri = 'data:image/png;base64,' + base64.b64encode(qr_png_bytes).decode('ascii')
+            except Exception:
+                qr_png_bytes = None
+                qr_datauri = None
+        
+        # Ticket estilo supermercado (ancho configurable) - PDF
+        if format == 'pdf' and (style or '').lower() in ('ticket','pos','supermercado'):
+            buffer = BytesIO()
+            from reportlab.lib.pagesizes import landscape
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            # Usamos Courier (monoespaciada) para control de columnas
+            # ReportLab incluye Courier por defecto; no requiere registro
+            width_pts = (max(50, min(int(width_mm or 80), 120))) * mm  # 50-120mm
+            # Altura basada en cabecera + lineas por item
+            base_mm = 55
+            per_item_mm = 6
+            # Estimar líneas extra por nombres largos (aprox 28 chars por línea a 9pt)
+            max_chars = 28
+            extra_lines = 0
+            for d in detalles:
+                nombre = (d.get('nombreProducto') or f"Producto {d['idProducto']}")
+                extra_lines += max(0, (len(nombre) - 1) // max_chars)
+            height_pts = (base_mm + per_item_mm * (len(detalles) + extra_lines) + 20) * mm
+            c = canvas.Canvas(buffer, pagesize=(width_pts, height_pts))
+            x_margin = 4 * mm
+            y = height_pts - 6 * mm
+            content_width = width_pts - 2 * x_margin
+
+            # Header centrado
+            c.setFont("Courier-Bold", 10)
+            c.drawCentredString(width_pts/2, y, empresa_nombre[:40])
+            y -= 10
+            c.setFont("Courier", 8)
+            if venta.get('nitEmpresa'):
+                c.drawCentredString(width_pts/2, y, f"NIT: {venta['nitEmpresa']}")
+                y -= 9
+            c.drawCentredString(width_pts/2, y, f"FACTURA {numero_factura}")
+            y -= 9
+            fecha_str = venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'
+            c.drawCentredString(width_pts/2, y, f"Fecha: {fecha_str}")
+            if cajero:
+                y -= 9
+                c.drawCentredString(width_pts/2, y, f"Cajero: {str(cajero)[:30]}")
+            y -= 12
+            c.line(x_margin, y, width_pts - x_margin, y)
+            y -= 10
+
+            # Cliente
+            c.setFont("Courier-Bold", 9)
+            c.drawString(x_margin, y, "Cliente:")
+            c.setFont("Courier", 9)
+            c.drawRightString(width_pts - x_margin, y, (venta.get('nombreCliente') or 'N/A')[:30])
+            y -= 10
+            if venta.get('ci_persona'):
+                c.drawString(x_margin, y, "CI:")
+                c.drawRightString(width_pts - x_margin, y, str(venta['ci_persona'])[:20])
+                y -= 10
+            if venta.get('telefono_persona'):
+                c.drawString(x_margin, y, "Tel:")
+                c.drawRightString(width_pts - x_margin, y, str(venta['telefono_persona'])[:20])
+                y -= 10
+            c.line(x_margin, y, width_pts - x_margin, y)
+            y -= 10
+
+            # Detalle
+            c.setFont("Courier-Bold", 9)
+            c.drawString(x_margin, y, "DETALLE")
+            y -= 12
+            c.setFont("Courier", 9)
+            # Columnas: cant x p.unit  subtotal a la derecha
+            for d in detalles:
+                nombre = (d.get('nombreProducto') or f"Producto {d['idProducto']}")
+                qty = float(d.get('cantidad_caja') or 0)
+                pu = float(d.get('precio_unitario') or 0)
+                st = float(d.get('subtotal') or qty*pu)
+                # Nombre (puede envolver)
+                # dividir por longitud aprox
+                max_chars = 28
+                lines = [nombre[i:i+max_chars] for i in range(0, len(nombre), max_chars)] or ['']
+                for idx, line in enumerate(lines):
+                    if idx == 0:
+                        c.drawString(x_margin, y, line)
+                    else:
+                        c.drawString(x_margin + 2*mm, y, line)
+                    y -= 9
+                # Línea de cantidad y montos
+                left = f"{qty:.2f} x {pu:.2f}".rjust(0)
+                right = f"Bs {st:.2f}"
+                c.drawString(x_margin, y, left)
+                c.drawRightString(width_pts - x_margin, y, right)
+                y -= 10
+                if y < 15 * mm:
+                    # Iniciar nueva página si se agota espacio
+                    c.showPage()
+                    height_pts = 120 * mm
+                    c.setPageSize((width_pts, height_pts))
+                    y = height_pts - 10 * mm
+            c.line(x_margin, y, width_pts - x_margin, y)
+            y -= 12
+
+            # Totales
+            total = float(venta.get('montoTotal') or 0)
+            pagado = float(venta.get('montoPagado') or 0)
+            c.setFont("Courier-Bold", 10)
+            c.drawString(x_margin, y, "TOTAL")
+            c.drawRightString(width_pts - x_margin, y, f"Bs {total:.2f}")
+            y -= 12
+            if pagado:
+                c.setFont("Courier", 9)
+                c.drawString(x_margin, y, "Pagado")
+                c.drawRightString(width_pts - x_margin, y, f"Bs {pagado:.2f}")
+                y -= 10
+                cambio = pagado - total
+                if cambio > 0:
+                    c.drawString(x_margin, y, "Cambio")
+                    c.drawRightString(width_pts - x_margin, y, f"Bs {cambio:.2f}")
+                    y -= 10
+
+            # QR (opcional)
+            if qr_png_bytes:
+                try:
+                    img_reader = ImageReader(BytesIO(qr_png_bytes))
+                    size = 28 * mm
+                    c.drawImage(img_reader, width_pts/2 - size/2, y - size, width=size, height=size, preserveAspectRatio=True, mask='auto')
+                    y -= size + 6
+                except Exception:
+                    pass
+
+            y -= 6
+            c.setFont("Courier-Oblique", 8)
+            c.drawCentredString(width_pts/2, y, "¡Gracias por su compra!")
+            y -= 8
+            c.setFont("Courier", 7)
+            c.drawCentredString(width_pts/2, y, "Sistema Ollantay")
+            c.showPage()
+            c.save()
+
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
+            headers = { 'Content-Disposition': f'inline; filename="ticket-{numero_factura}.pdf"' }
+            return Response(content=pdf_bytes, media_type='application/pdf', headers=headers)
+
+        if format == 'pdf':
+            buffer = BytesIO()
+            c = canvas.Canvas(buffer, pagesize=A4)
+            width, height = A4
+            x_margin = 20 * mm
+            y_margin = 20 * mm
+            y = height - y_margin
+            
+            # Header
+            c.setFont("Helvetica-Bold", 18)
+            c.drawString(x_margin, y, empresa_nombre)
+            c.setFont("Helvetica", 10)
+            y -= 15
+            if venta.get('nitEmpresa'):
+                c.drawString(x_margin, y, f"NIT: {venta['nitEmpresa']}")
+                y -= 12
+            c.setFont("Helvetica-Bold", 12)
+            c.drawRightString(width - x_margin, height - y_margin, f"FACTURA")
+            c.setFont("Helvetica", 10)
+            c.drawRightString(width - x_margin, height - y_margin - 15, f"N°: {numero_factura}")
+            
+            y -= 20
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 20
+            
+            # Datos de cliente
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(x_margin, y, "DATOS DEL CLIENTE")
+            y -= 15
+            c.setFont("Helvetica", 10)
+            c.drawString(x_margin, y, f"Cliente: {venta.get('nombreCliente') or 'N/A'}")
+            y -= 12
+            if venta.get('ci_persona'):
+                c.drawString(x_margin, y, f"CI: {venta['ci_persona']}")
+                y -= 12
+            if venta.get('telefono_persona'):
+                c.drawString(x_margin, y, f"Teléfono: {venta['telefono_persona']}")
+                y -= 12
+            if venta.get('direccion_persona'):
+                c.drawString(x_margin, y, f"Dirección: {venta['direccion_persona']}")
+                y -= 12
+            
+            y -= 10
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 20
+            
+            # Datos de venta
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(x_margin, y, "DATOS DE LA VENTA")
+            y -= 15
+            c.setFont("Helvetica", 10)
+            fecha_str = venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'
+            c.drawString(x_margin, y, f"Fecha: {fecha_str}")
+            y -= 12
+            c.drawString(x_margin, y, f"Tipo de Venta: {venta.get('tipoVenta') or 'N/A'}")
+            y -= 12
+            c.drawString(x_margin, y, f"Forma de Pago: {venta.get('tipoPago') or 'N/A'}")
+            y -= 12
+            
+            y -= 10
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 20
+            
+            # Tabla de productos
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(x_margin, y, "DETALLE DE PRODUCTOS")
+            y -= 15
+            
+            # Encabezados
+            c.setFont("Helvetica-Bold", 9)
+            col1 = x_margin
+            col2 = x_margin + 90
+            col3 = x_margin + 120
+            col4 = x_margin + 150
+            c.drawString(col1, y, "Producto")
+            c.drawRightString(col2, y, "Cant.")
+            c.drawRightString(col3, y, "P.Unit")
+            c.drawRightString(col4, y, "Subtotal")
+            y -= 12
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 5
+            
+            # Items
+            c.setFont("Helvetica", 9)
+            for det in detalles:
+                if y < 50 * mm:
+                    c.showPage()
+                    y = height - y_margin
+                nombre = (det.get('nombreProducto') or f"Producto {det['idProducto']}")[:40]
+                c.drawString(col1, y, nombre)
+                c.drawRightString(col2, y, f"{float(det.get('cantidad_caja') or 0):.2f}")
+                c.drawRightString(col3, y, f"Bs {float(det.get('precio_unitario') or 0):.2f}")
+                c.drawRightString(col4, y, f"Bs {float(det.get('subtotal') or 0):.2f}")
+                y -= 12
+            
+            y -= 5
+            c.line(x_margin, y, width - x_margin, y)
+            y -= 15
+            
+            # Totales
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(width - 100 * mm, y, "TOTAL:")
+            c.drawRightString(width - x_margin, y, f"Bs {float(venta.get('montoTotal') or 0):.2f}")
+            y -= 15
+            
+            if venta.get('montoPagado'):
+                c.setFont("Helvetica", 10)
+                c.drawString(width - 100 * mm, y, "Pagado:")
+                c.drawRightString(width - x_margin, y, f"Bs {float(venta['montoPagado']):.2f}")
+                y -= 12
+                saldo = float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0)
+                if saldo > 0:
+                    c.setFont("Helvetica-Bold", 10)
+                    c.drawString(width - 100 * mm, y, "Saldo:")
+                    c.drawRightString(width - x_margin, y, f"Bs {saldo:.2f}")
+                    y -= 12
+            
+            if venta.get('observaciones'):
+                y -= 10
+                c.setFont("Helvetica-Oblique", 9)
+                c.drawString(x_margin, y, f"Observaciones: {venta['observaciones'][:80]}")
+            
+            # Footer
+            y = 30 * mm
+            c.setFont("Helvetica-Oblique", 8)
+            c.drawCentredString(width / 2, y, "Generado automáticamente por Sistema Ollantay")
+            
+            c.showPage()
+            c.save()
+            
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
+            headers = {
+                'Content-Disposition': f'inline; filename="factura-{numero_factura}.pdf"'
+            }
+            return Response(content=pdf_bytes, media_type='application/pdf', headers=headers)
+        
+        # HTML format (incluye estilo ticket con style=ticket)
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Factura {numero_factura}</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; }}
+                .section {{ margin: 15px 0; }}
+                .label {{ font-weight: bold; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                th {{ background-color: #f2f2f2; }}
+                .total {{ text-align: right; font-size: 1.2em; font-weight: bold; margin-top: 20px; }}
+                @media print {{ button {{ display: none; }} }}
+            </style>
+            {'' if (style or '').lower() not in ('ticket','pos','supermercado') else f'''
+            <style>
+              @page {{ size: {max(50, min(int(width_mm or 80), 120))}mm auto; margin: 0; }}
+              body {{ font-family: 'Courier New', monospace; width: {max(50, min(int(width_mm or 80), 120))}mm; margin: 0 auto; padding: 6mm 4mm; }}
+              .line {{ border-top: 1px dashed #000; margin: 6px 0; }}
+              .row {{ display: flex; justify-content: space-between; font-size: 12px; }}
+              .center {{ text-align: center; }}
+              table {{ width: 100%; border-collapse: collapse; }}
+              th, td {{ border: none; padding: 2px 0; font-size: 12px; }}
+              th {{ text-align: left; border-bottom: 1px dashed #000; }}
+              .total {{ font-weight: bold; font-size: 13px; text-align: right; }}
+            </style>
+            '''}
+        </head>
+        <body>
+            {(
+            f"""
+            <button onclick=\"window.print()\">🖨️ Imprimir</button>
+            <div class=\"header\">
+                <h1>{empresa_nombre}</h1>
+                {"<p>NIT: " + str(venta.get('nitEmpresa')) + "</p>" if venta.get('nitEmpresa') else ""}
+                <h2>FACTURA N°: {numero_factura}</h2>
+            </div>
+            <div class=\"section\"> 
+                <h3>Datos del Cliente</h3>
+                <p><span class=\"label\">Cliente:</span> {venta.get('nombreCliente') or 'N/A'}</p>
+                {"<p><span class='label'>CI:</span> " + str(venta.get('ci_persona')) + "</p>" if venta.get('ci_persona') else ""}
+                {"<p><span class='label'>Teléfono:</span> " + str(venta.get('telefono_persona')) + "</p>" if venta.get('telefono_persona') else ""}
+                {"<p><span class='label'>Dirección:</span> " + str(venta.get('direccion_persona')) + "</p>" if venta.get('direccion_persona') else ""}
+            </div>
+            <div class=\"section\">
+                <h3>Datos de la Venta</h3>
+                <p><span class=\"label\">Fecha:</span> {venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'}</p>
+                <p><span class=\"label\">Tipo de Venta:</span> {venta.get('tipoVenta') or 'N/A'}</p>
+                <p><span class=\"label\">Forma de Pago:</span> {venta.get('tipoPago') or 'N/A'}</p>
+            </div>
+            <div class=\"section\">
+                <h3>Detalle de Productos</h3>
+                <table>
+                    <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio Unit.</th><th>Subtotal</th></tr></thead>
+                    <tbody>{"".join([f"<tr><td>{d.get('nombreProducto') or 'Producto ' + str(d['idProducto'])}</td><td>{float(d.get('cantidad_caja') or 0):.2f}</td><td>Bs {float(d.get('precio_unitario') or 0):.2f}</td><td>Bs {float(d.get('subtotal') or 0):.2f}</td></tr>" for d in detalles])}</tbody>
+                </table>
+            </div>
+            <div class=\"total\">
+                <p>TOTAL: Bs {float(venta.get('montoTotal') or 0):.2f}</p>
+                {"<p>Pagado: Bs " + f"{float(venta.get('montoPagado') or 0):.2f}" + "</p>" if venta.get('montoPagado') else ""}
+                {"<p>Saldo: Bs " + f"{float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0):.2f}" + "</p>" if venta.get('montoPagado') and (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0)) > 0 else ""}
+            </div>
+            <div style=\"text-align: center; margin-top: 40px; color: #666; font-size: 0.9em;\">Generado automáticamente por Sistema Ollantay</div>
+            """
+            ) if (style or '').lower() not in ('ticket','pos','supermercado') else (
+            f"""
+            <div class=\"center\">
+              <div style=\"font-weight:bold;\">{empresa_nombre}</div>
+              {"<div>NIT: " + str(venta.get('nitEmpresa')) + "</div>" if venta.get('nitEmpresa') else ""}
+              <div>FACTURA {numero_factura}</div>
+              <div>{venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'}</div>
+            </div>
+            <div class=\"line\"></div>
+            <div class=\"row\"><div>Cliente:</div><div>{(venta.get('nombreCliente') or 'N/A')[:26]}</div></div>
+            {"<div class='row'><div>CI:</div><div>" + str(venta.get('ci_persona')) + "</div></div>" if venta.get('ci_persona') else ""}
+            <div class=\"line\"></div>
+            <table>
+              <thead><tr><th>Producto</th><th style=\"text-align:right\">Imp.</th></tr></thead>
+              <tbody>
+                {"".join([f"<tr><td>{(d.get('nombreProducto') or 'Producto ' + str(d['idProducto']))[:34]}<br><span style='font-size:11px'>{float(d.get('cantidad_caja') or 0):.2f} x {float(d.get('precio_unitario') or 0):.2f}</span></td><td style='text-align:right'>Bs {float(d.get('subtotal') or 0):.2f}</td></tr>" for d in detalles])}
+              </tbody>
+            </table>
+            <div class=\"line\"></div>
+            <div class=\"row\"><div>TOTAL</div><div>Bs {float(venta.get('montoTotal') or 0):.2f}</div></div>
+            {"<div class='row'><div>Pagado</div><div>Bs " + f"{float(venta.get('montoPagado') or 0):.2f}" + "</div></div>" if venta.get('montoPagado') else ""}
+            {"<div class='row'><div>Saldo</div><div>Bs " + f"{float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0):.2f}" + "</div></div>" if venta.get('montoPagado') and (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0)) > 0 else ""}
+            <div class=\"line\"></div>
+            <div class=\"line\"></div>
+            <div class=\"row\"><div>Cajero</div><div>{(str(cajero) if cajero else '-')[:26]}</div></div>
+            {(f"<div class='center'><img alt='QR' src='{qr_datauri}' style='width:120px;height:120px;object-fit:contain;margin-top:6px' /></div>" if qr_datauri else '')}
+            <div class=\"center\">¡Gracias por su compra!<br/><span style=\"font-size:11px\">Sistema Ollantay</span></div>
+            """
+            )}
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html, status_code=200)
+        
     except HTTPException:
         raise
     except Exception as e:
