@@ -2241,3 +2241,156 @@ def update_role_permissions(
     except Exception as e:
         print(f"❌ ERROR updating role permissions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== AUTO-SYNC PERMISSIONS SYSTEM ==========
+
+@app.get('/permissions/pages')
+def get_available_pages(x_user_role: Optional[str] = Header(None), request: Request = None):
+    """
+    Returns all pages defined in the frontend App.jsx with their corresponding permissions.
+    This endpoint reads the usePermissions.js mapping to discover all available pages.
+    """
+    require_admin(x_user_role, request)
+    
+    # Define the canonical mapping between pages and permissions
+    # This should match the logic in frontend/src/hooks/usePermissions.js
+    page_permissions = {
+        'tipos': {'resource': 'tipos', 'action': 'view', 'description': 'Ver tipos'},
+        'personas': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas'},
+        'personas_mapa': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas en mapa'},
+        'empresas': {'resource': 'empresas', 'action': 'view', 'description': 'Ver empresas'},
+        'prestamos': {'resource': 'prestamos', 'action': 'view', 'description': 'Ver prestamos'},
+        'productos': {'resource': 'productos', 'action': 'view', 'description': 'Ver productos'},
+        'caja': {'resource': 'caja', 'action': 'view', 'description': 'Ver caja'},
+        'ventas': {'resource': 'ventas', 'action': 'view', 'description': 'Ver ventas'},
+        'predicciones': {'resource': 'ventas', 'action': 'view', 'description': 'Ver predicciones (IA)'},
+        'creditos': {'resource': 'ventas', 'action': 'view', 'description': 'Ver creditos (Admin)'},
+        'misdeudas': {'resource': 'none', 'action': 'none', 'description': 'Ver mis deudas (todos los usuarios)'},
+        'compras': {'resource': 'compras', 'action': 'view', 'description': 'Ver compras'},
+        'gastos': {'resource': 'caja', 'action': 'view', 'description': 'Ver gastos'},
+        'proveedores': {'resource': 'proveedores', 'action': 'view', 'description': 'Ver proveedores'},
+        'rutas': {'resource': 'rutas', 'action': 'view', 'description': 'Ver rutas'},
+        'cuentas': {'resource': 'cuentas', 'action': 'view', 'description': 'Ver cuentas'},
+        'usuarios': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar usuarios'},
+        'roles': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar roles y permisos'},
+        'superadmin': {'resource': 'superadmin', 'action': 'access', 'description': 'Acceso SuperAdmin'}
+    }
+    
+    return {
+        'pages': page_permissions,
+        'total': len(page_permissions)
+    }
+
+
+@app.post('/permissions/sync')
+def sync_permissions(x_user_role: Optional[str] = Header(None), request: Request = None):
+    """
+    Synchronizes permissions in the database with the pages defined in the frontend.
+    Creates missing permissions automatically based on the page definitions.
+    Returns a report of created permissions.
+    """
+    require_admin(x_user_role, request)
+    
+    try:
+        # Get all defined pages and their permissions
+        pages_data = get_available_pages(x_user_role, request)
+        page_permissions = pages_data['pages']
+        
+        # Connect to database
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Get existing permissions
+        cursor.execute('SELECT resource, action FROM permission_O')
+        existing_perms = {(row['resource'], row['action']) for row in cursor.fetchall()}
+        
+        # Find missing permissions
+        missing_perms = []
+        for page, perm_data in page_permissions.items():
+            resource = perm_data['resource']
+            action = perm_data['action']
+            
+            # Skip special cases that don't need database permissions
+            if resource == 'none':
+                continue
+            
+            if (resource, action) not in existing_perms:
+                missing_perms.append({
+                    'page': page,
+                    'resource': resource,
+                    'action': action,
+                    'description': perm_data['description']
+                })
+        
+        # Create missing permissions
+        created = []
+        for perm in missing_perms:
+            cursor.execute(
+                'INSERT INTO permission_O (resource, action, description) VALUES (%s, %s, %s)',
+                (perm['resource'], perm['action'], perm['description'])
+            )
+            created.append({
+                'page': perm['page'],
+                'permission': f"{perm['resource']}:{perm['action']}",
+                'description': perm['description']
+            })
+        
+        conn.commit()
+        
+        # Also ensure all CRUD operations exist for each resource
+        resources = set()
+        for page, perm_data in page_permissions.items():
+            if perm_data['resource'] != 'none':
+                resources.add(perm_data['resource'])
+        
+        # Standard CRUD actions for each resource
+        crud_actions = ['view', 'create', 'update', 'delete']
+        crud_created = []
+        
+        for resource in resources:
+            # Skip special resources that don't need full CRUD
+            if resource in ['superadmin', 'roles']:
+                continue
+            
+            for action in crud_actions:
+                if (resource, action) not in existing_perms:
+                    # Check if we already created it
+                    already_created = any(p['resource'] == resource and p['action'] == action for p in missing_perms)
+                    if not already_created:
+                        description = f"{action.capitalize()} {resource}"
+                        if action == 'view':
+                            description = f"Ver {resource}"
+                        elif action == 'create':
+                            description = f"Crear {resource}"
+                        elif action == 'update':
+                            description = f"Actualizar {resource}"
+                        elif action == 'delete':
+                            description = f"Eliminar {resource}"
+                        
+                        cursor.execute(
+                            'INSERT INTO permission_O (resource, action, description) VALUES (%s, %s, %s)',
+                            (resource, action, description)
+                        )
+                        crud_created.append({
+                            'permission': f"{resource}:{action}",
+                            'description': description
+                        })
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return {
+            'success': True,
+            'created_from_pages': created,
+            'created_crud': crud_created,
+            'total_created': len(created) + len(crud_created),
+            'message': f"Sincronizacion completada: {len(created)} permisos de paginas + {len(crud_created)} permisos CRUD creados"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ ERROR syncing permissions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

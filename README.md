@@ -128,7 +128,7 @@ docker compose logs -f
 ### Credenciales por Defecto
 ```
 Usuario: admin
-Contraseña: (configurar en primera ejecución)
+Contraseña: <configurar-en-primera-ejecución>
 ```
 
 ## 🛠️ Comandos Útiles
@@ -154,10 +154,10 @@ docker compose exec persona_service bash
 docker compose exec mysql8032 mysql -u root -p SystemaOllantay
 
 # Backup de base de datos
-docker compose exec mysql8032 mysqldump -u root -p SystemaOllantay > backup.sql
+docker compose exec mysql8032 mysqldump -u root -p<password> SystemaOllantay > backup.sql
 
 # Restaurar backup
-docker compose exec -T mysql8032 mysql -u root -p SystemaOllantay < backup.sql
+docker compose exec -T mysql8032 mysql -u root -p<password> SystemaOllantay < backup.sql
 ```
 
 ### Desarrollo
@@ -201,7 +201,7 @@ docker stats
 DATABASE_HOST=mysql8032
 DATABASE_PORT=3306
 DATABASE_USER=root
-DATABASE_PASSWORD=P4assw@rd
+DATABASE_PASSWORD=<tu-password-segura>
 DATABASE_NAME=SystemaOllantay
 ```
 
@@ -322,7 +322,7 @@ mysql8032:
 4. **Configurar backups automáticos**
 ```bash
 # Cron job para backup diario
-0 2 * * * docker compose exec mysql8032 mysqldump -u root -p SystemaOllantay > /backups/$(date +%Y%m%d).sql
+0 2 * * * docker compose exec mysql8032 mysqldump -u root -p<password> SystemaOllantay > /backups/$(date +%Y%m%d).sql
 ```
 
 ## 🐛 Solución de Problemas

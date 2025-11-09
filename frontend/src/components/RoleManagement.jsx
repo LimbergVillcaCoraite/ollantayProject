@@ -260,6 +260,66 @@ export default function RoleManagement({ API, userRole = 'admin', currentUserPer
     }
   }
 
+  // Sincronizar permisos automáticamente
+  const handleSyncPermissions = async () => {
+    try {
+      setSaving(true)
+      console.log('🔄 Iniciando sincronización de permisos...')
+      
+      const res = await fetch(`${API}/permissions/sync`, {
+        method: 'POST',
+        headers: { 
+          'X-User-Role': userRole,
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include'
+      })
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.detail || `Error HTTP ${res.status}`)
+      }
+      
+      const data = await res.json()
+      console.log('✅ Sincronización completada:', data)
+      
+      // Recargar permisos
+      await loadPermissions()
+      await loadRolePermissions()
+      
+      // Mostrar mensaje de éxito con detalles
+      const message = data.total_created > 0 
+        ? `Sincronización exitosa: ${data.total_created} permisos creados`
+        : 'Todos los permisos ya están sincronizados'
+      
+      try { 
+        toast.push(message, 'success') 
+      } catch (e) { 
+        try { 
+          (await import('../toast')).showToast(message, 'success') 
+        } catch(_){} 
+      }
+      
+      // Si hubo cambios, recargar también la sesión del usuario
+      if (data.total_created > 0 && onPermissionsUpdate) {
+        setTimeout(() => {
+          onPermissionsUpdate()
+        }, 500)
+      }
+    } catch (err) {
+      console.error('❌ Error sincronizando permisos:', err)
+      try { 
+        toast.push('Error en sincronización: ' + err.message, 'error') 
+      } catch (e) { 
+        try { 
+          (await import('../toast')).showToast('Error en sincronización: ' + err.message, 'error') 
+        } catch(_){} 
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Toggle permiso para un rol
   const togglePermission = (roleId, permissionId) => {
     const currentPerms = rolePermissions[roleId] || []
@@ -470,6 +530,24 @@ export default function RoleManagement({ API, userRole = 'admin', currentUserPer
               </option>
             ))}
           </select>
+
+          {/* Botón sincronizar permisos */}
+          <button
+            onClick={handleSyncPermissions}
+            disabled={saving}
+            className="px-4 py-2 rounded-lg font-medium transition-colors bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white flex items-center gap-2"
+          >
+            {saving ? (
+              <>
+                <svg className="animate-spin h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Sincronizando...
+              </>
+            ) : (
+              <>🔄 Sincronizar Permisos</>
+            )}
+          </button>
 
           {/* Botón crear rol */}
           <button
