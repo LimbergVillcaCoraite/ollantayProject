@@ -111,7 +111,25 @@ export default function Ventas({ API, userRole }) {
   const [productosSugEntrega, setProductosSugEntrega] = useState([]);
   const [rutaPrecioCache, setRutaPrecioCache] = useState({}); // idRuta -> { incremento_general, precios: [{idProducto, incremento_precio}] }
   const [finalizandoEntrega, setFinalizandoEntrega] = useState(null); // { idEntrega, detalles con input de devoluci�n }
-    const [mapaEntrega, setMapaEntrega] = useState(null); // { idEntrega, numeroEntrega, ultima, online, socket }
+     const [mapaEntrega, setMapaEntrega] = useState(null); // { idEntrega, numeroEntrega, ultima, online, socket }
+  
+    // Estados para gestión de créditos
+    const [showCreditos, setShowCreditos] = useState(false);
+    const [creditosCliente, setCreditosCliente] = useState(null);
+    const [creditosLoading, setCreditosLoading] = useState(false);
+    const [creditosError, setCreditosError] = useState('');
+    const [clienteCreditoId, setClienteCreditoId] = useState('');
+    const [clienteCreditoBusqueda, setClienteCreditoBusqueda] = useState('');
+    const [clienteCreditoSugeridos, setClienteCreditoSugeridos] = useState([]);
+    const [formPagoCredito, setFormPagoCredito] = useState({
+      monto: '',
+      modo: 'total', // 'total' o 'single'
+      idVenta: '',
+      metodo: 'efectivo',
+      referencia: '',
+      observaciones: ''
+    });
+    const [pagandoCredito, setPagandoCredito] = useState(false);
   
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -292,6 +310,136 @@ export default function Ventas({ API, userRole }) {
     }
   };
   
+    // ====== Gestión de créditos ======
+    const buscarClientesCredito = useCallback(async (query) => {
+      if (!query || query.length < 2) {
+        setClienteCreditoSugeridos([]);
+        return;
+      }
+      try {
+        const res = await fetch(`${API_PERSONAS}/persons`, {
+          credentials: 'include'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const q = query.toLowerCase();
+          const filtered = (Array.isArray(data) ? data : []).filter(p => {
+            const nombre = `${p.nombres_persona || ''} ${p.apellido_paternoPersona || ''} ${p.apellido_maternoPer || ''}`.toLowerCase();
+            const ci = String(p.ci_persona || '').toLowerCase();
+            return nombre.includes(q) || ci.includes(q);
+          }).slice(0, 10);
+          setClienteCreditoSugeridos(filtered);
+        }
+      } catch (e) {
+        console.error('Error buscando clientes:', e);
+      }
+    }, [API_PERSONAS]);
+
+    const loadCreditosCliente = async (idPersona) => {
+      if (!idPersona) {
+        setCreditosError('Debe seleccionar un cliente');
+        return;
+      }
+      setCreditosLoading(true);
+      setCreditosError('');
+      try {
+        const res = await fetch(`${API}/creditos/cliente?idPersona=${idPersona}`, {
+          credentials: 'include',
+          headers: userRole ? { 'X-User-Role': userRole } : {}
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          throw new Error(`HTTP ${res.status}${errText ? ` - ${errText.substring(0, 120)}` : ''}`);
+        }
+        const data = await res.json();
+        setCreditosCliente(data);
+        setFormPagoCredito({
+          monto: data.totales.totalSaldo > 0 ? data.totales.totalSaldo.toFixed(2) : '',
+          modo: 'total',
+          idVenta: '',
+          metodo: 'efectivo',
+          referencia: '',
+          observaciones: ''
+        });
+      } catch (e) {
+        console.error('Error cargando créditos:', e);
+        setCreditosError('Error al cargar créditos: ' + (e?.message || 'Error desconocido'));
+      } finally {
+        setCreditosLoading(false);
+      }
+    };
+
+    const pagarCreditos = async () => {
+      if (!clienteCreditoId) {
+        alert('Debe seleccionar un cliente');
+        return;
+      }
+      if (!formPagoCredito.monto || parseFloat(formPagoCredito.monto) <= 0) {
+        alert('Debe ingresar un monto válido');
+        return;
+      }
+      if (formPagoCredito.modo === 'single' && !formPagoCredito.idVenta) {
+        alert('Debe seleccionar un crédito específico para pago individual');
+        return;
+      }
+
+      setPagandoCredito(true);
+      try {
+        const payload = {
+          idPersona: parseInt(clienteCreditoId),
+          monto: parseFloat(formPagoCredito.monto),
+          modo: formPagoCredito.modo,
+          metodo: formPagoCredito.metodo,
+          referencia: formPagoCredito.referencia || null,
+          observaciones: formPagoCredito.observaciones || null
+        };
+        if (formPagoCredito.modo === 'single') {
+          payload.idVenta = parseInt(formPagoCredito.idVenta);
+        }
+
+        const res = await fetch(`${API}/creditos/pagos`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(userRole ? { 'X-User-Role': userRole } : {})
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          throw new Error(`HTTP ${res.status}${errText ? ` - ${errText.substring(0, 120)}` : ''}`);
+        }
+
+        const result = await res.json();
+      
+        // Mostrar resultado
+        let mensaje = `Pago registrado exitosamente!\n\n`;
+        mensaje += `Monto solicitado: $${result.montoSolicitado}\n`;
+        mensaje += `Monto aplicado: $${result.montoAplicado}\n`;
+        if (result.excedente > 0) {
+          mensaje += `Excedente (no aplicado): $${result.excedente}\n`;
+        }
+        mensaje += `\nDistribución:\n`;
+        result.distribucion.forEach(d => {
+          mensaje += `- Venta #${d.idVenta}: $${d.aplicado} (Saldo anterior: $${d.saldoAntes}, Nuevo saldo: $${d.saldoDespues})\n`;
+        });
+
+        alert(mensaje);
+      
+        // Recargar créditos del cliente
+        await loadCreditosCliente(clienteCreditoId);
+        loadVentas(); // Actualizar lista de ventas
+      
+      } catch (e) {
+        console.error('Error pagando créditos:', e);
+        alert('Error al registrar pago: ' + (e?.message || 'Error desconocido'));
+      } finally {
+        setPagandoCredito(false);
+      }
+    };
+
   // ====== Rastreo en vivo: mapa del chofer ======
   const getCookie = (name) => {
     if (typeof document === 'undefined') return null;
@@ -1180,6 +1328,21 @@ export default function Ventas({ API, userRole }) {
           >
             {showEntregas ? '❌ Cerrar Entregas' : '🚚 Entregas (Chofer)'}
           </button>
+            <button
+              onClick={() => { 
+                setShowCreditos(v => { 
+                  const nv = !v; 
+                  if (nv) { 
+                    setShowCreate(false); 
+                    setShowEntregas(false);
+                  } 
+                  return nv; 
+                }); 
+              }}
+              className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 transition font-semibold"
+            >
+              {showCreditos ? '❌ Cerrar Créditos' : '💳 Gestionar Créditos'}
+            </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition"
@@ -1677,6 +1840,241 @@ export default function Ventas({ API, userRole }) {
           </div>
         </div>
       )}
+
+        {/* Sección de Gestión de Créditos */}
+        {showCreditos && (
+          <div className="mb-4 p-6 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
+            <h3 className="text-xl font-bold mb-4 dark:text-white">💳 Gestión de Créditos</h3>
+          
+            {/* Buscar Cliente */}
+            <div className="mb-6">
+              <label className="block text-sm font-semibold mb-2 dark:text-gray-200">Buscar Cliente</label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={clienteCreditoBusqueda}
+                  onChange={(e) => {
+                    setClienteCreditoBusqueda(e.target.value);
+                    buscarClientesCredito(e.target.value);
+                  }}
+                  onFocus={() => buscarClientesCredito(clienteCreditoBusqueda)}
+                  placeholder="Nombre, DNI o RUC del cliente..."
+                  className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                />
+                {clienteCreditoSugeridos.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-700 border rounded shadow-lg max-h-60 overflow-y-auto">
+                    {clienteCreditoSugeridos.map(c => (
+                      <div
+                        key={c.id_persona}
+                        onClick={() => {
+                          setClienteCreditoId(c.id_persona);
+                          setClienteCreditoBusqueda(`${c.nombres_persona} ${c.apellido_paternoPersona || ''} - ${c.dni_persona || c.ruc_persona || ''}`);
+                          setClienteCreditoSugeridos([]);
+                          loadCreditosCliente(c.id_persona);
+                        }}
+                        className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 cursor-pointer dark:text-white"
+                      >
+                        <div className="font-semibold">{c.nombres_persona} {c.apellido_paternoPersona || ''}</div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                          {c.dni_persona && `DNI: ${c.dni_persona}`}
+                          {c.ruc_persona && `RUC: ${c.ruc_persona}`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {creditosLoading && (
+              <div className="text-center py-4 text-gray-600 dark:text-gray-400">Cargando créditos...</div>
+            )}
+
+            {creditosError && (
+              <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-800 rounded text-red-800 dark:text-red-200">
+                {creditosError}
+              </div>
+            )}
+
+            {creditosCliente && (
+              <div>
+                {/* Resumen del Cliente */}
+                <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800">
+                  <h4 className="font-bold text-lg mb-2 dark:text-white">{creditosCliente.nombreCliente}</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Total Créditos</div>
+                      <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
+                        ${creditosCliente.totales.totalMonto.toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Total Pagado</div>
+                      <div className="text-xl font-bold text-green-600 dark:text-green-400">
+                        ${creditosCliente.totales.totalPagado.toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Saldo Pendiente</div>
+                      <div className="text-xl font-bold text-red-600 dark:text-red-400">
+                        ${creditosCliente.totales.totalSaldo.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Lista de Créditos */}
+                {creditosCliente.creditos.length === 0 ? (
+                  <div className="text-center py-6 text-gray-600 dark:text-gray-400">
+                    ✅ Este cliente no tiene créditos pendientes
+                  </div>
+                ) : (
+                  <div className="mb-6">
+                    <h4 className="font-semibold mb-3 dark:text-white">Créditos Pendientes</h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100 dark:bg-gray-700">
+                          <tr>
+                            <th className="px-3 py-2 text-left dark:text-gray-200">ID Venta</th>
+                            <th className="px-3 py-2 text-left dark:text-gray-200">Fecha</th>
+                            <th className="px-3 py-2 text-left dark:text-gray-200">Empresa</th>
+                            <th className="px-3 py-2 text-right dark:text-gray-200">Monto Total</th>
+                            <th className="px-3 py-2 text-right dark:text-gray-200">Pagado</th>
+                            <th className="px-3 py-2 text-right dark:text-gray-200">Saldo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y dark:divide-gray-700">
+                          {creditosCliente.creditos.map(c => (
+                            <tr key={c.idVenta} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                              <td className="px-3 py-2 dark:text-gray-300">#{c.idVenta}</td>
+                              <td className="px-3 py-2 dark:text-gray-300">
+                                {c.fechaVenta ? new Date(c.fechaVenta).toLocaleDateString() : '-'}
+                              </td>
+                              <td className="px-3 py-2 dark:text-gray-300">{c.nombreEmpresa || '-'}</td>
+                              <td className="px-3 py-2 text-right font-semibold dark:text-gray-300">
+                                ${c.montoTotal.toFixed(2)}
+                              </td>
+                              <td className="px-3 py-2 text-right text-green-600 dark:text-green-400">
+                                ${c.montoPagado.toFixed(2)}
+                              </td>
+                              <td className="px-3 py-2 text-right font-bold text-red-600 dark:text-red-400">
+                                ${c.saldo.toFixed(2)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Formulario de Pago */}
+                {creditosCliente.totales.totalSaldo > 0 && (
+                  <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded border border-green-200 dark:border-green-800">
+                    <h4 className="font-semibold mb-3 dark:text-white">💰 Registrar Pago</h4>
+                  
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Modo de Pago</label>
+                        <select
+                          value={formPagoCredito.modo}
+                          onChange={(e) => setFormPagoCredito({ ...formPagoCredito, modo: e.target.value, idVenta: '' })}
+                          className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                        >
+                          <option value="total">📊 Distribuir en todos los créditos (FIFO)</option>
+                          <option value="single">📄 Pagar crédito específico</option>
+                        </select>
+                      </div>
+
+                      {formPagoCredito.modo === 'single' && (
+                        <div>
+                          <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Seleccionar Crédito</label>
+                          <select
+                            value={formPagoCredito.idVenta}
+                            onChange={(e) => {
+                              const idVenta = e.target.value;
+                              const credito = creditosCliente.creditos.find(c => c.idVenta === parseInt(idVenta));
+                              setFormPagoCredito({ 
+                                ...formPagoCredito, 
+                                idVenta,
+                                monto: credito ? credito.saldo.toFixed(2) : ''
+                              });
+                            }}
+                            className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                          >
+                            <option value="">-- Seleccione --</option>
+                            {creditosCliente.creditos.map(c => (
+                              <option key={c.idVenta} value={c.idVenta}>
+                                Venta #{c.idVenta} - Saldo: ${c.saldo.toFixed(2)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Monto a Pagar *</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={formPagoCredito.monto}
+                          onChange={(e) => setFormPagoCredito({ ...formPagoCredito, monto: e.target.value })}
+                          className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                          placeholder="0.00"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Método de Pago</label>
+                        <select
+                          value={formPagoCredito.metodo}
+                          onChange={(e) => setFormPagoCredito({ ...formPagoCredito, metodo: e.target.value })}
+                          className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                        >
+                          <option value="efectivo">💵 Efectivo</option>
+                          <option value="transferencia">🏦 Transferencia</option>
+                          <option value="tarjeta">💳 Tarjeta</option>
+                          <option value="cheque">📝 Cheque</option>
+                          <option value="otro">📋 Otro</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Referencia</label>
+                        <input
+                          type="text"
+                          value={formPagoCredito.referencia}
+                          onChange={(e) => setFormPagoCredito({ ...formPagoCredito, referencia: e.target.value })}
+                          className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                          placeholder="N° operación, cheque, etc."
+                        />
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-semibold mb-1 dark:text-gray-200">Observaciones</label>
+                        <textarea
+                          value={formPagoCredito.observaciones}
+                          onChange={(e) => setFormPagoCredito({ ...formPagoCredito, observaciones: e.target.value })}
+                          className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                          rows="2"
+                          placeholder="Notas adicionales..."
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={pagarCreditos}
+                      disabled={pagandoCredito}
+                      className="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold"
+                    >
+                      {pagandoCredito ? '⏳ Procesando...' : '✅ Registrar Pago'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
           {/* Secci�n de Entregas (Chofer) */}
       {showEntregas && (
@@ -2476,7 +2874,6 @@ export default function Ventas({ API, userRole }) {
                   <th className="p-3 text-right dark:text-gray-200">Monto</th>
                   <th className="p-3 text-right dark:text-gray-200">Saldo Pendiente</th>
                   <th className="p-3 text-center dark:text-gray-200">Estado Pago</th>
-                  <th className="p-3 text-center dark:text-gray-200">Estado</th>
                   <th className="p-3 text-center dark:text-gray-200">Acciones</th>
                 </tr>
               </thead>
@@ -2513,32 +2910,42 @@ export default function Ventas({ API, userRole }) {
                           </div>
                         </td>
                         <td className="p-3 text-center">
-                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
-                            v.estado === 1 
-                              ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' 
-                              : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
-                          }`}>
-                            {v.estado === 1 ? 'Activa' : 'Anulada'}
-                          </span>
-                        </td>
-                        <td className="p-3 text-center">
                           <div className="flex gap-2 justify-center">
                             <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
                               {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver Detalle'}
                             </button>
                             <button 
-                              onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
+                              onClick={() => window.open(`${API}/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
                               className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
                               title="Imprimir Ticket"
                             >
                               🧾 Ticket
                             </button>
                             <button 
-                              onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
+                              onClick={() => window.open(`${API}/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
                               className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
                               title="Imprimir A4"
                             >
                               📄 A4
+                            </button>
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const response = await fetch(`${API}/${v.idVenta}/factura/escpos`);
+                                  const data = await response.json();
+                                  if (data.ok && data.rawbt_url) {
+                                    window.location.href = data.rawbt_url;
+                                  } else {
+                                    alert('Error generando comando de impresión térmica');
+                                  }
+                                } catch (err) {
+                                  alert('Error: ' + err.message);
+                                }
+                              }}
+                              className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                              title="Imprimir Térmica (RawBT)"
+                            >
+                              🖨️ Térmica
                             </button>
                             {v.estado === 1 && (userRole === 'admin' || userRole === 'editor' || userRole === 'superadmin') && (
                               <button onClick={() => registrarPagoVenta(v)} className="px-2 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700">
@@ -2555,7 +2962,7 @@ export default function Ventas({ API, userRole }) {
                       </tr>
                       {ventasExpanded[v.idVenta] && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan="9" className="p-3">
+                          <td colSpan="8" className="p-3">
                             <div className="text-sm dark:text-gray-200 font-medium mb-2">Detalles</div>
                             <div className="overflow-x-auto">
                               <table className="w-full text-sm border dark:border-gray-700">
@@ -2602,33 +3009,46 @@ export default function Ventas({ API, userRole }) {
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm font-bold bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded text-blue-700 dark:text-blue-300">{v.codigoVenta || `#${v.idVenta}`}</span>
-                      <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
-                        v.estado === 1 
-                          ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' 
-                          : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
-                      }`}>
-                        {v.estado === 1 ? 'Activa' : 'Anulada'}
-                      </span>
+
                     </div>
                     <div className="flex gap-2">
                       <button onClick={() => setVentasExpanded(prev => ({ ...prev, [v.idVenta]: !prev[v.idVenta] }))} className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">
                         {ventasExpanded[v.idVenta] ? 'Ocultar' : 'Ver'}
                       </button>
                         <button 
-                          onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
+                          onClick={() => window.open(`${API}/${v.idVenta}/factura?format=html&style=ticket`, '_blank')}
                           className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
                           title="Imprimir Ticket"
                         >
                           🧾
                         </button>
                         <button 
-                          onClick={() => window.open(`${API_VENTAS}/ventas/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
+                          onClick={() => window.open(`${API}/${v.idVenta}/factura?format=pdf&style=a4`, '_blank')}
                           className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
                           title="Imprimir A4"
                         >
                           📄
                         </button>
-                      {v.estado === 1 && (userRole === 'admin' || userRole === 'superadmin') && (
+                        <button 
+                          onClick={async () => {
+                            try {
+                              const response = await fetch(`${API}/${v.idVenta}/factura/escpos`);
+                              const data = await response.json();
+                              if (data.ok && data.rawbt_url) {
+                                window.location.href = data.rawbt_url;
+                              } else {
+                                alert('Error generando comando de impresión térmica');
+                              }
+                            } catch (err) {
+                              alert('Error: ' + err.message);
+                            }
+                          }}
+                          className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                          title="Imprimir Térmica (RawBT)"
+                        >
+                          🖨️
+                        </button>
+                      {(userRole === 'admin' || userRole === 'superadmin') && v.estado === 1 && (
                         <button onClick={() => anularVenta(v.idVenta)} className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700">
                           ❌
                         </button>

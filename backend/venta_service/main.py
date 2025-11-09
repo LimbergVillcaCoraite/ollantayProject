@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, Query
 from fastapi.responses import Response, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date, datetime
@@ -13,8 +14,26 @@ from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
+import traceback
 
 app = FastAPI()
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"VALIDATION ERROR on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(exc.body) if hasattr(exc, 'body') else None}
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"GLOBAL EXCEPTION: {exc}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal error: {str(exc)}"}
+    )
 
 origins = [
     "http://localhost:3000",
@@ -95,19 +114,22 @@ def has_permission(request: Request, resource: str, action: Optional[str] = None
     Superadmin always has permissions.
     """
     try:
-        # Support 'resource:action' as single param
-        res = resource
-        act = action
-        if action is None and ':' in resource:
-            parts = resource.split(':', 1)
-            res, act = parts[0], parts[1]
-
         role = get_role(None, request)
         if role == 'superadmin':
             return True
+
+        # Allow "resource:action" shorthand
+        res = resource
+        act = action
+        if act is None and ':' in resource:
+            parts = resource.split(':', 1)
+            res, act = parts[0], parts[1]
+        if act is None:
+            # If no action specified we treat it as lacking permission for specific checks
+            return False
+
         company_id = get_company_id_from_request(request)
         conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-        # Resolve role id
         cur.execute('SELECT idrole FROM role_O WHERE name = %s', (role,))
         r = cur.fetchone()
         if not r:
@@ -182,6 +204,7 @@ class VentaOut(BaseModel):
     nombreEmpresa: Optional[str] = None
     montoTotal: Decimal
     montoPagado: Optional[Decimal] = 0
+    saldo: Optional[Decimal] = None
     estado_pago: Optional[str] = None
     estado: int
     observaciones: Optional[str] = None
@@ -201,6 +224,7 @@ def list_ventas(
     idTipoPago: Optional[int] = None,
     idProducto: Optional[int] = None,
     estado: Optional[int] = None,
+    idEmpresa: Optional[int] = None,
     offset: int = 0,
     limit: int = 100,
     x_user_role: str = Header(None),
@@ -245,10 +269,17 @@ def list_ventas(
         where = []
         params = []
 
-        # Scoping multiempresa: superadmin ve todo, admin solo su empresa
-        if role != 'superadmin' and user_company is not None:
-            where.append('v.idEmpresa = %s')
-            params.append(user_company)
+        # Scoping multiempresa:
+        # - superadmin puede especificar idEmpresa; si no lo hace, ve todas.
+        # - otros roles quedan restringidos a su empresa (company_id en JWT)
+        if role == 'superadmin':
+            if idEmpresa is not None:
+                where.append('v.idEmpresa = %s')
+                params.append(idEmpresa)
+        else:
+            if user_company is not None:
+                where.append('v.idEmpresa = %s')
+                params.append(user_company)
 
         # Filtros opcionales
         if fecha_inicio:
@@ -311,6 +342,11 @@ def list_ventas(
             # Optional payment fields
             if 'montoPagado' in v:
                 v['montoPagado'] = float(v['montoPagado']) if v.get('montoPagado') is not None else 0.0
+            # Compute saldo básico
+            try:
+                v['saldo'] = float(v.get('montoTotal') or 0) - float(v.get('montoPagado') or 0)
+            except Exception:
+                v['saldo'] = None
             # Simplificar estado_pago a solo Pagado / No Pagado
             raw_estado = (v.get('estado_pago') or '').strip().lower()
             if raw_estado == 'pagado':
@@ -326,6 +362,384 @@ def list_ventas(
         cur.close()
         conn.close()
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/ventas/creditos')
+def listar_creditos(
+    idCliente: Optional[str] = None,
+    solo_pendientes: Optional[str] = 'true',
+    request: Request = None
+):
+    """Listado de ventas a crédito con saldo.
+
+    - Filtra por empresa del usuario (salvo superadmin).
+    - Devuelve saldo calculado (montoTotal - montoPagado).
+    - Si solo_pendientes=True, devuelve solo las que tienen saldo > 0.
+    """
+    print(f"DEBUG: listar_creditos called with idCliente={idCliente}, solo_pendientes={solo_pendientes}")
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
+        role = get_role(None, request)
+        if role not in ('admin', 'editor', 'superadmin', 'viewer'):
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='Permission denied')
+        user_company = get_company_id_from_request(request)
+
+        where = ["v.idTipoPago = 1", "v.estado = 1"]
+        params = []
+        if role != 'superadmin' and user_company is not None:
+            where.append('v.idEmpresa = %s'); params.append(user_company)
+        # Sanitize idCliente (may arrive as string); ignore invalid values
+        if idCliente is not None:
+            try:
+                idc = int(idCliente) if str(idCliente).strip().isdigit() else None
+            except Exception:
+                idc = None
+            if idc is not None:
+                where.append('v.idCliente = %s'); params.append(idc)
+
+        query = f'''
+            SELECT 
+              v.idVenta, v.fechaVenta, v.idCliente,
+              CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona,'')) AS nombreCliente,
+              v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+              v.montoTotal, v.montoPagado,
+              (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
+            FROM venta_O v
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE {' AND '.join(where)}
+            ORDER BY v.fechaVenta DESC, v.idVenta DESC
+        '''
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall() or []
+        result = []
+        for r in rows:
+            # Ensure all fields are JSON-serializable
+            result.append({
+                'idVenta': int(r.get('idVenta')) if r.get('idVenta') is not None else None,
+                'fechaVenta': r['fechaVenta'].isoformat() if r.get('fechaVenta') else None,
+                'idCliente': int(r.get('idCliente')) if r.get('idCliente') is not None else None,
+                'nombreCliente': str(r.get('nombreCliente') or ''),
+                'idEmpresa': int(r.get('idEmpresa')) if r.get('idEmpresa') is not None else None,
+                'nombreEmpresa': str(r.get('nombreEmpresa') or ''),
+                'montoTotal': float(r.get('montoTotal') or 0),
+                'montoPagado': float(r.get('montoPagado') or 0),
+                'saldo': float(r.get('saldo') or 0)
+            })
+        cur.close(); conn.close()
+        # Normalize solo_pendientes flag (accept true/false/1/0/yes/no)
+        sp = str(solo_pendientes).strip().lower() if solo_pendientes is not None else 'true'
+        sp_flag = sp in ('1','true','t','yes','y','si','sí')
+        if sp_flag:
+            result = [r for r in result if r['saldo'] > 0]
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error en creditos: {str(e)}")
+
+
+@app.get('/ventas/creditos-list')
+def listar_creditos_alias(
+    idCliente: Optional[str] = None,
+    solo_pendientes: Optional[str] = 'true',
+    request: Request = None
+):
+    """Alias para evitar conflicto de enrutamiento con /ventas/{id} en algunos escenarios de proxy."""
+    print(f"DEBUG ALIAS: creditos-list called, forwarding to listar_creditos")
+    try:
+        result = listar_creditos(idCliente=idCliente, solo_pendientes=solo_pendientes, request=request)
+        print(f"DEBUG ALIAS: listar_creditos returned {len(result) if isinstance(result, list) else 'non-list'} items")
+        return result
+    except Exception as e:
+        print(f"DEBUG ALIAS ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+# ========================
+# Créditos por cliente (resumen)
+# ========================
+
+@app.get('/creditos/cliente')
+def creditos_por_cliente(
+    idPersona: int = Query(..., description="ID del cliente persona"),
+    incluir_todos: Optional[bool] = Query(False, description="Incluir también créditos ya pagados"),
+    request: Request = None
+):
+    """Lista todos los créditos de un cliente con resumen agregado.
+
+    Retorna saldos por venta y totales: totalMonto, totalPagado, totalSaldo.
+    Aplica scoping multiempresa (admin/editor sólo su empresa; superadmin puede ver cualquiera).
+    """
+    try:
+        role = get_role(None, request)
+        if role not in ('admin','editor','superadmin'):
+            raise HTTPException(status_code=403, detail='Permisos insuficientes')
+        user_company = get_company_id_from_request(request)
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        # Traer persona para nombre (opcional)
+        cur.execute('''
+            SELECT id_persona, CONCAT(nombres_persona,' ',COALESCE(apellido_paternoPersona,'')) AS nombre
+            FROM persona_O WHERE id_persona = %s
+        ''', (idPersona,))
+        persona_row = cur.fetchone()
+        if not persona_row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        params = [idPersona]
+        where_scoping = ''
+        if role != 'superadmin' and user_company is not None:
+            where_scoping = ' AND v.idEmpresa = %s'
+            params.append(user_company)
+        # Sólo ventas crédito; estado=1 (no anuladas)
+        sql = '''
+            SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado, v.idEmpresa,
+                   e.nombre_empresa AS nombreEmpresa
+            FROM venta_O v
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE v.idCliente = %s AND v.estado = 1 AND v.idTipoVenta IN (
+                SELECT idTipoVenta FROM tipoVenta WHERE nombreTipoVenta LIKE 'Credito%'
+            )''' + where_scoping + ' ORDER BY v.fechaVenta ASC, v.idVenta ASC'
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+        creditos = []
+        totalMonto = 0.0
+        totalPagado = 0.0
+        totalSaldo = 0.0
+        for r in rows:
+            monto_total = float(r.get('montoTotal') or 0)
+            monto_pagado = float(r.get('montoPagado') or 0)
+            saldo = max(0.0, monto_total - monto_pagado)
+            if incluir_todos or saldo > 0:
+                creditos.append({
+                    'idVenta': int(r['idVenta']),
+                    'fechaVenta': r['fechaVenta'].isoformat() if r.get('fechaVenta') else None,
+                    'montoTotal': monto_total,
+                    'montoPagado': monto_pagado,
+                    'saldo': saldo,
+                    'idEmpresa': int(r['idEmpresa']) if r.get('idEmpresa') is not None else None,
+                    'nombreEmpresa': r.get('nombreEmpresa') or ''
+                })
+            totalMonto += monto_total
+            totalPagado += monto_pagado
+            totalSaldo += saldo
+        cur.close(); conn.close()
+        return JSONResponse({
+            'ok': True,
+            'idPersona': idPersona,
+            'nombreCliente': persona_row.get('nombre') or '',
+            'totales': {
+                'totalMonto': round(totalMonto,2),
+                'totalPagado': round(totalPagado,2),
+                'totalSaldo': round(totalSaldo,2)
+            },
+            'creditos': creditos
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========================
+# Pago de créditos (single o cascada)
+# ========================
+
+class PagoCreditosIn(BaseModel):
+    idPersona: int
+    monto: Decimal = Field(..., gt=0)
+    modo: str = Field('total', description="'single' para un crédito específico, 'total' para distribuir")
+    idVenta: Optional[int] = Field(None, description="Requerido si modo='single'")
+    metodo: Optional[str] = None
+    referencia: Optional[str] = None
+    observaciones: Optional[str] = None
+    fecha: Optional[str] = None  # YYYY-MM-DD
+
+@app.post('/creditos/pagos')
+def pagar_creditos(payload: PagoCreditosIn, request: Request = None):
+    """Registrar pago sobre créditos de un cliente.
+
+    - modo='single': aplica el pago sólo al crédito idVenta.
+    - modo='total': distribuye el monto sobre todos los créditos pendientes (FIFO fechaVenta).
+    Retorna distribución, movimientos y sobrante (excedente) si el monto supera el total de saldos.
+    """
+    role = get_role(None, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permisos insuficientes')
+    try:
+        user_company = get_company_id_from_request(request)
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        # Validar cliente existe
+        cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s', (payload.idPersona,))
+        if not cur.fetchone():
+            cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        # Obtener créditos seleccionados
+        distribucion = []
+        restante = float(payload.monto)
+        movimientos = []
+        fecha_mov = payload.fecha or datetime.utcnow().strftime('%Y-%m-%d')
+        descripcion_base = 'Cobro crédito'
+        if payload.metodo:
+            descripcion_base += f" ({payload.metodo})"
+        if payload.referencia:
+            descripcion_base += f" Ref:{payload.referencia}"
+        if payload.observaciones:
+            descripcion_base += f" - {payload.observaciones}"
+
+        # Helper para registrar movimiento y actualizar venta
+        def aplicar_pago_venta(row, aplicar_monto: float):
+            upd = conn.cursor()
+            nuevo_pagado = float(row['montoPagado'] or 0) + aplicar_monto
+            monto_total_v = float(row['montoTotal'] or 0)
+            if nuevo_pagado > monto_total_v:
+                nuevo_pagado = monto_total_v
+            estado_pago = 'Pagado' if monto_total_v > 0 and nuevo_pagado >= monto_total_v else 'No Pagado'
+            upd.execute('''UPDATE venta_O SET montoPagado=%s, estado_pago=%s WHERE idVenta=%s''', (nuevo_pagado, estado_pago, row['idVenta']))
+            ins = conn.cursor()
+            ins.execute('''
+                INSERT INTO cuenta_corriente_O (tipo, idPersona, idEmpresa, fechaMovimiento, tipoMovimiento, idReferencia, debe, haber, saldo, descripcion, estado)
+                VALUES ('cliente', %s, %s, %s, 'cobro', %s, 0, %s, -%s, %s, 1)
+            ''', (payload.idPersona, row['idEmpresa'], fecha_mov, row['idVenta'], aplicar_monto, aplicar_monto, f"{descripcion_base} venta #{row['idVenta']}") )
+            mov_id = ins.lastrowid
+            ins.close(); upd.close()
+            movimientos.append(mov_id)
+            saldo_antes = max(0.0, monto_total_v - float(row['montoPagado'] or 0))
+            saldo_despues = max(0.0, monto_total_v - nuevo_pagado)
+            distribucion.append({
+                'idVenta': int(row['idVenta']),
+                'aplicado': round(aplicar_monto,2),
+                'montoTotal': round(monto_total_v,2),
+                'montoPagadoNuevo': round(nuevo_pagado,2),
+                'saldoAntes': round(saldo_antes,2),
+                'saldoDespues': round(saldo_despues,2),
+                'estado_pago': estado_pago,
+                'idMovimiento': mov_id
+            })
+
+        if payload.modo == 'single':
+            if not payload.idVenta:
+                cur.close(); conn.close(); raise HTTPException(status_code=400, detail='idVenta requerido para modo single')
+            params = [payload.idVenta, payload.idPersona]
+            where_scoping = ''
+            if role != 'superadmin' and user_company is not None:
+                where_scoping = ' AND v.idEmpresa=%s'
+                params.append(user_company)
+            cur.execute(f'''
+                SELECT v.idVenta, v.idEmpresa, v.montoTotal, v.montoPagado
+                FROM venta_O v
+                WHERE v.idVenta=%s AND v.idCliente=%s AND v.estado=1 AND v.idTipoVenta IN (
+                    SELECT idTipoVenta FROM tipoVenta WHERE nombreTipoVenta LIKE 'Credito%'
+                ){where_scoping}
+            ''', tuple(params))
+            row = cur.fetchone()
+            if not row:
+                cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Venta crédito no encontrada')
+            saldo = max(0.0, float(row['montoTotal'] or 0) - float(row['montoPagado'] or 0))
+            aplicar = min(restante, saldo)
+            if aplicar <= 0:
+                cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Nada por pagar en este crédito')
+            aplicar_pago_venta(row, aplicar)
+            restante -= aplicar
+        else:  # cascada total
+            params = [payload.idPersona]
+            where_scoping = ''
+            if role != 'superadmin' and user_company is not None:
+                where_scoping = ' AND v.idEmpresa=%s'
+                params.append(user_company)
+            cur.execute(f'''
+                SELECT v.idVenta, v.idEmpresa, v.montoTotal, v.montoPagado
+                FROM venta_O v
+                WHERE v.idCliente=%s AND v.estado=1 AND v.idTipoVenta IN (
+                    SELECT idTipoVenta FROM tipoVenta WHERE nombreTipoVenta LIKE 'Credito%'
+                ){where_scoping}
+                ORDER BY v.fechaVenta ASC, v.idVenta ASC
+            ''', tuple(params))
+            rows = cur.fetchall() or []
+            for row in rows:
+                if restante <= 0:
+                    break
+                saldo = max(0.0, float(row['montoTotal'] or 0) - float(row['montoPagado'] or 0))
+                if saldo <= 0:
+                    continue
+                aplicar = min(restante, saldo)
+                aplicar_pago_venta(row, aplicar)
+                restante -= aplicar
+
+        conn.commit()
+        cur.close(); conn.close()
+        return JSONResponse({
+            'ok': True,
+            'idPersona': payload.idPersona,
+            'montoSolicitado': float(payload.monto),
+            'montoAplicado': round(float(payload.monto) - restante,2),
+            'excedente': round(restante,2),
+            'modo': payload.modo,
+            'movimientos': movimientos,
+            'distribucion': distribucion
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================
+# Mis deudas (cliente autenticado)
+# ========================
+
+@app.get('/mis-deudas')
+def mis_deudas(request: Request = None):
+    """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
+    try:
+        role = get_role(None, request)
+        if role not in ('admin','editor','superadmin','viewer','cliente'):
+            raise HTTPException(status_code=403, detail='Permission denied')
+        id_persona = get_id_persona_from_request(request)
+        if not id_persona:
+            raise HTTPException(status_code=401, detail='No autenticado como cliente')
+
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
+        user_company = get_company_id_from_request(request)
+
+        where = ["v.idTipoPago = 1", "v.estado = 1", "v.idCliente = %s"]
+        params = [id_persona]
+        if user_company is not None:
+            where.append('v.idEmpresa = %s'); params.append(user_company)
+
+        query = f'''
+            SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado,
+                   (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
+            FROM venta_O v
+            WHERE {' AND '.join(where)}
+            ORDER BY v.fechaVenta DESC, v.idVenta DESC
+        '''
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall() or []
+        total_deuda = 0.0
+        for r in rows:
+            r['fechaVenta'] = r['fechaVenta'].isoformat() if r.get('fechaVenta') else None
+            r['montoTotal'] = float(r.get('montoTotal') or 0)
+            r['montoPagado'] = float(r.get('montoPagado') or 0)
+            r['saldo'] = float(r.get('saldo') or 0)
+            total_deuda += r['saldo']
+        cur.close(); conn.close()
+        return { 'ok': True, 'idCliente': id_persona, 'total_deuda': total_deuda, 'ventas': rows }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1006,6 +1420,157 @@ def health():
         raise HTTPException(status_code=503, detail=f'db error: {e}')
 
 
+
+@app.get('/ventas/{id}/factura/escpos')
+def imprimir_factura_escpos(
+    id: int,
+    request: Request = None,
+    width_mm: Optional[int] = 80
+):
+    """Generate ESC/POS raw commands for thermal printer (RawBT, USB, etc).
+    Returns base64-encoded binary suitable for rawbt:// URL scheme or direct serial/USB print."""
+    try:
+        import base64
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True, buffered=True)
+        role = get_role(None, request)
+        user_company = get_company_id_from_request(request)
+        
+        # Get sale
+        cur.execute('''
+            SELECT 
+                v.idVenta, v.codigoVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
+                p.ci_persona,
+                v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                v.montoTotal, v.montoPagado, v.estado_pago, v.estado
+            FROM venta_O v
+            LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE v.idVenta = %s
+        ''', (id,))
+        venta = cur.fetchone()
+        
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+        
+        if role not in ('admin','editor','superadmin') and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+        
+        # Get details
+        cur.execute('''
+            SELECT 
+                dv.cantidad_caja, dv.precio_unitario, dv.subtotal,
+                pr.nombreProducto, pr.codigoProducto
+            FROM detalle_venta_O dv
+            LEFT JOIN producto_O pr ON dv.idProducto = pr.idProducto
+            WHERE dv.idVenta = %s
+            ORDER BY dv.idDetalleVenta
+        ''', (id,))
+        detalles = cur.fetchall() or []
+        cur.close(); conn.close()
+        
+        # Build ESC/POS commands
+        ESC = b'\x1b'
+        GS = b'\x1d'
+        LF = b'\n'
+        
+        commands = bytearray()
+        
+        # Initialize printer
+        commands.extend(ESC + b'@')  # Reset
+        
+        # Center align
+        commands.extend(ESC + b'a' + b'\x01')
+        
+        # Bold + Empresa name
+        commands.extend(ESC + b'E' + b'\x01')
+        empresa = (venta.get('nombreEmpresa') or 'Empresa')[:32].encode('cp437', errors='replace')
+        commands.extend(empresa + LF)
+        commands.extend(ESC + b'E' + b'\x00')  # Bold off
+        
+        # Factura number
+        fecha_str = venta['fechaVenta'].strftime('%Y%m%d') if venta.get('fechaVenta') else '00000000'
+        numero = f"FAC-{fecha_str}-{venta['idVenta']:06d}"
+        commands.extend(f"FACTURA {numero}\n".encode('cp437', errors='replace'))
+        
+        # Date
+        fecha_display = venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'
+        commands.extend(f"Fecha: {fecha_display}\n".encode('cp437', errors='replace'))
+        
+        # Line separator
+        commands.extend(b'-' * 32 + LF)
+        
+        # Left align for customer
+        commands.extend(ESC + b'a' + b'\x00')
+        
+        # Customer
+        cliente = (venta.get('nombreCliente') or 'N/A')[:32]
+        commands.extend(f"Cliente: {cliente}\n".encode('cp437', errors='replace'))
+        if venta.get('ci_persona'):
+            commands.extend(f"CI: {venta['ci_persona']}\n".encode('cp437', errors='replace'))
+        
+        commands.extend(b'-' * 32 + LF)
+        
+        # Items
+        commands.extend(b"DETALLE\n")
+        for d in detalles:
+            nombre = (d.get('nombreProducto') or 'Producto')[:28]
+            qty = float(d.get('cantidad_caja') or 0)
+            pu = float(d.get('precio_unitario') or 0)
+            st = float(d.get('subtotal') or qty*pu)
+            
+            commands.extend(nombre.encode('cp437', errors='replace') + LF)
+            line = f"{qty:.2f} x {pu:.2f}    Bs {st:.2f}\n"
+            commands.extend(line.encode('cp437', errors='replace'))
+        
+        commands.extend(b'-' * 32 + LF)
+        
+        # Total
+        total = float(venta.get('montoTotal') or 0)
+        commands.extend(ESC + b'E' + b'\x01')  # Bold
+        commands.extend(f"TOTAL      Bs {total:.2f}\n".encode('cp437', errors='replace'))
+        commands.extend(ESC + b'E' + b'\x00')  # Bold off
+        
+        if venta.get('montoPagado'):
+            pagado = float(venta['montoPagado'])
+            commands.extend(f"Pagado     Bs {pagado:.2f}\n".encode('cp437', errors='replace'))
+            cambio = pagado - total
+            if cambio > 0:
+                commands.extend(f"Cambio     Bs {cambio:.2f}\n".encode('cp437', errors='replace'))
+        
+        # Footer
+        commands.extend(LF)
+        commands.extend(ESC + b'a' + b'\x01')  # Center
+        commands.extend(b"Gracias por su compra!\n")
+        commands.extend(b"Sistema Ollantay\n")
+        
+        # Cut paper (if supported)
+        commands.extend(LF + LF + LF)
+        commands.extend(GS + b'V' + b'\x00')  # Full cut
+        
+        # Encode to base64
+        b64 = base64.b64encode(bytes(commands)).decode('ascii')
+        
+        return JSONResponse({
+            'ok': True,
+            'idVenta': id,
+            'escpos_base64': b64,
+            'rawbt_url': f'rawbt://print?data={b64}'
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ========================
 # Sistema de Entrega (Chofer)
 # ========================
@@ -1489,123 +2054,6 @@ def obtener_recibo_pago(id: int, mov_id: int, x_user_role: str = Header(None), r
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get('/ventas/creditos')
-def listar_creditos(
-    idCliente: Optional[str] = None,
-    solo_pendientes: Optional[str] = 'true',
-    request: Request = None
-):
-    """Listado de ventas a crédito con saldo.
-
-    - Filtra por empresa del usuario (salvo superadmin).
-    - Devuelve saldo calculado (montoTotal - montoPagado).
-    - Si solo_pendientes=True, devuelve solo las que tienen saldo > 0.
-    """
-    try:
-        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
-        role = get_role(None, request)
-        if role not in ('admin', 'editor', 'superadmin'):
-            cur.close(); conn.close()
-            raise HTTPException(status_code=403, detail='Permission denied')
-        user_company = get_company_id_from_request(request)
-
-        where = ["v.idTipoPago = 1", "v.estado = 1"]
-        params = []
-        if role != 'superadmin' and user_company is not None:
-            where.append('v.idEmpresa = %s'); params.append(user_company)
-        # Sanitize idCliente (may arrive as string); ignore invalid values
-        if idCliente is not None:
-            try:
-                idc = int(idCliente) if str(idCliente).strip().isdigit() else None
-            except Exception:
-                idc = None
-            if idc is not None:
-                where.append('v.idCliente = %s'); params.append(idc)
-
-        query = f'''
-            SELECT 
-              v.idVenta, v.fechaVenta, v.idCliente,
-              CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona,'')) AS nombreCliente,
-              v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-              v.montoTotal, v.montoPagado,
-              (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
-            FROM venta_O v
-            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
-            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
-            WHERE {' AND '.join(where)}
-            ORDER BY v.fechaVenta DESC, v.idVenta DESC
-        '''
-        cur.execute(query, tuple(params))
-        rows = cur.fetchall() or []
-        for r in rows:
-            r['fechaVenta'] = r['fechaVenta'].isoformat() if r.get('fechaVenta') else None
-            r['montoTotal'] = float(r.get('montoTotal') or 0)
-            r['montoPagado'] = float(r.get('montoPagado') or 0)
-            r['saldo'] = float(r.get('saldo') or 0)
-        cur.close(); conn.close()
-        # Normalize solo_pendientes flag (accept true/false/1/0/yes/no)
-        sp = str(solo_pendientes).strip().lower() if solo_pendientes is not None else 'true'
-        sp_flag = sp in ('1','true','t','yes','y','si','sí')
-        if sp_flag:
-            rows = [r for r in rows if r['saldo'] > 0]
-        return rows
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Alias para evitar conflicto de enrutamiento con /ventas/{id} en algunos escenarios de proxy.
-# Frontend puede usar /ventas/creditos-list en lugar de /ventas/creditos para esquivar 422 por parseo de path.
-@app.get('/ventas/creditos-list')
-def listar_creditos_alias(
-    idCliente: Optional[str] = None,
-    solo_pendientes: Optional[str] = 'true',
-    request: Request = None
-):
-    return listar_creditos(idCliente=idCliente, solo_pendientes=solo_pendientes, request=request)
-
-
-@app.get('/mis-deudas')
-def mis_deudas(request: Request = None):
-    """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
-    try:
-        role = get_role(None, request)
-        if role not in ('admin','editor','superadmin','viewer','cliente'):
-            raise HTTPException(status_code=403, detail='Permission denied')
-        id_persona = get_id_persona_from_request(request)
-        if not id_persona:
-            raise HTTPException(status_code=401, detail='No autenticado como cliente')
-
-        conn = get_db_connection(); cur = conn.cursor(dictionary=True, buffered=True)
-        user_company = get_company_id_from_request(request)
-
-        where = ["v.idTipoPago = 1", "v.estado = 1", "v.idCliente = %s"]
-        params = [id_persona]
-        if user_company is not None:
-            where.append('v.idEmpresa = %s'); params.append(user_company)
-
-        query = f'''
-            SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado,
-                   (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
-            FROM venta_O v
-            WHERE {' AND '.join(where)}
-            ORDER BY v.fechaVenta DESC, v.idVenta DESC
-        '''
-        cur.execute(query, tuple(params))
-        rows = cur.fetchall() or []
-        total_deuda = 0.0
-        for r in rows:
-            r['fechaVenta'] = r['fechaVenta'].isoformat() if r.get('fechaVenta') else None
-            r['montoTotal'] = float(r.get('montoTotal') or 0)
-            r['montoPagado'] = float(r.get('montoPagado') or 0)
-            r['saldo'] = float(r.get('saldo') or 0)
-            total_deuda += r['saldo']
-        cur.close(); conn.close()
-        return { 'ok': True, 'idCliente': id_persona, 'total_deuda': total_deuda, 'ventas': rows }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get('/ventas/{id}/factura')
 def imprimir_factura(
     id: int,
@@ -1643,7 +2091,7 @@ def imprimir_factura(
                 v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
                 CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, ''), ' ', COALESCE(p.apellido_maternoPer,'')) AS nombreCliente,
                 p.ci_persona, p.telefono_persona, p.direccion_persona,
-                v.idEmpresa, e.nombre_empresa AS nombreEmpresa, e.razonSocial, e.nit as nitEmpresa,
+                v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
                 v.montoTotal, v.montoPagado, v.estado_pago, v.estado, v.observaciones
             FROM venta_O v
             LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
@@ -1678,7 +2126,7 @@ def imprimir_factura(
         # Generar número de factura
         fecha_venta_str = venta['fechaVenta'].strftime('%Y%m%d') if venta.get('fechaVenta') else '00000000'
         numero_factura = f"FAC-{fecha_venta_str}-{venta['idVenta']:06d}"
-        empresa_nombre = venta.get('nombreEmpresa') or venta.get('razonSocial') or 'Empresa'
+        empresa_nombre = venta.get('nombreEmpresa') or 'Empresa'
         # Cajero desde JWT (si existe)
         cajero = None
         try:
@@ -1733,9 +2181,6 @@ def imprimir_factura(
             c.drawCentredString(width_pts/2, y, empresa_nombre[:40])
             y -= 10
             c.setFont("Courier", 8)
-            if venta.get('nitEmpresa'):
-                c.drawCentredString(width_pts/2, y, f"NIT: {venta['nitEmpresa']}")
-                y -= 9
             c.drawCentredString(width_pts/2, y, f"FACTURA {numero_factura}")
             y -= 9
             fecha_str = venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'
@@ -1853,11 +2298,7 @@ def imprimir_factura(
             # Header
             c.setFont("Helvetica-Bold", 18)
             c.drawString(x_margin, y, empresa_nombre)
-            c.setFont("Helvetica", 10)
             y -= 15
-            if venta.get('nitEmpresa'):
-                c.drawString(x_margin, y, f"NIT: {venta['nitEmpresa']}")
-                y -= 12
             c.setFont("Helvetica-Bold", 12)
             c.drawRightString(width - x_margin, height - y_margin, f"FACTURA")
             c.setFont("Helvetica", 10)
@@ -1979,28 +2420,28 @@ def imprimir_factura(
             }
             return Response(content=pdf_bytes, media_type='application/pdf', headers=headers)
         
-        # HTML format (incluye estilo ticket con style=ticket)
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Factura {numero_factura}</title>
+        # HTML format (refactor to avoid nested f-strings inside f-string expressions which caused syntax error)
+        base_style = """
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; }}
-                .section {{ margin: 15px 0; }}
-                .label {{ font-weight: bold; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-                .total {{ text-align: right; font-size: 1.2em; font-weight: bold; margin-top: 20px; }}
-                @media print {{ button {{ display: none; }} }}
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+                .section { margin: 15px 0; }
+                .label { font-weight: bold; }
+                table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .total { text-align: right; font-size: 1.2em; font-weight: bold; margin-top: 20px; }
+                @media print { button { display: none; } }
             </style>
-            {'' if (style or '').lower() not in ('ticket','pos','supermercado') else f'''
+        """
+        ticket_extra_style = ""
+        style_mode = (style or '').lower()
+        if style_mode in ('ticket','pos','supermercado'):
+            width_ticket = max(50, min(int(width_mm or 80), 120))
+            ticket_extra_style = f"""
             <style>
-              @page {{ size: {max(50, min(int(width_mm or 80), 120))}mm auto; margin: 0; }}
-              body {{ font-family: 'Courier New', monospace; width: {max(50, min(int(width_mm or 80), 120))}mm; margin: 0 auto; padding: 6mm 4mm; }}
+              @page {{ size: {width_ticket}mm auto; margin: 0; }}
+              body {{ font-family: 'Courier New', monospace; width: {width_ticket}mm; margin: 0 auto; padding: 6mm 4mm; }}
               .line {{ border-top: 1px dashed #000; margin: 6px 0; }}
               .row {{ display: flex; justify-content: space-between; font-size: 12px; }}
               .center {{ text-align: center; }}
@@ -2009,76 +2450,94 @@ def imprimir_factura(
               th {{ text-align: left; border-bottom: 1px dashed #000; }}
               .total {{ font-weight: bold; font-size: 13px; text-align: right; }}
             </style>
-            '''}
-        </head>
-        <body>
-            {(
-            f"""
-            <button onclick=\"window.print()\">🖨️ Imprimir</button>
-            <div class=\"header\">
-                <h1>{empresa_nombre}</h1>
-                {"<p>NIT: " + str(venta.get('nitEmpresa')) + "</p>" if venta.get('nitEmpresa') else ""}
-                <h2>FACTURA N°: {numero_factura}</h2>
-            </div>
-            <div class=\"section\"> 
-                <h3>Datos del Cliente</h3>
-                <p><span class=\"label\">Cliente:</span> {venta.get('nombreCliente') or 'N/A'}</p>
-                {"<p><span class='label'>CI:</span> " + str(venta.get('ci_persona')) + "</p>" if venta.get('ci_persona') else ""}
-                {"<p><span class='label'>Teléfono:</span> " + str(venta.get('telefono_persona')) + "</p>" if venta.get('telefono_persona') else ""}
-                {"<p><span class='label'>Dirección:</span> " + str(venta.get('direccion_persona')) + "</p>" if venta.get('direccion_persona') else ""}
-            </div>
-            <div class=\"section\">
-                <h3>Datos de la Venta</h3>
-                <p><span class=\"label\">Fecha:</span> {venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'}</p>
-                <p><span class=\"label\">Tipo de Venta:</span> {venta.get('tipoVenta') or 'N/A'}</p>
-                <p><span class=\"label\">Forma de Pago:</span> {venta.get('tipoPago') or 'N/A'}</p>
-            </div>
-            <div class=\"section\">
-                <h3>Detalle de Productos</h3>
-                <table>
-                    <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio Unit.</th><th>Subtotal</th></tr></thead>
-                    <tbody>{"".join([f"<tr><td>{d.get('nombreProducto') or 'Producto ' + str(d['idProducto'])}</td><td>{float(d.get('cantidad_caja') or 0):.2f}</td><td>Bs {float(d.get('precio_unitario') or 0):.2f}</td><td>Bs {float(d.get('subtotal') or 0):.2f}</td></tr>" for d in detalles])}</tbody>
-                </table>
-            </div>
-            <div class=\"total\">
-                <p>TOTAL: Bs {float(venta.get('montoTotal') or 0):.2f}</p>
-                {"<p>Pagado: Bs " + f"{float(venta.get('montoPagado') or 0):.2f}" + "</p>" if venta.get('montoPagado') else ""}
-                {"<p>Saldo: Bs " + f"{float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0):.2f}" + "</p>" if venta.get('montoPagado') and (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0)) > 0 else ""}
-            </div>
-            <div style=\"text-align: center; margin-top: 40px; color: #666; font-size: 0.9em;\">Generado automáticamente por Sistema Ollantay</div>
             """
-            ) if (style or '').lower() not in ('ticket','pos','supermercado') else (
-            f"""
-            <div class=\"center\">
-              <div style=\"font-weight:bold;\">{empresa_nombre}</div>
-              {"<div>NIT: " + str(venta.get('nitEmpresa')) + "</div>" if venta.get('nitEmpresa') else ""}
-              <div>FACTURA {numero_factura}</div>
-              <div>{venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'}</div>
-            </div>
-            <div class=\"line\"></div>
-            <div class=\"row\"><div>Cliente:</div><div>{(venta.get('nombreCliente') or 'N/A')[:26]}</div></div>
-            {"<div class='row'><div>CI:</div><div>" + str(venta.get('ci_persona')) + "</div></div>" if venta.get('ci_persona') else ""}
-            <div class=\"line\"></div>
-            <table>
-              <thead><tr><th>Producto</th><th style=\"text-align:right\">Imp.</th></tr></thead>
-              <tbody>
-                {"".join([f"<tr><td>{(d.get('nombreProducto') or 'Producto ' + str(d['idProducto']))[:34]}<br><span style='font-size:11px'>{float(d.get('cantidad_caja') or 0):.2f} x {float(d.get('precio_unitario') or 0):.2f}</span></td><td style='text-align:right'>Bs {float(d.get('subtotal') or 0):.2f}</td></tr>" for d in detalles])}
-              </tbody>
-            </table>
-            <div class=\"line\"></div>
-            <div class=\"row\"><div>TOTAL</div><div>Bs {float(venta.get('montoTotal') or 0):.2f}</div></div>
-            {"<div class='row'><div>Pagado</div><div>Bs " + f"{float(venta.get('montoPagado') or 0):.2f}" + "</div></div>" if venta.get('montoPagado') else ""}
-            {"<div class='row'><div>Saldo</div><div>Bs " + f"{float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0):.2f}" + "</div></div>" if venta.get('montoPagado') and (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0)) > 0 else ""}
-            <div class=\"line\"></div>
-            <div class=\"line\"></div>
-            <div class=\"row\"><div>Cajero</div><div>{(str(cajero) if cajero else '-')[:26]}</div></div>
-            {(f"<div class='center'><img alt='QR' src='{qr_datauri}' style='width:120px;height:120px;object-fit:contain;margin-top:6px' /></div>" if qr_datauri else '')}
-            <div class=\"center\">¡Gracias por su compra!<br/><span style=\"font-size:11px\">Sistema Ollantay</span></div>
-            """
-            )}
-        </body>
-        </html>
-        """
+
+        if style_mode in ('ticket','pos','supermercado'):
+            # Ticket body (avoid large f-string to prevent brace parsing issues)
+            filas_productos_parts = []
+            for d in detalles:
+                nombre_corto = (d.get('nombreProducto') or f"Producto {d['idProducto']}")[:34]
+                cantidad = float(d.get('cantidad_caja') or 0)
+                precio_u = float(d.get('precio_unitario') or 0)
+                subtotal_d = float(d.get('subtotal') or (cantidad * precio_u))
+                filas_productos_parts.append(
+                    "<tr><td>{nombre}<br><span style='font-size:11px'>{cant:.2f} x {pu:.2f}</span></td>"
+                    "<td style='text-align:right'>Bs {subt:.2f}</td></tr>".format(
+                        nombre=nombre_corto, cant=cantidad, pu=precio_u, subt=subtotal_d)
+                )
+            filas_productos_html = ''.join(filas_productos_parts)
+            ci_html = f"<div class='row'><div>CI:</div><div>{venta.get('ci_persona')}</div></div>" if venta.get('ci_persona') else ''
+            pagado_html = f"<div class='row'><div>Pagado</div><div>Bs {float(venta.get('montoPagado') or 0):.2f}</div></div>" if venta.get('montoPagado') else ''
+            saldo_html = ''
+            if venta.get('montoPagado'):
+                saldo_calc = (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0))
+                if saldo_calc > 0:
+                    saldo_html = f"<div class='row'><div>Saldo</div><div>Bs {saldo_calc:.2f}</div></div>"
+            qr_html = f"<div class='center'><img alt='QR' src='{qr_datauri}' style='width:120px;height:120px;object-fit:contain;margin-top:6px' /></div>" if qr_datauri else ''
+            body_html = (
+                "<div class=\"center\">"
+                f"<div style='font-weight:bold;'>{empresa_nombre}</div>"
+                f"<div>FACTURA {numero_factura}</div>"
+                f"<div>{venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'}</div>"
+                "</div>"
+                "<div class='line'></div>"
+                f"<div class='row'><div>Cliente:</div><div>{(venta.get('nombreCliente') or 'N/A')[:26]}</div></div>"
+                f"{ci_html}"
+                "<div class='line'></div>"
+                "<table><thead><tr><th>Producto</th><th style='text-align:right'>Imp.</th></tr></thead>"
+                f"<tbody>{filas_productos_html}</tbody></table>"
+                "<div class='line'></div>"
+                f"<div class='row'><div>TOTAL</div><div>Bs {float(venta.get('montoTotal') or 0):.2f}</div></div>"
+                f"{pagado_html}{saldo_html}"
+                "<div class='line'></div><div class='line'></div>"
+                f"<div class='row'><div>Cajero</div><div>{(str(cajero) if cajero else '-')[:26]}</div></div>"
+                f"{qr_html}"
+                "<div class='center'>¡Gracias por su compra!<br/><span style='font-size:11px'>Sistema Ollantay</span></div>"
+            )
+        else:
+            # Standard invoice body without giant f-string
+            filas_detalle_parts = []
+            for d in detalles:
+                filas_detalle_parts.append(
+                    "<tr><td>{nombre}</td><td>{cant:.2f}</td><td>Bs {pu:.2f}</td><td>Bs {subt:.2f}</td></tr>".format(
+                        nombre=(d.get('nombreProducto') or 'Producto ' + str(d['idProducto'])),
+                        cant=float(d.get('cantidad_caja') or 0),
+                        pu=float(d.get('precio_unitario') or 0),
+                        subt=float(d.get('subtotal') or 0)
+                    )
+                )
+            filas_detalle_html = ''.join(filas_detalle_parts)
+            ci_html2 = f"<p><span class='label'>CI:</span> {venta.get('ci_persona')}</p>" if venta.get('ci_persona') else ''
+            tel_html2 = f"<p><span class='label'>Teléfono:</span> {venta.get('telefono_persona')}</p>" if venta.get('telefono_persona') else ''
+            dir_html2 = f"<p><span class='label'>Dirección:</span> {venta.get('direccion_persona')}</p>" if venta.get('direccion_persona') else ''
+            pagado_html2 = f"<p>Pagado: Bs {float(venta.get('montoPagado') or 0):.2f}</p>" if venta.get('montoPagado') else ''
+            saldo_html2 = ''
+            if venta.get('montoPagado'):
+                saldo_calc2 = (float(venta.get('montoTotal') or 0) - float(venta.get('montoPagado') or 0))
+                if saldo_calc2 > 0:
+                    saldo_html2 = f"<p>Saldo: Bs {saldo_calc2:.2f}</p>"
+            fecha_str2 = (venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A')
+            parts = []
+            parts.append("<button onclick=\"window.print()\">🖨️ Imprimir</button>")
+            parts.append("<div class='header'>" + f"<h1>{empresa_nombre}</h1><h2>FACTURA N°: {numero_factura}</h2>" + "</div>")
+            parts.append("<div class='section'><h3>Datos del Cliente</h3>" + f"<p><span class='label'>Cliente:</span> {venta.get('nombreCliente') or 'N/A'}</p>" + ci_html2 + tel_html2 + dir_html2 + "</div>")
+            parts.append("<div class='section'><h3>Datos de la Venta</h3>" + f"<p><span class='label'>Fecha:</span> {fecha_str2}</p>" + f"<p><span class='label'>Tipo de Venta:</span> {venta.get('tipoVenta') or 'N/A'}</p>" + f"<p><span class='label'>Forma de Pago:</span> {venta.get('tipoPago') or 'N/A'}</p>" + "</div>")
+            parts.append("<div class='section'><h3>Detalle de Productos</h3><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio Unit.</th><th>Subtotal</th></tr></thead><tbody>" + filas_detalle_html + "</tbody></table></div>")
+            parts.append("<div class='total'>" + f"<p>TOTAL: Bs {float(venta.get('montoTotal') or 0):.2f}</p>" + pagado_html2 + saldo_html2 + "</div>")
+            parts.append("<div style='text-align: center; margin-top: 40px; color: #666; font-size: 0.9em;'>Generado automáticamente por Sistema Ollantay</div>")
+            body_html = ''.join(parts)
+
+        # Build final HTML wrapper (applies to both ticket and standard styles)
+        html = (
+            "<!DOCTYPE html>"
+            "<html>"
+            "<head><meta charset='utf-8' />"
+            f"<title>Factura {numero_factura}</title>"
+            f"{base_style}{ticket_extra_style}"
+            "</head><body>"
+            f"{body_html}"
+            "</body></html>"
+        )
         return HTMLResponse(content=html, status_code=200)
         
     except HTTPException:

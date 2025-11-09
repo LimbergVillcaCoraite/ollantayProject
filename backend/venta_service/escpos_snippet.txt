@@ -1,0 +1,152 @@
+﻿
+@app.get('/ventas/{id}/factura/escpos')
+def imprimir_factura_escpos(
+    id: int,
+    request: Request = None,
+    width_mm: Optional[int] = 80
+):
+    \"\"\"Generate ESC/POS raw commands for thermal printer (RawBT, USB, etc).
+    Returns base64-encoded binary suitable for rawbt:// URL scheme or direct serial/USB print.\"\"\"
+    try:
+        import base64
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True, buffered=True)
+        role = get_role(None, request)
+        user_company = get_company_id_from_request(request)
+        
+        # Get sale
+        cur.execute('''
+            SELECT 
+                v.idVenta, v.codigoVenta, v.fechaVenta, v.idTipoVenta, tv.nombreTipoVenta AS tipoVenta,
+                v.idTipoPago, tp.nombrePago AS tipoPago, v.idCliente,
+                CONCAT(p.nombres_persona, ' ', COALESCE(p.apellido_paternoPersona, '')) AS nombreCliente,
+                p.ci_persona,
+                v.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                v.montoTotal, v.montoPagado, v.estado_pago, v.estado
+            FROM venta_O v
+            LEFT JOIN tipoVenta tv ON v.idTipoVenta = tv.idTipoVenta
+            LEFT JOIN tipoPago tp ON v.idTipoPago = tp.idPago
+            LEFT JOIN persona_O p ON v.idCliente = p.id_persona
+            LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
+            WHERE v.idVenta = %s
+        ''', (id,))
+        venta = cur.fetchone()
+        
+        if not venta:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail='Venta no encontrada')
+        
+        if role not in ('admin','editor','superadmin') and user_company is not None and venta['idEmpresa'] != user_company:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=403, detail='No autorizado')
+        
+        # Get details
+        cur.execute('''
+            SELECT 
+                dv.cantidad_caja, dv.precio_unitario, dv.subtotal,
+                pr.nombreProducto, pr.codigoProducto
+            FROM detalle_venta_O dv
+            LEFT JOIN producto_O pr ON dv.idProducto = pr.idProducto
+            WHERE dv.idVenta = %s
+            ORDER BY dv.idDetalleVenta
+        ''', (id,))
+        detalles = cur.fetchall() or []
+        cur.close(); conn.close()
+        
+        # Build ESC/POS commands
+        ESC = b'\\x1b'
+        GS = b'\\x1d'
+        LF = b'\\n'
+        
+        commands = bytearray()
+        
+        # Initialize printer
+        commands.extend(ESC + b'@')  # Reset
+        
+        # Center align
+        commands.extend(ESC + b'a' + b'\\x01')
+        
+        # Bold + Empresa name
+        commands.extend(ESC + b'E' + b'\\x01')
+        empresa = (venta.get('nombreEmpresa') or 'Empresa')[:32].encode('cp437', errors='replace')
+        commands.extend(empresa + LF)
+        commands.extend(ESC + b'E' + b'\\x00')  # Bold off
+        
+        # Factura number
+        fecha_str = venta['fechaVenta'].strftime('%Y%m%d') if venta.get('fechaVenta') else '00000000'
+        numero = f\"FAC-{fecha_str}-{venta['idVenta']:06d}\"
+        commands.extend(f\"FACTURA {numero}\\n\".encode('cp437', errors='replace'))
+        
+        # Date
+        fecha_display = venta['fechaVenta'].strftime('%d/%m/%Y %H:%M') if venta.get('fechaVenta') else 'N/A'
+        commands.extend(f\"Fecha: {fecha_display}\\n\".encode('cp437', errors='replace'))
+        
+        # Line separator
+        commands.extend(b'-' * 32 + LF)
+        
+        # Left align for customer
+        commands.extend(ESC + b'a' + b'\\x00')
+        
+        # Customer
+        cliente = (venta.get('nombreCliente') or 'N/A')[:32]
+        commands.extend(f\"Cliente: {cliente}\\n\".encode('cp437', errors='replace'))
+        if venta.get('ci_persona'):
+            commands.extend(f\"CI: {venta['ci_persona']}\\n\".encode('cp437', errors='replace'))
+        
+        commands.extend(b'-' * 32 + LF)
+        
+        # Items
+        commands.extend(b\"DETALLE\\n\")
+        for d in detalles:
+            nombre = (d.get('nombreProducto') or 'Producto')[:28]
+            qty = float(d.get('cantidad_caja') or 0)
+            pu = float(d.get('precio_unitario') or 0)
+            st = float(d.get('subtotal') or qty*pu)
+            
+            commands.extend(nombre.encode('cp437', errors='replace') + LF)
+            line = f\"{qty:.2f} x {pu:.2f}    Bs {st:.2f}\\n\"
+            commands.extend(line.encode('cp437', errors='replace'))
+        
+        commands.extend(b'-' * 32 + LF)
+        
+        # Total
+        total = float(venta.get('montoTotal') or 0)
+        commands.extend(ESC + b'E' + b'\\x01')  # Bold
+        commands.extend(f\"TOTAL      Bs {total:.2f}\\n\".encode('cp437', errors='replace'))
+        commands.extend(ESC + b'E' + b'\\x00')  # Bold off
+        
+        if venta.get('montoPagado'):
+            pagado = float(venta['montoPagado'])
+            commands.extend(f\"Pagado     Bs {pagado:.2f}\\n\".encode('cp437', errors='replace'))
+            cambio = pagado - total
+            if cambio > 0:
+                commands.extend(f\"Cambio     Bs {cambio:.2f}\\n\".encode('cp437', errors='replace'))
+        
+        # Footer
+        commands.extend(LF)
+        commands.extend(ESC + b'a' + b'\\x01')  # Center
+        commands.extend(b\"Gracias por su compra!\\n\")
+        commands.extend(b\"Sistema Ollantay\\n\")
+        
+        # Cut paper (if supported)
+        commands.extend(LF + LF + LF)
+        commands.extend(GS + b'V' + b'\\x00')  # Full cut
+        
+        # Encode to base64
+        b64 = base64.b64encode(bytes(commands)).decode('ascii')
+        
+        return JSONResponse({
+            'ok': True,
+            'idVenta': id,
+            'escpos_base64': b64,
+            'rawbt_url': f'rawbt://print?data={b64}'
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+

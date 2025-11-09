@@ -150,6 +150,59 @@ def list_gastos(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get('/gastos/stats')
+def gastos_stats(
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+    categoria: Optional[str] = None,
+    idEmpresa: Optional[int] = None,
+    request: Request = None,
+    x_user_role: str = Header(None)
+):
+    """Resumen agregado de gastos por categoría y totales.
+    Devuelve: { total: float, categorias: [ { categoria, total, count } ], desde, hasta }
+    Superadmin puede especificar idEmpresa; otros restringidos a su empresa.
+    """
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        where = []
+        params = []
+        if x_user_role == 'superadmin' and idEmpresa is not None:
+            where.append('idEmpresa = %s'); params.append(idEmpresa)
+        else:
+            cid = get_company_id_from_request(request)
+            if cid is not None:
+                where.append('idEmpresa = %s'); params.append(cid)
+        if fecha_inicio:
+            where.append('fecha >= %s'); params.append(fecha_inicio)
+        if fecha_fin:
+            where.append('fecha <= %s'); params.append(fecha_fin)
+        if categoria:
+            where.append('categoria = %s'); params.append(categoria)
+        base = ' FROM gasto_O '
+        if where:
+            base += ' WHERE ' + ' AND '.join(where)
+        # Totales por categoría
+        cur.execute('SELECT categoria, COUNT(*) AS count, SUM(monto) AS total ' + base + ' GROUP BY categoria ORDER BY total DESC', tuple(params))
+        categorias = cur.fetchall() or []
+        # Total general
+        cur.execute('SELECT SUM(monto) AS total FROM gasto_O ' + (' WHERE ' + ' AND '.join(where) if where else ''), tuple(params))
+        total_row = cur.fetchone()
+        cur.close(); conn.close()
+        for c in categorias:
+            c['total'] = float(c['total'] or 0)
+            c['count'] = int(c['count'] or 0)
+        total_general = float(total_row['total'] or 0) if total_row else 0.0
+        return {
+            'total': total_general,
+            'categorias': categorias,
+            'desde': fecha_inicio,
+            'hasta': fecha_fin,
+            'empresa': idEmpresa if (x_user_role == 'superadmin' and idEmpresa is not None) else get_company_id_from_request(request)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post('/gastos', response_model=GastoOut, status_code=201)
 def create_gasto(payload: GastoIn, request: Request = None, x_user_role: str = Header(None)):
