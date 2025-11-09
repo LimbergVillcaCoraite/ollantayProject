@@ -134,6 +134,33 @@ superadmin   48
 
 ---
 
+### 4. `fix-permissions-encoding.ps1` (PowerShell - Windows)
+**Propósito**: Limpiar y re-aplicar permisos con codificación correcta (sin caracteres raros)
+
+**Problema que resuelve**:
+- Caracteres extraños en descripciones: `Ver módulo` → `Ver m�dulo`
+- Mojibake causado por problemas de codificación UTF-8/ASCII
+
+**Uso**:
+```powershell
+# Ejecutar cuando veas caracteres raros (�, �, �, etc.)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\fix-permissions-encoding.ps1
+```
+
+**Qué hace**:
+1. ✅ Verifica que MySQL está corriendo
+2. ✅ Limpia permisos con descripciones rotas
+3. ✅ Re-aplica permisos con codificación UTF-8 correcta
+4. ✅ Verifica que los permisos se crearon sin caracteres raros
+
+**Nota**: Si el problema persiste, ejecuta directamente:
+```powershell
+Get-Content backend\fix_descriptions.sql -Encoding UTF8 | docker exec -i mysql_8_0_32-containerSources mysql -u root -pP4assw@rd SystemaOllantay
+docker-compose restart persona_service
+```
+
+---
+
 ## 🔄 Mantenimiento Automático
 
 Después del setup inicial, **GitHub Actions** se encarga automáticamente de:
