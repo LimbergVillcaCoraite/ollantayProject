@@ -24,12 +24,12 @@ INSERT IGNORE INTO permission_O (id_perm, resource, action, description) VALUES
 (11, 'empresas', 'edit', 'Editar empresas'),
 (12, 'empresas', 'delete', 'Eliminar empresas'),
 
--- Préstamos
-(13, 'prestamos', 'view', 'Ver préstamos'),
-(14, 'prestamos', 'create', 'Crear préstamos'),
-(15, 'prestamos', 'edit', 'Editar préstamos'),
-(16, 'prestamos', 'delete', 'Eliminar préstamos'),
-(17, 'prestamos', 'approve', 'Aprobar préstamos'),
+-- Prestamos
+(13, 'prestamos', 'view', 'Ver prestamos'),
+(14, 'prestamos', 'create', 'Crear prestamos'),
+(15, 'prestamos', 'edit', 'Editar prestamos'),
+(16, 'prestamos', 'delete', 'Eliminar prestamos'),
+(17, 'prestamos', 'approve', 'Aprobar prestamos'),
 
 -- Productos
 (18, 'productos', 'view', 'Ver productos'),
@@ -43,7 +43,7 @@ INSERT IGNORE INTO permission_O (id_perm, resource, action, description) VALUES
 (24, 'caja', 'edit', 'Editar movimientos de caja'),
 (25, 'caja', 'delete', 'Eliminar movimientos de caja'),
 
--- Ventas (incluye Predicciones y Créditos admin)
+-- Ventas (incluye Predicciones y Creditos admin)
 (26, 'ventas', 'view', 'Ver ventas'),
 (27, 'ventas', 'create', 'Crear ventas'),
 (28, 'ventas', 'edit', 'Editar ventas'),
@@ -119,7 +119,7 @@ AND p.action = 'view';
 -- Los clientes no necesitan permisos explícitos en permission_O
 
 -- ============================================
--- 3. VERIFICACIÓN
+-- 3. VERIFICACION
 -- ============================================
 
 -- Ver todos los permisos creados
