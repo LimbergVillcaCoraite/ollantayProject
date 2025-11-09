@@ -6,21 +6,29 @@ Este sistema elimina la necesidad de actualizar manualmente la base de datos cua
 
 ## ✨ Características
 
-### 1. **Detección Automática de Páginas**
+### 1. **Auto-Sincronización al Iniciar**
+- Los permisos se sincronizan **automáticamente al iniciar persona_service**
+- Detecta interfaces nuevas desde el código
+- Crea permisos faltantes sin intervención manual
+- **No requiere hacer nada** - las nuevas interfaces aparecen automáticamente en Roles y Permisos
+
+### 2. **Detección Automática de Páginas**
 - El backend lee el mapeo de páginas definido en el código
 - Identifica todos los permisos necesarios para cada página
 - Compara con los permisos existentes en la base de datos
 
-### 2. **Sincronización con Un Clic**
-- Botón "🔄 Sincronizar Permisos" en la interfaz de administración
+### 3. **Sincronización Manual (Opcional)**
+- Botón "🔄 Sincronizar Permisos" en la interfaz de administración (opcional)
+- Útil si agregas interfaces mientras el servicio está corriendo
 - Crea automáticamente permisos faltantes
 - Genera permisos CRUD completos para cada recurso
 - Muestra reporte de permisos creados
 
-### 3. **Mapeo Centralizado**
+### 4. **Mapeo Centralizado**
 - Todas las páginas están definidas en un solo lugar
 - Evita inconsistencias entre frontend y backend
 - Facilita el mantenimiento
+- Sistema multiempresa: permisos globales, asignación por empresa
 
 ## 📋 Endpoints Nuevos
 
@@ -87,18 +95,22 @@ Content-Type: application/json
 
 ### Para Administradores
 
-1. **Acceder a Roles y Permisos**
+**¡Ya no necesitas hacer nada!** Los permisos se crean automáticamente.
+
+1. **Verificar Permisos Existentes**
    - Iniciar sesión como admin o superadmin
    - Ir a "Roles y Permisos" en el menú lateral
+   - Todos los permisos de las interfaces ya están creados
 
-2. **Sincronizar Permisos**
+2. **Sincronizar Manualmente (Opcional)**
+   - Solo si agregaste una interfaz mientras el sistema estaba corriendo
    - Hacer clic en el botón "🔄 Sincronizar Permisos"
    - El sistema creará automáticamente los permisos faltantes
-   - Verá un mensaje con el número de permisos creados
 
 3. **Asignar Permisos a Roles**
-   - Los nuevos permisos aparecerán automáticamente en la interfaz
-   - Asignarlos a los roles correspondientes
+   - Todos los permisos aparecen automáticamente agrupados por recurso
+   - Asignarlos a los roles correspondientes según tu empresa
+   - Sistema multiempresa: cada empresa gestiona sus propios roles
 
 ### Para Desarrolladores
 
@@ -151,11 +163,16 @@ Content-Type: application/json
    )}
    ```
 
-6. **Sincronizar permisos**
-   - Hacer clic en "🔄 Sincronizar Permisos" en la UI
-   - O ejecutar: `POST http://localhost:8002/permissions/sync`
+6. **¡Listo! Ya aparece en Roles y Permisos**
+   - **Reiniciar persona_service** (o reiniciar todo el sistema)
+   - Los permisos se crean automáticamente al iniciar
+   - Aparecen en la interfaz de Roles y Permisos
+   - Asignar el permiso `nuevapagina:view` a los roles deseados
+   - Sistema multiempresa: cada empresa decide qué roles tienen acceso
 
-¡Listo! La nueva página aparecerá automáticamente en la gestión de permisos.
+**Alternativa rápida:** Si el sistema ya está corriendo, hacer clic en "🔄 Sincronizar Permisos" en la UI en lugar de reiniciar.
+
+¡Listo! Sin tocar SQL, sin scripts manuales. 🚀
 
 ## 🔧 Arquitectura
 
@@ -173,15 +190,27 @@ Content-Type: application/json
          │
          ▼
 ┌─────────────────┐
-│ persona_service │  Endpoints de sincronización
-│    main.py      │  GET /permissions/pages
+│ persona_service │  🔄 AUTO-SYNC AL INICIAR
+│    main.py      │  - Lee mapeo de usePermissions.js
+│                 │  - Detecta permisos faltantes
+│                 │  - Crea automáticamente en BD
+│                 │  
+│                 │  Endpoints manuales (opcional):
+│                 │  GET /permissions/pages
 │                 │  POST /permissions/sync
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
 │   MySQL DB      │  Tablas: permission_O, role_permission_O
-│  SystemaOllantay│
+│  SystemaOllantay│  Sistema multiempresa: permisos globales,
+│                 │  asignación por empresa (id_empresa)
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ RoleManagement  │  UI: Muestra permisos agrupados por recurso
+│     .jsx        │  Asignación dinámica sin hardcodeo
 └─────────────────┘
 ```
 
@@ -322,11 +351,14 @@ ORDER BY r.name, p.resource, p.action;
 
 ## 🎉 Beneficios
 
-✅ **Sin edición manual de SQL** - Los permisos se crean automáticamente
+✅ **100% Automático** - Los permisos se crean al iniciar el servicio
+✅ **Sin edición manual de SQL** - Nunca más necesitas ejecutar scripts
+✅ **Sin sincronización manual** - Solo reiniciar el servicio (o click opcional)
 ✅ **Código como fuente de verdad** - El mapeo está en el código, no en la BD
-✅ **Sincronización en un clic** - Interfaz amigable para administradores
+✅ **Interfaz amigable** - Permisos agrupados automáticamente por recurso
 ✅ **Consistencia garantizada** - Evita permisos faltantes o desactualizados
 ✅ **Escalable** - Fácil agregar nuevas funcionalidades
+✅ **Multiempresa** - Permisos globales, asignación por empresa
 ✅ **Auditable** - Registro de permisos creados en cada sincronización
 
 ## 📝 Ejemplo de Uso Completo
@@ -353,10 +385,38 @@ Supongamos que queremos agregar una nueva sección "Inventario":
        'description': 'Ver inventario'
    }
    ```
-6. **Sincronizar**: Click en "🔄 Sincronizar Permisos"
-7. **Asignar**: Asignar permiso `inventario:view` a roles deseados
+6. **Sincronizar**: Reiniciar persona_service o click en "🔄 Sincronizar Permisos"
+7. **Asignar**: Ir a Roles y Permisos, asignar `inventario:view` a roles deseados por empresa
 
-¡Listo! Sin tocar SQL, sin scripts manuales. 🚀
+¡Listo! Sin tocar SQL, sin scripts manuales, 100% automático. 🚀
+
+## 🏢 Sistema Multiempresa
+
+El sistema soporta múltiples empresas:
+
+1. **Permisos Globales**: Los permisos se crean una vez en `permission_O` (sin id_empresa)
+2. **Asignación por Empresa**: Cada empresa asigna permisos a sus roles en `role_permission_O` (con id_empresa)
+3. **Superadmin**: Ve todas las empresas y gestiona permisos globales
+4. **Admin**: Solo ve y gestiona permisos de su empresa
+5. **Isolación**: Los datos de cada empresa están completamente aislados
+
+### Flujo Multiempresa
+
+```
+1. Nueva interfaz agregada al código
+2. ↓
+3. persona_service inicia/reinicia
+4. ↓
+5. Auto-sync crea permiso global (sin id_empresa)
+6. ↓
+7. Superadmin ve el permiso en todas las empresas
+8. ↓
+9. Admin de Empresa A asigna permiso a sus roles
+10. ↓
+11. Admin de Empresa B decide si asigna o no a sus roles
+12. ↓
+13. Usuarios de cada empresa ven/no ven según sus roles
+```
 
 ---
 
