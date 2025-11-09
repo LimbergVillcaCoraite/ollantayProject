@@ -244,6 +244,90 @@ def ensure_ubicacion_persona_table():
 def _startup_ubicacion_persona():
     ensure_ubicacion_persona_table()
 
+@app.on_event('startup')
+def _auto_sync_permissions():
+    """Auto-sincroniza permisos al iniciar el servicio para que nuevas interfaces aparezcan automáticamente"""
+    try:
+        print("🔄 Auto-sync: Verificando permisos...")
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Mapeo completo de páginas (debe coincidir con usePermissions.js)
+        page_permissions = {
+            'tipos': {'resource': 'tipos', 'action': 'view', 'description': 'Ver tipos'},
+            'personas': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas'},
+            'personas_mapa': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas en mapa'},
+            'empresas': {'resource': 'empresas', 'action': 'view', 'description': 'Ver empresas'},
+            'prestamos': {'resource': 'prestamos', 'action': 'view', 'description': 'Ver prestamos'},
+            'productos': {'resource': 'productos', 'action': 'view', 'description': 'Ver productos'},
+            'caja': {'resource': 'caja', 'action': 'view', 'description': 'Ver caja'},
+            'ventas': {'resource': 'ventas', 'action': 'view', 'description': 'Ver ventas'},
+            'predicciones': {'resource': 'ventas', 'action': 'view', 'description': 'Ver predicciones (IA)'},
+            'creditos': {'resource': 'ventas', 'action': 'view', 'description': 'Ver creditos (Admin)'},
+            'misdeudas': {'resource': 'none', 'action': 'none', 'description': 'Ver mis deudas (todos)'},
+            'compras': {'resource': 'compras', 'action': 'view', 'description': 'Ver compras'},
+            'gastos': {'resource': 'caja', 'action': 'view', 'description': 'Ver gastos'},
+            'proveedores': {'resource': 'proveedores', 'action': 'view', 'description': 'Ver proveedores'},
+            'rutas': {'resource': 'rutas', 'action': 'view', 'description': 'Ver rutas'},
+            'cuentas': {'resource': 'cuentas', 'action': 'view', 'description': 'Ver cuentas'},
+            'usuarios': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar usuarios'},
+            'roles': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar roles'},
+            'superadmin': {'resource': 'superadmin', 'action': 'access', 'description': 'Acceso SuperAdmin'}
+        }
+        
+        # Obtener permisos existentes
+        cursor.execute('SELECT resource, action FROM permission_O')
+        existing_perms = {(row['resource'], row['action']) for row in cursor.fetchall()}
+        
+        # Crear permisos faltantes de páginas
+        created_count = 0
+        for page, perm_data in page_permissions.items():
+            resource = perm_data['resource']
+            action = perm_data['action']
+            
+            if resource == 'none':
+                continue
+            
+            if (resource, action) not in existing_perms:
+                try:
+                    cursor.execute(
+                        'INSERT INTO permission_O (resource, action, description) VALUES (%s, %s, %s)',
+                        (resource, action, perm_data['description'])
+                    )
+                    created_count += 1
+                    print(f"  ✅ Creado permiso: {resource}:{action}")
+                except Exception as e:
+                    print(f"  ⚠️ No se pudo crear {resource}:{action}: {e}")
+        
+        # Crear permisos CRUD para cada recurso
+        resources = {p['resource'] for p in page_permissions.values() if p['resource'] not in ['none', 'superadmin', 'roles']}
+        crud_actions = ['view', 'create', 'update', 'delete']
+        
+        for resource in resources:
+            for action in crud_actions:
+                if (resource, action) not in existing_perms:
+                    try:
+                        description = f"Ver {resource}" if action == 'view' else f"{action.capitalize()} {resource}"
+                        cursor.execute(
+                            'INSERT INTO permission_O (resource, action, description) VALUES (%s, %s, %s)',
+                            (resource, action, description)
+                        )
+                        created_count += 1
+                        print(f"  ✅ Creado permiso CRUD: {resource}:{action}")
+                    except Exception as e:
+                        print(f"  ⚠️ No se pudo crear CRUD {resource}:{action}: {e}")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        if created_count > 0:
+            print(f"✅ Auto-sync completado: {created_count} permisos creados")
+        else:
+            print("✅ Auto-sync: Todos los permisos ya existen")
+    except Exception as e:
+        print(f"❌ Error en auto-sync de permisos: {e}")
+
 # POST: Actualizar ubicación de persona
 @app.post('/persons/{id}/ubicacion', response_model=UbicacionPersonaOut)
 async def actualizar_ubicacion_persona(id: int, body: UbicacionPersonaIn, request: Request):
