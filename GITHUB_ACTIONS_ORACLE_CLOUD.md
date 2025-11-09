@@ -224,10 +224,173 @@ git push origin ft2/productos
 
 ---
 
-## 🎓 Recursos Adicionales
+## 🔒 Certificado SSL con GitHub Actions
+
+### ✅ Respuesta: SÍ, totalmente automatizable
+
+GitHub Actions puede:
+1. **Verificar** si el certificado SSL existe
+2. **Renovar automáticamente** cuando expire (< 30 días)
+3. **Recargar nginx** después de renovación
+4. **Ejecutarse semanalmente** o manualmente
+
+### 📋 Setup Inicial de SSL (Una vez)
+
+#### 1. En tu servidor Oracle Cloud:
+```bash
+# Instalar Certbot
+sudo apt update
+sudo apt install certbot -y  # Ubuntu/Debian
+# o
+sudo dnf install certbot -y  # Oracle Linux
+
+# Crear directorio para ACME challenge
+sudo mkdir -p /var/www/certbot/.well-known/acme-challenge
+sudo chown -R $USER:$USER /var/www/certbot
+
+# Verificar que nginx está corriendo y expone puerto 80
+docker-compose ps reverse_proxy
+
+# Obtener certificado (primera vez)
+sudo certbot certonly \
+  --webroot \
+  -w /var/www/certbot \
+  -d archsoft-system.duck.dns.org \
+  --email tu@email.com \
+  --agree-tos \
+  --non-interactive
+
+# Dar permisos Docker para acceder a certificados
+sudo chmod 755 /etc/letsencrypt/live
+sudo chmod 755 /etc/letsencrypt/archive
+```
+
+#### 2. Actualizar docker-compose.yml para montar certificados:
+```yaml
+reverse_proxy:
+  # ... (config existente)
+  volumes:
+    - ./reverse-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+    - /etc/letsencrypt:/etc/letsencrypt:ro  # ← Añadir esta línea
+    - /var/www/certbot:/var/www/certbot:ro  # ← Añadir esta línea
+```
+
+#### 3. Actualizar nginx.conf para usar certificados Let's Encrypt:
+```nginx
+server {
+  listen 443 ssl;
+  server_name archsoft-system.duck.dns.org;
+  
+  # Cambiar de dev certificates a Let's Encrypt
+  ssl_certificate     /etc/letsencrypt/live/archsoft-system.duck.dns.org/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/archsoft-system.duck.dns.org/privkey.pem;
+  
+  # Comentar las dev certificates:
+  # ssl_certificate     /etc/nginx/certs/dev.crt;
+  # ssl_certificate_key /etc/nginx/certs/dev.key;
+  
+  # ... resto de config
+}
+```
+
+#### 4. Reiniciar nginx:
+```bash
+cd ~/ollantayProject
+docker-compose restart reverse_proxy
+docker-compose ps  # Verificar que esté "Up"
+```
+
+#### 5. Verificar SSL en navegador:
+```
+https://archsoft-system.duck.dns.org
+# Debería mostrar candado verde y certificado válido
+```
+
+### 🤖 Renovación Automática con GitHub Actions
+
+He creado el workflow `.github/workflows/renew-ssl.yml` que:
+
+- ✅ Se ejecuta **cada domingo a las 3 AM** automáticamente
+- ✅ Verifica días hasta expiración
+- ✅ Renueva si quedan menos de 30 días
+- ✅ Recarga nginx después de renovar
+- ✅ Se puede ejecutar manualmente cuando quieras
+
+### 📊 Secrets Adicionales para SSL
+
+Agregar en GitHub → Settings → Secrets → Actions:
+
+| Secret Name | Valor | Ejemplo |
+|------------|-------|---------|
+| `DOMAIN` | Tu dominio | `archsoft-system.duck.dns.org` |
+| `CERTBOT_EMAIL` | Email para notificaciones | `tu@email.com` |
+
+### � Workflows Incluidos
+
+1. **`deploy-oracle-cloud.yml`** - Deploy automático + check SSL
+2. **`renew-ssl.yml`** - Renovación automática semanal
+
+### 🧪 Probar Renovación SSL Manualmente
+
+```bash
+# Desde GitHub:
+# Actions → Renew SSL Certificate → Run workflow
+
+# O desde servidor Oracle Cloud:
+sudo certbot renew --dry-run  # Simula renovación
+sudo certbot renew --force-renewal  # Forzar renovación
+```
+
+### ⚠️ Troubleshooting SSL
+
+#### Error: "Certificate not found"
+```bash
+# Verificar path
+sudo ls -la /etc/letsencrypt/live/archsoft-system.duck.dns.org/
+
+# Si no existe, obtener certificado:
+sudo certbot certonly --webroot -w /var/www/certbot -d archsoft-system.duck.dns.org --email tu@email.com --agree-tos
+```
+
+#### Error: "Nginx failed to reload"
+```bash
+# Verificar sintaxis nginx
+docker exec reverse_proxy nginx -t
+
+# Ver logs
+docker logs reverse_proxy
+```
+
+#### Certificado expira pero no renueva
+```bash
+# Verificar cron de certbot
+sudo systemctl status certbot.timer
+
+# Forzar renovación manual
+sudo certbot renew --force-renewal
+docker-compose restart reverse_proxy
+```
+
+### 📅 Timeline de Renovación
+
+```
+Día 0   → Certificado emitido (válido 90 días)
+Día 60  → GitHub Actions detecta < 30 días, renueva automáticamente
+Día 90  → Nuevo certificado válido por otros 90 días
+```
+
+### 💰 Costo
+
+**GRATIS** - Let's Encrypt es 100% gratuito y GitHub Actions tiene 2000 minutos/mes gratis.
+
+---
+
+## �🎓 Recursos Adicionales
 
 - [GitHub Actions Docs](https://docs.github.com/en/actions)
 - [Docker Compose Best Practices](https://docs.docker.com/compose/production/)
+- [Let's Encrypt Documentation](https://letsencrypt.org/docs/)
+- [Certbot User Guide](https://eff-certbot.readthedocs.io/)
 - [Oracle Cloud SSH Access](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/accessinginstance.htm)
 
 ---

@@ -48,6 +48,8 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
           DEPLOY_PATH: "~/ollantayProject"
+          DOMAIN: ${{ secrets.DOMAIN || 'archsoft-system.duck.dns.org' }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
         run: |
           ssh -i ~/.ssh/id_rsa -p $SSH_PORT $SSH_USER@$SSH_HOST << 'ENDSSH'
             set -e
@@ -59,6 +61,22 @@ jobs:
             
             echo "==> Backing up database (opcional)..."
             # docker exec mysql_8_0_32-containerSources mysqldump -u root -pP4assw@rd SystemaOllantay > backup_$(date +%Y%m%d_%H%M%S).sql
+            
+            echo "==> Checking SSL certificate..."
+            if [ ! -f "/etc/letsencrypt/live/${{ env.DOMAIN }}/fullchain.pem" ]; then
+              echo "⚠️ SSL certificate not found. Please run SSL setup first."
+              echo "Run: sudo certbot certonly --webroot -w /var/www/certbot -d ${{ env.DOMAIN }} --email ${{ env.CERTBOT_EMAIL }} --agree-tos --non-interactive"
+            else
+              echo "✅ SSL certificate exists"
+              # Check expiration (optional)
+              CERT_DAYS=$(sudo openssl x509 -enddate -noout -in /etc/letsencrypt/live/${{ env.DOMAIN }}/fullchain.pem | cut -d= -f2 | xargs -I{} date -d {} +%s | xargs -I{} echo $(( ({} - $(date +%s)) / 86400 )))
+              echo "Certificate expires in $CERT_DAYS days"
+              
+              if [ "$CERT_DAYS" -lt 30 ]; then
+                echo "⚠️ Certificate expires soon, attempting renewal..."
+                sudo certbot renew --webroot -w /var/www/certbot --deploy-hook "docker exec reverse_proxy nginx -s reload"
+              fi
+            fi
             
             echo "==> Rebuilding and restarting services..."
             docker-compose down

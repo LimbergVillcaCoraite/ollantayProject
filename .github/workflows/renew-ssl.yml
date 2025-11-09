@@ -1,0 +1,89 @@
+# GitHub Actions para renovación automática de SSL (Let's Encrypt)
+#
+# Este workflow se ejecuta:
+# 1. Cada domingo a las 3 AM
+# 2. Manualmente desde GitHub Actions
+#
+# Requisitos adicionales en GitHub Secrets:
+# - DOMAIN: archsoft-system.duck.dns.org (o tu dominio)
+# - CERTBOT_EMAIL: tu@email.com (para notificaciones de Let's Encrypt)
+
+name: Renew SSL Certificate
+
+on:
+  schedule:
+    # Ejecutar cada domingo a las 3 AM UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:  # Permitir ejecución manual
+
+jobs:
+  renew-ssl:
+    name: Renew Let's Encrypt Certificate
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Check and renew SSL certificate
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          DOMAIN: ${{ secrets.DOMAIN || 'archsoft-system.duck.dns.org' }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+        run: |
+          ssh -i ~/.ssh/id_rsa -p $SSH_PORT $SSH_USER@$SSH_HOST << 'ENDSSH'
+            set -e
+            
+            echo "==> Checking SSL certificate for ${{ env.DOMAIN }}..."
+            
+            if [ ! -f "/etc/letsencrypt/live/${{ env.DOMAIN }}/fullchain.pem" ]; then
+              echo "❌ SSL certificate not found!"
+              echo "Please run initial setup:"
+              echo "sudo certbot certonly --webroot -w /var/www/certbot -d ${{ env.DOMAIN }} --email ${{ env.CERTBOT_EMAIL }} --agree-tos --non-interactive"
+              exit 1
+            fi
+            
+            # Check days until expiration
+            CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in /etc/letsencrypt/live/${{ env.DOMAIN }}/fullchain.pem | cut -d= -f2)
+            CERT_DAYS=$(( ($(date -d "$CERT_EXPIRY" +%s) - $(date +%s)) / 86400 ))
+            
+            echo "Certificate expires in $CERT_DAYS days (on $CERT_EXPIRY)"
+            
+            if [ "$CERT_DAYS" -lt 30 ]; then
+              echo "⚠️ Certificate expires in less than 30 days, renewing..."
+              
+              # Attempt renewal
+              sudo certbot renew --webroot -w /var/www/certbot --non-interactive --deploy-hook "docker exec reverse_proxy nginx -s reload || docker-compose -f ~/ollantayProject/docker-compose.yml restart reverse_proxy"
+              
+              if [ $? -eq 0 ]; then
+                echo "✅ Certificate renewed successfully!"
+                
+                # Update nginx config to use Let's Encrypt cert
+                if grep -q "dev.crt" ~/ollantayProject/reverse-proxy/nginx.conf; then
+                  echo "⚠️ Nginx is still using dev certificate. Please update nginx.conf to use Let's Encrypt paths:"
+                  echo "ssl_certificate /etc/letsencrypt/live/${{ env.DOMAIN }}/fullchain.pem;"
+                  echo "ssl_certificate_key /etc/letsencrypt/live/${{ env.DOMAIN }}/privkey.pem;"
+                fi
+              else
+                echo "❌ Certificate renewal failed!"
+                exit 1
+              fi
+            else
+              echo "✅ Certificate is valid for $CERT_DAYS more days. No renewal needed."
+            fi
+          ENDSSH
+      
+      - name: Notify renewal status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ SSL certificate check/renewal completed successfully!"
+          else
+            echo "❌ SSL certificate renewal failed! Check logs."
+          fi
