@@ -1,0 +1,93 @@
+# GitHub Actions para deploy automático en Oracle Cloud
+# 
+# REQUISITOS PREVIOS:
+# 1. Configurar GitHub Secrets (Settings → Secrets and variables → Actions):
+#    - SSH_HOST: IP pública de tu instancia Oracle Cloud
+#    - SSH_USER: usuario (ej: ubuntu, opc, etc.)
+#    - SSH_PRIVATE_KEY: clave privada SSH (contenido completo del archivo ~/.ssh/id_rsa)
+#    - SSH_PORT: puerto SSH (default: 22)
+#
+# 2. En el servidor Oracle Cloud:
+#    - Instalar Docker y Docker Compose
+#    - Clonar el repositorio en ~/ollantayProject o ajustar DEPLOY_PATH
+#    - Configurar firewall/iptables para puertos 80, 443, 3000, 8000-8011
+#    - Configurar permisos: sudo usermod -aG docker $USER
+
+name: Deploy to Oracle Cloud
+
+on:
+  push:
+    branches:
+      - main
+      - production
+  workflow_dispatch:  # Permitir ejecución manual
+
+jobs:
+  deploy:
+    name: Deploy via SSH
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Test SSH connection
+        run: |
+          ssh -i ~/.ssh/id_rsa -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo 'SSH connection OK'"
+      
+      - name: Deploy to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          DEPLOY_PATH: "~/ollantayProject"
+        run: |
+          ssh -i ~/.ssh/id_rsa -p $SSH_PORT $SSH_USER@$SSH_HOST << 'ENDSSH'
+            set -e
+            cd ${{ env.DEPLOY_PATH }}
+            
+            echo "==> Pulling latest changes..."
+            git fetch origin
+            git reset --hard origin/${{ github.ref_name }}
+            
+            echo "==> Backing up database (opcional)..."
+            # docker exec mysql_8_0_32-containerSources mysqldump -u root -pP4assw@rd SystemaOllantay > backup_$(date +%Y%m%d_%H%M%S).sql
+            
+            echo "==> Rebuilding and restarting services..."
+            docker-compose down
+            docker-compose build --no-cache
+            docker-compose up -d
+            
+            echo "==> Waiting for services to start..."
+            sleep 10
+            
+            echo "==> Checking service health..."
+            docker-compose ps
+            
+            echo "==> Cleaning up old images..."
+            docker image prune -f
+            
+            echo "✅ Deployment completed successfully!"
+          ENDSSH
+      
+      - name: Verify deployment
+        run: |
+          echo "Checking service endpoints..."
+          sleep 5
+          curl -f http://${{ secrets.SSH_HOST }}/api/ventas/health || echo "Health check failed (non-critical)"
+      
+      - name: Notify deployment
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment to Oracle Cloud completed successfully!"
+          else
+            echo "❌ Deployment failed!"
+          fi

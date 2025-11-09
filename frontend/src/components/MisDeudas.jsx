@@ -11,11 +11,11 @@ export default function MisDeudas({ API }){
   const fetchDebts = async ()=>{
     setLoading(true); setError('')
     try{
-      let res = await fetch(`${API}/mis-deudas`, { credentials: 'include' })
+      let res = await fetch(`${API}/../mis-deudas`, { credentials: 'include' })
       if (res.status === 422) {
         console.warn('422 al listar mis deudas. Reintentando...')
         // No query params to strip, but we retry once in case of transient validation
-        res = await fetch(`${API}/mis-deudas`, { credentials: 'include' })
+        res = await fetch(`${API}/../mis-deudas`, { credentials: 'include' })
       }
       if(!res.ok){
         let detail = ''

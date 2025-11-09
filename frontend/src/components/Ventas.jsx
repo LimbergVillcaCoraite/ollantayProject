@@ -317,14 +317,14 @@ export default function Ventas({ API, userRole }) {
         return;
       }
       try {
-        const res = await fetch(`${API_PERSONAS}/persons`, {
+        const res = await fetch(`${API_PERSONAS}/persons?tipo=cliente`, {
           credentials: 'include'
         });
         if (res.ok) {
           const data = await res.json();
           const q = query.toLowerCase();
           const filtered = (Array.isArray(data) ? data : []).filter(p => {
-            const nombre = `${p.nombres_persona || ''} ${p.apellido_paternoPersona || ''} ${p.apellido_maternoPer || ''}`.toLowerCase();
+            const nombre = `${p.nombres_persona || ''} ${p.apellido_paternoPersona || ''} ${p.apellido_maternoPersona || ''}`.toLowerCase();
             const ci = String(p.ci_persona || '').toLowerCase();
             return nombre.includes(q) || ci.includes(q);
           }).slice(0, 10);
