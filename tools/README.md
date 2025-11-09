@@ -65,6 +65,75 @@ Próximos pasos:
 
 ---
 
+### 3. `apply-permissions.ps1` (PowerShell - Windows)
+**Propósito**: Aplicar permisos y roles en la base de datos MySQL
+
+**Requisitos previos**:
+- Docker y Docker Compose corriendo
+- Contenedor MySQL activo
+- Base de datos SystemaOllantay creada
+
+**Uso**:
+```powershell
+# Desde el directorio raíz del proyecto
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\apply-permissions.ps1
+
+# O manualmente:
+Get-Content backend\roles.sql | docker exec -i mysql_8_0_32-containerSources mysql -u root -pP4assw@rd SystemaOllantay
+```
+
+**Qué hace**:
+1. ✅ Crea 48 permisos en la tabla `permission_O`
+2. ✅ Asigna permisos a roles existentes:
+   - **superadmin**: Todos los permisos (48)
+   - **admin**: Todos excepto empresas (42)
+   - **editor**: Lectura/escritura (26)
+   - **viewer**: Solo lectura (14)
+3. ✅ Muestra resumen de permisos por rol
+
+**Permisos incluidos**:
+- `tipos` (ver, crear, editar, eliminar)
+- `personas` (ver, crear, editar, eliminar)
+- `empresas` (ver, crear, editar, eliminar)
+- `prestamos` (ver, crear, editar, eliminar, aprobar)
+- `productos` (ver, crear, editar, eliminar)
+- `caja` (ver, crear, editar, eliminar) - **Incluye Gastos**
+- `ventas` (ver, crear, editar, eliminar, pagar) - **Incluye Predicciones y Créditos**
+- `compras` (ver, crear, editar, eliminar)
+- `proveedores` (ver, crear, editar, eliminar)
+- `rutas` (ver, crear, editar, eliminar)
+- `cuentas` (ver, crear, editar, eliminar)
+- `roles` (ver, manage) - **Administración de usuarios y permisos**
+
+**Output esperado**:
+```
+======================================
+🔐 Aplicando Permisos y Roles
+======================================
+
+1️⃣ Verificando contenedor MySQL...
+✅ MySQL corriendo: Up 2 hours
+
+2️⃣ Ejecutando backend/roles.sql...
+✅ Script SQL ejecutado exitosamente
+
+3️⃣ Verificando permisos creados...
+Resumen de permisos por rol:
+role         permissions_count
+admin        42
+editor       26
+viewer       14
+superadmin   48
+```
+
+**Notas importantes**:
+- El permiso `caja:view` habilita el acceso a **Gastos**
+- El permiso `ventas:view` habilita **Predicciones** y **Créditos (Admin)**
+- **Mis Deudas** está disponible para **todos los usuarios autenticados** (no requiere permiso)
+- Después de aplicar permisos, recarga la interfaz web (F5) para ver cambios
+
+---
+
 ## 🔄 Mantenimiento Automático
 
 Después del setup inicial, **GitHub Actions** se encarga automáticamente de:
