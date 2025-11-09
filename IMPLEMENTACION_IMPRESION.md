@@ -19,12 +19,12 @@
    - Cambiado de `${API_VENTAS}/ventas/...` a `${API}/...`
    - Botones 🧾 Ticket y 📄 A4 ahora funcionan correctamente
 
-## ⏳ Pendiente de Implementación Manual
+## ✅ Implementación Completada
 
 ### Backend - Endpoint ESC/POS
 
 **Archivo**: `backend/venta_service/main.py`  
-**Ubicación**: Insertar **antes de la línea 1424** (comentario "Sistema de Entrega")
+**Estado**: ✅ **IMPLEMENTADO** - Endpoint agregado y funcionando
 
 ```python
 @app.get('/ventas/{id}/factura/escpos')
@@ -320,8 +320,52 @@ Invoke-WebRequest -Uri "http://localhost:8004/ventas/1/factura/escpos" -Method G
 - ✅ Búsqueda de clientes corregida
 - ✅ Columna "Estado" eliminada
 - ✅ Botones de impresión PDF/HTML funcionando
-- ⏳ Endpoint ESC/POS: código listo, requiere inserción manual
-- ⏳ Botón RawBT: código listo, implementación opcional
+- ✅ **Endpoint ESC/POS implementado y funcionando**
+- ✅ **Botón RawBT agregado en vistas desktop y mobile**
+- ✅ Script de prueba disponible en `tools/test_escpos.ps1`
+
+## 🧪 Pruebas y Verificación
+
+### Script de prueba automático
+```powershell
+# Ejecutar el script de prueba incluido
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\test_escpos.ps1"
+
+# Salida esperada:
+# OK: endpoint returned escpos_base64 length = 428, rawbt_url preview: rawbt://print?data=...
+```
+
+### Prueba manual del endpoint
+```powershell
+# Consultar endpoint directamente
+$res = Invoke-RestMethod -Uri "http://localhost:8004/ventas/1/factura/escpos"
+$res | ConvertTo-Json
+
+# Debe retornar:
+# {
+#   "ok": true,
+#   "idVenta": 1,
+#   "escpos_base64": "G0AbYQEbRQFQb2xsb3Mgcmlj...",
+#   "rawbt_url": "rawbt://print?data=G0AbYQEbRQFQb2xsb3M..."
+# }
+```
+
+### Probar desde navegador
+1. Abrir http://localhost:3000 e ir a Ventas
+2. Buscar una venta existente
+3. Hacer clic en el botón **🖨️ Térmica** (desktop) o **🖨️** (mobile)
+4. Si RawBT está instalado en Android, se abrirá automáticamente y enviará a imprimir
+5. En PC, copiar el `escpos_base64` del endpoint y usar software como RawPrint
+
+## ✅ Estado Actual del Sistema
+
+- ✅ Gestión de créditos funcionando
+- ✅ Búsqueda de clientes corregida
+- ✅ Columna "Estado" eliminada
+- ✅ Botones de impresión PDF/HTML funcionando
+- ✅ **Endpoint ESC/POS implementado y funcionando**
+- ✅ **Botón RawBT agregado en vistas desktop y mobile**
+- ✅ Script de prueba disponible en `tools/test_escpos.ps1`
 
 ## 📱 Apps Recomendadas
 
