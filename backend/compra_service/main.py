@@ -139,6 +139,10 @@ class CompraOut(BaseModel):
     observaciones: Optional[str] = None
     detalles: List[DetalleCompraOut] = []
     comprobantes: Optional[List[dict]] = []
+    # Campos opcionales para crédito (si existen en la tabla, se llenan; evita excepción si faltan)
+    montoPagado: Optional[Decimal] = None
+    saldo: Optional[Decimal] = None
+    estado_pago: Optional[str] = None
 
 # ========================
 # Créditos: pagos de compras a crédito
@@ -181,6 +185,30 @@ def ensure_pagos_table(conn):
 # Endpoints de Compras
 # ========================
 
+def ensure_compra_indexes(conn):
+    """Crea índices útiles para filtros más comunes (idEmpresa + fechaCompra, proveedor, tipoPago).
+    Ignora errores si ya existen."""
+    try:
+        cur = conn.cursor()
+        # MySQL 8.0+ soporta IF NOT EXISTS, si no, capturamos Duplicate key
+        statements = [
+            "CREATE INDEX IF NOT EXISTS idx_compra_empresa_fecha ON compra_O (idEmpresa, fechaCompra)",
+            "CREATE INDEX IF NOT EXISTS idx_compra_empresa_proveedor ON compra_O (idEmpresa, idProveedor)",
+            "CREATE INDEX IF NOT EXISTS idx_compra_empresa_tipopago ON compra_O (idEmpresa, idTipoPago)",
+            "CREATE INDEX IF NOT EXISTS idx_compra_estado_pago ON compra_O (estado_pago)",
+        ]
+        for st in statements:
+            try:
+                cur.execute(st)
+            except Exception as e:
+                # Si el motor no soporta IF NOT EXISTS o ya existe, continuar
+                if 'Duplicate' in str(e) or 'exists' in str(e).lower():
+                    continue
+        conn.commit(); cur.close()
+    except Exception:
+        # No bloquear solicitud por fallo de índice
+        pass
+
 @app.get('/compras', response_model=List[CompraOut])
 def list_compras(
     fecha_inicio: Optional[str] = None,
@@ -191,27 +219,63 @@ def list_compras(
     estado: Optional[int] = None,
     offset: int = 0,
     limit: int = 100,
+    summary: Optional[str] = None,
+    includeDetalles: Optional[str] = None,
+    includeComprobantes: Optional[str] = None,
+    projection: Optional[str] = None,  # 'basic' | 'full'
     x_user_role: str = Header(None),
     request: Request = None,
     response: Response = None
 ):
-    """Listar compras. Superadmin ve todas, admin solo de su empresa. Filtro opcional por idProducto."""
+    """Listar compras.
+
+    Rendimiento / parámetros:
+    - summary=true  (DEPRECADO en favor de projection=basic) devuelve solo campos principales.
+    - projection=basic fuerza omitir detalles y comprobantes y usa una consulta más ligera sin joins innecesarios.
+    - includeDetalles / includeComprobantes permiten controlar granularmente (por defecto true salvo en basic/summary).
+    - limit se limita internamente a 500 para evitar respuestas demasiado grandes.
+    - Índices se crean de forma perezosa (best-effort) en cada llamada si aún no existen.
+    """
+    import time
+    start_time = time.time()
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
+        ensure_compra_indexes(conn)
         role = get_role(x_user_role, request)
         user_company = get_company_id_from_request(request)
 
-        query = '''
-            SELECT 
-                c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
-                c.idTipoPago, tp.nombrePago AS tipoPago, c.idEmpresa, e.nombre_empresa AS nombreEmpresa,
-                c.montoTotal, c.estado, c.observaciones
-            FROM compra_O c
-            LEFT JOIN proveedor_O prov ON c.idProveedor = prov.idProveedor
-            LEFT JOIN tipoPago tp ON c.idTipoPago = tp.idPago
-            LEFT JOIN empresa_O e ON c.idEmpresa = e.id_empresa
-        '''
+        # Normalizar projection / summary
+        truthy = {'1','true','t','yes','y','si','sí'}
+        summary_flag = str(summary).lower() in truthy if summary is not None else False
+        projection_mode = (projection or ('basic' if summary_flag else 'full')).lower()
+        if projection_mode not in ('basic','full'):
+            projection_mode = 'full'
+
+        # Restringir límite máximo
+        if limit > 500:
+            limit = 500
+
+        # Query base: ligera si projection=basic
+        if projection_mode == 'basic':
+            query = '''
+                SELECT c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor,
+                       c.idTipoPago, c.idEmpresa, c.montoTotal, c.estado, c.observaciones,
+                       c.montoPagado, c.saldo, c.estado_pago
+                FROM compra_O c
+            '''
+        else:
+            query = '''
+                SELECT 
+                    c.idCompra, c.numeroCompra, c.fechaCompra, c.idProveedor, prov.nombreComercial AS nombreProveedor,
+                    c.idTipoPago, tp.nombrePago AS tipoPago, c.idEmpresa, e.nombre_empresa AS nombreEmpresa,
+                    c.montoTotal, c.estado, c.observaciones,
+                    c.montoPagado, c.saldo, c.estado_pago
+                FROM compra_O c
+                LEFT JOIN proveedor_O prov ON c.idProveedor = prov.idProveedor
+                LEFT JOIN tipoPago tp ON c.idTipoPago = tp.idPago
+                LEFT JOIN empresa_O e ON c.idEmpresa = e.id_empresa
+            '''
         
         where = []
         params = []
@@ -258,56 +322,66 @@ def list_compras(
         # Fetch page
         page_query = base_query + ' ORDER BY c.fechaCompra DESC, c.idCompra DESC LIMIT %s OFFSET %s'
         page_params = base_params + [limit, offset]
-
         cur.execute(page_query, tuple(page_params))
         compras = cur.fetchall() or []
 
-    # Obtener detalles
+        # Flags de control (detalles/comprobantes solo si full y no summary)
+        detalles_flag = (projection_mode == 'full') and not summary_flag and (includeDetalles is None or str(includeDetalles).lower() in truthy)
+        comprobantes_flag = (projection_mode == 'full') and not summary_flag and (includeComprobantes is None or str(includeComprobantes).lower() in truthy)
+
         result = []
         for c in compras:
-            cur.execute('''
-                SELECT 
-                    dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
-                    dc.precio_unitario, dc.subtotal, pr.nombreProducto,
-                    dc.precio_paquete, dc.botellas_por_caja, dc.precio_por_botella
-                FROM detalle_compra_O dc
-                LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
-                WHERE dc.idCompra = %s
-            ''', (c['idCompra'],))
-            detalles = cur.fetchall() or []
-            
             c['fechaCompra'] = c['fechaCompra'].isoformat() if c.get('fechaCompra') else None
             c['montoTotal'] = float(c['montoTotal']) if c.get('montoTotal') else 0.0
-            
-            for d in detalles:
-                d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
-                d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
-                if 'precio_paquete' in d:
-                    try:
-                        d['precio_paquete'] = float(d['precio_paquete']) if d.get('precio_paquete') is not None else None
-                    except Exception:
-                        d['precio_paquete'] = None
-                if 'precio_por_botella' in d:
-                    try:
-                        d['precio_por_botella'] = float(d['precio_por_botella']) if d.get('precio_por_botella') is not None else None
-                    except Exception:
-                        d['precio_por_botella'] = None
-            
-            c['detalles'] = detalles
+            if detalles_flag:
+                cur.execute('''
+                    SELECT 
+                        dc.idDetalleCompra, dc.idCompra, dc.idProducto, dc.cantidad_caja,
+                        dc.precio_unitario, dc.subtotal, pr.nombreProducto,
+                        dc.precio_paquete, dc.botellas_por_caja, dc.precio_por_botella
+                    FROM detalle_compra_O dc
+                    LEFT JOIN producto_O pr ON dc.idProducto = pr.idProducto
+                    WHERE dc.idCompra = %s
+                ''', (c['idCompra'],))
+                detalles = cur.fetchall() or []
+                for d in detalles:
+                    d['precio_unitario'] = float(d['precio_unitario']) if d.get('precio_unitario') else 0.0
+                    d['subtotal'] = float(d['subtotal']) if d.get('subtotal') else 0.0
+                    if 'precio_paquete' in d:
+                        try:
+                            d['precio_paquete'] = float(d['precio_paquete']) if d.get('precio_paquete') is not None else None
+                        except Exception:
+                            d['precio_paquete'] = None
+                    if 'precio_por_botella' in d:
+                        try:
+                            d['precio_por_botella'] = float(d['precio_por_botella']) if d.get('precio_por_botella') is not None else None
+                        except Exception:
+                            d['precio_por_botella'] = None
+                c['detalles'] = detalles
+            else:
+                c['detalles'] = []
 
-            # Comprobantes
-            cur.execute('''
-                SELECT idComprobante, rutaArchivo, nombreArchivo, mimeType, uploaded_at
-                FROM compra_comprobante_O WHERE idCompra = %s ORDER BY idComprobante ASC
-            ''', (c['idCompra'],))
-            comprobantes = cur.fetchall() or []
-            c['comprobantes'] = comprobantes
+            if comprobantes_flag:
+                cur.execute('''
+                    SELECT idComprobante, rutaArchivo, nombreArchivo, mimeType, uploaded_at
+                    FROM compra_comprobante_O WHERE idCompra = %s ORDER BY idComprobante ASC
+                ''', (c['idCompra'],))
+                comprobantes = cur.fetchall() or []
+                c['comprobantes'] = comprobantes
+            else:
+                c['comprobantes'] = []
             result.append(c)
 
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
+        duration = (time.time() - start_time) * 1000.0
+        if duration > 1500:
+            print(f"WARN /compras slow query {duration:.1f}ms rows={len(result)} mode={projection_mode} params={page_params}")
+        else:
+            print(f"DEBUG /compras duration={duration:.1f}ms rows={len(result)} mode={projection_mode}")
         return result
     except Exception as e:
+        duration = (time.time() - start_time) * 1000.0
+        print(f"ERROR /compras failed after {duration:.1f}ms: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

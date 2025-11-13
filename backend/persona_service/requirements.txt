@@ -6,3 +6,4 @@ PyJWT>=2.8.0
 bcrypt>=4.0.1
 pytest>=7.0.0
 python-multipart>=0.0.6
+segno>=1.5.2

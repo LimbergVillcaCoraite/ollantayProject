@@ -70,19 +70,21 @@ export function usePermissions(loggedUser) {
    */
   const canViewPage = (viewName) => {
     const viewPermissions = {
+      'dashboard': has('analytics', 'view'),
       'tipos': has('tipos', 'view'),
       'personas': has('personas', 'view'),
       'personas_mapa': has('personas', 'view'), // Same permission as personas view
+      'empleados': has('personas', 'view'), // Empleados require personas permission
       'empresas': has('empresas', 'view'),
       'prestamos': has('prestamos', 'view'),
       'productos': has('productos', 'view'),
       'caja': has('caja', 'view'),
       'ventas': has('ventas', 'view'),
     'predicciones': has('ventas', 'view'), // Predicciones require ventas permission
-    'creditos': has('ventas', 'view'), // Créditos admin view
-    'misdeudas': true, // Perfil cliente: cualquier usuario autenticado puede ver sus deudas
+    'creditos': has('creditos', 'view'), // Creditos admin view
+    'misdeudas': has('misdeudas', 'view'), // Perfil cliente: ver sus deudas
       'compras': has('compras', 'view'),
-        'gastos': has('caja', 'view'), // Gastos require caja permission
+        'gastos': has('gastos', 'view'), // Gastos require gastos permission
       'proveedores': has('proveedores', 'view'),
       'rutas': has('rutas', 'view'),
       'cuentas': has('cuentas', 'view'),

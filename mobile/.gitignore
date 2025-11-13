@@ -1,0 +1,36 @@
+# Expo
+.expo/
+dist/
+web-build/
+expo-updates/
+
+# Native
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.apk
+*.aab
+*.ipa
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Env
+.env
+.env.local

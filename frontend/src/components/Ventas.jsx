@@ -16,7 +16,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow
 });
 
-export default function Ventas({ API, userRole }) {
+export default function Ventas({ API, userRole, companyFilter }) {
   const [ventas, setVentas] = useState([]);
   const [selectedEmpresa, setSelectedEmpresa] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -255,12 +255,16 @@ export default function Ventas({ API, userRole }) {
     if (fTipoPago) params.append('idTipoPago', fTipoPago);
     if (fEstado) params.append('estado', fEstado);
     if (fIdProducto) params.append('idProducto', fIdProducto);
-  params.append('limit', '1000');
-  if (selectedEmpresa) params.append('idEmpresa', String(selectedEmpresa));
+  // Limitar resultados para evitar respuestas muy pesadas (mejor rendimiento)
+  params.append('limit', '200');
+  if (companyFilter?.id) params.append('idEmpresa', String(companyFilter.id));
     
     const url = `${API}?${params.toString()}`;
-    
-    fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
+    // Agregar timeout para evitar que la UI quede en "Cargando..." indefinidamente
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {}, signal: controller.signal })
       .then(async res => {
         if (!res.ok) {
           const t = await res.text().catch(()=> '')
@@ -273,9 +277,10 @@ export default function Ventas({ API, userRole }) {
       })
       .catch((e) => {
         console.error('Error cargando ventas:', e);
-        setError('No se pudieron cargar las ventas. ' + (e?.message || 'Error desconocido'))
+        const isAbort = (e?.name === 'AbortError')
+        setError(isAbort ? 'Tiempo de espera agotado al cargar ventas. Intente nuevamente o refine filtros.' : ('No se pudieron cargar las ventas. ' + (e?.message || 'Error desconocido')))
       })
-      .finally(() => setLoading(false));
+      .finally(() => { clearTimeout(timeoutId); setLoading(false); });
   }, [API, userRole, fDesde, fHasta, fTipoVenta, fTipoPago, fEstado, fIdProducto, selectedEmpresa]);
   
   useEffect(() => {
@@ -312,24 +317,23 @@ export default function Ventas({ API, userRole }) {
   
     // ====== Gestión de créditos ======
     const buscarClientesCredito = useCallback(async (query) => {
-      if (!query || query.length < 2) {
+      const qRaw = (query || '').trim();
+      if (qRaw.length < 2) {
         setClienteCreditoSugeridos([]);
         return;
       }
+      const q = qRaw.toLowerCase();
       try {
-        const res = await fetch(`${API_PERSONAS}/persons?tipo=cliente`, {
-          credentials: 'include'
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const q = query.toLowerCase();
-          const filtered = (Array.isArray(data) ? data : []).filter(p => {
-            const nombre = `${p.nombres_persona || ''} ${p.apellido_paternoPersona || ''} ${p.apellido_maternoPersona || ''}`.toLowerCase();
-            const ci = String(p.ci_persona || '').toLowerCase();
-            return nombre.includes(q) || ci.includes(q);
-          }).slice(0, 10);
-          setClienteCreditoSugeridos(filtered);
-        }
+        // Usar tipo=1 (cliente) según backend persona_service
+        const res = await fetch(`${API_PERSONAS}/persons?tipo=1`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = (Array.isArray(data) ? data : []).filter(p => {
+          const nombre = `${p.nombres_persona || ''} ${p.apellido_paternoPersona || ''} ${p.apellido_maternoPer || ''}`.toLowerCase();
+          const ci = String(p.ci_persona || '').toLowerCase();
+          return nombre.includes(q) || ci.includes(q);
+        }).slice(0, 10);
+        setClienteCreditoSugeridos(list);
       } catch (e) {
         console.error('Error buscando clientes:', e);
       }
@@ -1320,13 +1324,13 @@ export default function Ventas({ API, userRole }) {
             onClick={() => setShowCreate(!showCreate)}
             className="px-3 py-1.5 text-sm bg-purple-500 text-white rounded hover:bg-purple-600 transition font-semibold"
           >
-            {showCreate ? '? Cancelar' : '? Nueva Venta'}
+            {showCreate ? 'Cancelar' : 'Nueva Venta'}
           </button>
           <button
             onClick={() => { setShowEntregas(v => { const nv = !v; if (nv) { setShowCreate(false); loadEntregas(); loadRutas(); } return nv; }); }}
             className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 transition font-semibold"
           >
-            {showEntregas ? '❌ Cerrar Entregas' : '🚚 Entregas (Chofer)'}
+            {showEntregas ? 'Cerrar Entregas' : 'Entregas Chofer'}
           </button>
             <button
               onClick={() => { 
@@ -1341,19 +1345,19 @@ export default function Ventas({ API, userRole }) {
               }}
               className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 transition font-semibold"
             >
-              {showCreditos ? '❌ Cerrar Créditos' : '💳 Gestionar Créditos'}
+              {showCreditos ? 'Cerrar Creditos' : 'Gestionar Creditos'}
             </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition"
           >
-            {showFilters ? '🔽 Ocultar Filtros' : '🔼 Mostrar Filtros'}
+            {showFilters ? 'Ocultar Filtros' : 'Mostrar Filtros'}
           </button>
           <button
             onClick={() => setShowSummary(!showSummary)}
             className="px-3 py-1.5 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition"
           >
-            {showSummary ? '📊 Ocultar Resumen' : '📈 Mostrar Resumen'}
+            {showSummary ? 'Ocultar Resumen' : 'Mostrar Resumen'}
           </button>
         </div>
       </div>
@@ -1858,7 +1862,7 @@ export default function Ventas({ API, userRole }) {
                     buscarClientesCredito(e.target.value);
                   }}
                   onFocus={() => buscarClientesCredito(clienteCreditoBusqueda)}
-                  placeholder="Nombre, DNI o RUC del cliente..."
+                  placeholder="Nombre o CI del cliente..."
                   className="w-full px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                 />
                 {clienteCreditoSugeridos.length > 0 && (
@@ -1868,7 +1872,7 @@ export default function Ventas({ API, userRole }) {
                         key={c.id_persona}
                         onClick={() => {
                           setClienteCreditoId(c.id_persona);
-                          setClienteCreditoBusqueda(`${c.nombres_persona} ${c.apellido_paternoPersona || ''} - ${c.dni_persona || c.ruc_persona || ''}`);
+                          setClienteCreditoBusqueda(`${c.nombres_persona} ${c.apellido_paternoPersona || ''} - ${c.ci_persona || ''}`);
                           setClienteCreditoSugeridos([]);
                           loadCreditosCliente(c.id_persona);
                         }}
@@ -1876,8 +1880,7 @@ export default function Ventas({ API, userRole }) {
                       >
                         <div className="font-semibold">{c.nombres_persona} {c.apellido_paternoPersona || ''}</div>
                         <div className="text-sm text-gray-600 dark:text-gray-400">
-                          {c.dni_persona && `DNI: ${c.dni_persona}`}
-                          {c.ruc_persona && `RUC: ${c.ruc_persona}`}
+                          {c.ci_persona && `CI: ${c.ci_persona}`}
                         </div>
                       </div>
                     ))}

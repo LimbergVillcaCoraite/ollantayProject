@@ -58,7 +58,7 @@ export default function MisDeudas({ API }){
 
           <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden">
             <div className="px-4 py-3 border-b dark:border-gray-700 flex items-center justify-between">
-              <div className="text-sm text-gray-600 dark:text-gray-300">Ventas a crédito con saldo</div>
+              <div className="text-sm text-gray-600 dark:text-gray-300">Ventas a credito con saldo</div>
             </div>
             <div className="overflow-auto">
               <TableWrapper>
@@ -66,6 +66,7 @@ export default function MisDeudas({ API }){
                   <thead>
                     <tr className="text-left bg-gray-50 dark:bg-gray-900">
                       <th className="p-2 font-semibold text-gray-700 dark:text-gray-200">Fecha</th>
+                      <th className="p-2 font-semibold text-gray-700 dark:text-gray-200">Descripcion</th>
                       <th className="p-2 text-right font-semibold text-gray-700 dark:text-gray-200">Total</th>
                       <th className="p-2 text-right font-semibold text-gray-700 dark:text-gray-200">Pagado</th>
                       <th className="p-2 text-right font-semibold text-gray-700 dark:text-gray-200">Saldo</th>
@@ -74,7 +75,7 @@ export default function MisDeudas({ API }){
                   <tbody>
                     {data.ventas?.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="p-4 text-center text-gray-500 dark:text-gray-400 text-sm">No tienes ventas a crédito pendientes</td>
+                        <td colSpan={5} className="p-4 text-center text-gray-500 dark:text-gray-400 text-sm">No tienes ventas a credito pendientes</td>
                       </tr>
                     )}
                     {data.ventas?.map(v => {
@@ -82,6 +83,7 @@ export default function MisDeudas({ API }){
                       return (
                         <tr key={v.idVenta} className="border-t dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/60">
                           <td className="p-2 whitespace-nowrap">{v.fechaVenta}</td>
+                          <td className="p-2 text-sm text-gray-600 dark:text-gray-400">{v.descripcion || '-'}</td>
                           <td className="p-2 text-right">{formatMoney(v.montoTotal)}</td>
                           <td className="p-2 text-right">{formatMoney(v.montoPagado)}</td>
                           <td className={`p-2 text-right font-semibold ${saldo === 0 ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>{formatMoney(saldo)}</td>

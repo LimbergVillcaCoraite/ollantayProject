@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Tipos from './components/Tipos'
 import Personas from './components/Personas'
 import Prestamos from './components/Prestamos'
@@ -6,6 +6,7 @@ import Empresas from './components/Empresas'
 import Usuarios from './components/Usuarios'
 import SuperAdmin from './components/SuperAdmin'
 import RoleManagement from './components/RoleManagement'
+import RoleMatrix from './components/RoleMatrix'
 import Caja from './components/Caja'
 import Ventas from './components/Ventas'
 import Compras from './components/Compras'
@@ -23,9 +24,18 @@ import Predicciones from './components/Predicciones'
 import Gastos from './components/Gastos'
 import Creditos from './components/Creditos'
 import MisDeudas from './components/MisDeudas'
+import Empleados from './components/Empleados'
+import Dashboard from './components/Dashboard'
+import Notifications from './components/Notifications'
+import { requestNotificationPermission, subscribeToPush } from './utils/pushNotifications'
+import ChatPanel from './components/ChatPanel'
+import MenuSection from './components/MenuSection'
+import Gamification from './components/Gamification'
+import OfflineStatus from './components/OfflineStatus'
+import AsistenciaReportes from './components/AsistenciaReportes'
 
 export default function App(){
-  const [view, setView] = useState('tipos')
+  const [view, setView] = useState('dashboard')
   const [appVersion, setAppVersion] = useState('loading...')
   const host = (typeof window !== 'undefined' && window.location?.hostname) ? window.location.hostname : 'localhost'
   const proto = (typeof window !== 'undefined' && window.location?.protocol) ? window.location.protocol : 'http:'
@@ -38,6 +48,8 @@ export default function App(){
   const API_PROVEEDORES = `${proto}//${host}/api/proveedores`
   const API_CUENTAS = `${proto}//${host}/api/cuentas`
   const API_GASTOS = `${proto}//${host}/api/gastos`
+  const API_ANALYTICS = `${proto}//${host}/api/analytics`
+  const API_NOTIFICATIONS = `${proto}//${host}/api/notifications`
   const [dark, setDark] = useState(() => localStorage.getItem('ollantay-dark') === '1')
   const [userRole, setUserRole] = useState('')
   const [loggedUser, setLoggedUser] = useState(null)
@@ -54,6 +66,9 @@ export default function App(){
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false)
+  // Chat state will be inside ChatPanel, but we add selectedCompany for superadmin filtering foundation
+  const [companies, setCompanies] = useState([])
+  const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   
   // Load version automatically
   useEffect(() => {
@@ -221,10 +236,33 @@ export default function App(){
         } else {
           console.log('No profile photo in session') // DEBUG
         }
+        
+        // Request push notification permission after login
+        if (data && data.role) {
+          const granted = await requestNotificationPermission()
+          if (granted) {
+            await subscribeToPush(API_NOTIFICATIONS, data.role)
+          }
+        }
       }catch(e){ console.error('Error restoring session:', e) }
     }
     restore()
   }, [])
+
+  // Load companies for superadmin selector
+  useEffect(()=>{
+    if(!loggedUser) return
+    if(!isSuperAdmin()) return
+    const loadCompanies = async ()=>{
+      try {
+        const res = await fetch(`${API_PERSONS}/empresas?limit=500`, { credentials: 'include' })
+        if(!res.ok) return
+        const data = await res.json()
+        setCompanies(data?.items || [])
+      } catch(e){ console.error('Error cargando empresas:', e) }
+    }
+    loadCompanies()
+  }, [loggedUser])
 
   // central setter that persists the preference immediately and applies class to body
   const updateDark = (value)=>{
@@ -317,8 +355,24 @@ export default function App(){
               <h1 className="text-lg font-bold text-gray-900 dark:text-white">Sistema Ollantay</h1>
               <p className="text-xs text-gray-500 dark:text-gray-400">Gestión de préstamos</p>
             </div>
+            {isSuperAdmin() && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-600 dark:text-gray-400">Empresa:</label>
+                <select
+                  value={selectedCompanyId || ''}
+                  onChange={e=> setSelectedCompanyId(e.target.value ? parseInt(e.target.value) : null)}
+                  className="text-sm border rounded px-2 py-1 dark:bg-gray-700 dark:border-gray-600"
+                >
+                  <option value="">Todas</option>
+                  {companies.map(c => (
+                    <option key={c.id_empresa} value={c.id_empresa}>{c.nombre_empresa}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            <Notifications API={API_NOTIFICATIONS} userRole={userRole} />
             <button
               onClick={() => updateDark(!dark)}
               className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
@@ -365,122 +419,206 @@ export default function App(){
       )}
 
       <div className="flex pt-16 flex-1">
-        {/* Sidebar */}
-        <aside className={`fixed md:static z-40 left-0 top-16 h-[calc(100vh-4rem)] w-64 ${dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-r shadow-lg flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
-          <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-            {canViewPage('tipos') && (
-              <button onClick={()=>{setView('tipos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='tipos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
-                Tipos
-              </button>
+        {/* Sidebar Refactorizado - Moderno con Secciones Colapsables */}
+        <aside className={`fixed md:static z-40 left-0 top-16 h-[calc(100vh-4rem)] w-72 ${dark ? 'bg-gradient-to-b from-gray-800 to-gray-900 border-gray-700' : 'bg-gradient-to-b from-white to-gray-50 border-gray-200'} border-r shadow-2xl flex flex-col transition-all duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+          <nav className="flex-1 py-4 px-3 space-y-2 overflow-y-auto custom-scrollbar">
+            {/* Dashboard - Always visible */}
+            <button onClick={()=>{setView('dashboard'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${view==='dashboard' ? 'bg-gradient-to-r from-teal-500 to-teal-600 text-white font-semibold shadow-lg scale-105' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 hover:scale-102'}`}>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+              <span className="flex-1 text-left">Dashboard</span>
+            </button>
+
+            {/* Sección: Personas y Empleados */}
+            {(canViewPage('personas') || canViewPage('empresas') || canViewPage('tipos')) && (
+              <MenuSection 
+                title="Personas & RRHH" 
+                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>}
+                dark={dark}
+                defaultOpen={['personas', 'personas_mapa', 'empleados', 'empresas', 'tipos'].includes(view)}
+              >
+                {canViewPage('personas') && (
+                  <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='personas' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
+                    Personas
+                  </button>
+                )}
+                {canViewPage('personas') && (
+                  <>
+                    <button onClick={()=>{setView('personas_mapa'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='personas_mapa' ? 'bg-green-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3a7 7 0 110 14 7 7 0 010-14zm0 2a5 5 0 100 10 5 5 0 000-10zm0 2a3 3 0 110 6 3 3 0 010-6z"/></svg>
+                      Personas en Mapa
+                    </button>
+                    <button onClick={()=>{setView('empleados'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='empleados' ? 'bg-purple-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                      Empleados
+                    </button>
+                    <button onClick={()=>{setView('asistencia_reportes'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='asistencia_reportes' ? 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-medium shadow-lg' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/><path d="M9 12h6m-6 4h6"/></svg>
+                      Reportes de Asistencia
+                    </button>
+                  </>
+                )}
+                {canViewPage('empresas') && (
+                  <button onClick={()=>{setView('empresas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='empresas' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
+                    Empresas
+                  </button>
+                )}
+                {canViewPage('tipos') && (
+                  <button onClick={()=>{setView('tipos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='tipos' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z" fill="currentColor" opacity=".2"/></svg>
+                    Tipos de Persona
+                  </button>
+                )}
+              </MenuSection>
             )}
-            {canViewPage('personas') && (
-              <>
-                <button onClick={()=>{setView('personas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 014-4h0a4 4 0 014 4v2"/></svg>
-                  Personas
+
+            {/* Sección: Ventas y Créditos */}
+            {(canViewPage('ventas') || canViewPage('caja') || canViewPage('creditos') || canViewPage('misdeudas')) && (
+              <MenuSection 
+                title="Ventas & Finanzas" 
+                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>}
+                dark={dark}
+                defaultOpen={['ventas', 'caja', 'predicciones', 'creditos', 'misdeudas', 'gastos'].includes(view)}
+              >
+                {canViewPage('ventas') && (
+                  <>
+                    <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='ventas' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
+                      Ventas
+                    </button>
+                    <button onClick={()=>{setView('predicciones'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='predicciones' ? 'bg-indigo-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 4-6"/></svg>
+                      Predicciones IA
+                    </button>
+                  </>
+                )}
+                {canViewPage('caja') && (
+                  <>
+                    <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='caja' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
+                      Caja
+                    </button>
+                    <button onClick={()=>{setView('gastos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='gastos' ? 'bg-rose-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 8c-3.866 0-7 2.239-7 5s3.134 5 7 5 7-2.239 7-5-3.134-5-7-5z"/><path d="M12 2v6"/></svg>
+                      Gastos
+                    </button>
+                  </>
+                )}
+                {canViewPage('creditos') && (
+                  <button onClick={()=>{setView('creditos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='creditos' ? 'bg-amber-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 7h16v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7z"/><path d="M4 7l2-3h12l2 3"/></svg>
+                    Créditos (Admin)
+                  </button>
+                )}
+                {canViewPage('misdeudas') && (
+                  <button onClick={()=>{setView('misdeudas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='misdeudas' ? 'bg-emerald-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 8c-3.866 0-7 2.239-7 5s3 5 7 5 7-2.239 7-5-3.134-5-7-5z"/><path d="M12 2v6"/></svg>
+                    Mis Deudas
+                  </button>
+                )}
+              </MenuSection>
+            )}
+
+            {/* Sección: Compras e Inventario */}
+            {(canViewPage('compras') || canViewPage('proveedores') || canViewPage('productos') || canViewPage('prestamos')) && (
+              <MenuSection 
+                title="Compras & Stock" 
+                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>}
+                dark={dark}
+                defaultOpen={['compras', 'proveedores', 'productos', 'prestamos'].includes(view)}
+              >
+                {canViewPage('compras') && (
+                  <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='compras' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                    Compras
+                  </button>
+                )}
+                {canViewPage('proveedores') && (
+                  <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='proveedores' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2-2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
+                    Proveedores
+                  </button>
+                )}
+                {canViewPage('productos') && (
+                  <button onClick={()=>changeView('productos')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='productos' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.2"/></svg>
+                    Productos
+                  </button>
+                )}
+                {canViewPage('prestamos') && (
+                  <button onClick={()=>changeView('prestamos')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='prestamos' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
+                    Prestamos
+                  </button>
+                )}
+              </MenuSection>
+            )}
+
+            {/* Sección: Logística */}
+            {(canViewPage('rutas') || canViewPage('cuentas')) && (
+              <MenuSection 
+                title="Logística" 
+                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>}
+                dark={dark}
+                defaultOpen={['rutas', 'cuentas'].includes(view)}
+              >
+                {canViewPage('rutas') && (
+                  <button onClick={()=>{setView('rutas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='rutas' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                    Rutas
+                  </button>
+                )}
+                {canViewPage('cuentas') && (
+                  <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='cuentas' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
+                    Cuentas
+                  </button>
+                )}
+              </MenuSection>
+            )}
+
+            {/* Sección: Administración y Chat */}
+            {(canViewPage('usuarios') || canViewPage('chat') || canViewPage('superadmin')) && (
+              <MenuSection 
+                title="Administración" 
+                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>}
+                dark={dark}
+                defaultOpen={['usuarios', 'roles', 'roles_matrix', 'chat', 'superadmin'].includes(view)}
+              >
+                {canViewPage('usuarios') && (
+                  <>
+                    <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='usuarios' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
+                      Usuarios
+                    </button>
+                    <button onClick={()=>{setView('roles'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='roles' ? 'bg-green-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4M21 12c0 1.66-4 3-9 3s-9-1.34-9-3m18 0c0-1.66-4-3-9-3s-9 1.34-9 3m18 0v9c0 1.66-4 3-9 3s-9-1.34-9-3V12"/></svg>
+                      Roles y Permisos
+                    </button>
+                    <button onClick={()=>{setView('roles_matrix'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='roles_matrix' ? 'bg-teal-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>
+                      Matriz Roles
+                    </button>
+                  </>
+                )}
+                {canViewPage('chat') && (
+                  <button onClick={()=>{setView('chat'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='chat' ? 'bg-pink-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-4.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.5 8.5 0 018 8v.5z"/></svg>
+                    Chat Interno
+                  </button>
+                )}
+                <button onClick={()=>{setView('gamification'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='gamification' ? 'bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-medium shadow-lg' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                  Gamificación
                 </button>
-                <button onClick={()=>{setView('personas_mapa'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='personas_mapa' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3a7 7 0 110 14 7 7 0 010-14zm0 2a5 5 0 100 10 5 5 0 000-10zm0 2a3 3 0 110 6 3 3 0 010-6z"/></svg>
-                  Personas en Mapa
-                </button>
-              </>
-            )}
-            {canViewPage('empresas') && (
-              <button onClick={()=>{setView('empresas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='empresas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4"/></svg>
-                Empresas
-              </button>
-            )}
-            {canViewPage('prestamos') && (
-              <button onClick={()=>changeView('prestamos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='prestamos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>
-                Prestamos
-              </button>
-            )}
-            {canViewPage('caja') && (
-              <button onClick={()=>{setView('caja'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='caja' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>
-                Caja
-              </button>
-            )}
-            {canViewPage('ventas') && (
-              <button onClick={()=>{setView('ventas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='ventas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3h18l-2 13H5L3 3z"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>
-                Ventas
-              </button>
-            )}
-            {canViewPage('ventas') && (
-              <button onClick={()=>{setView('predicciones'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='predicciones' ? 'bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 4-6"/></svg>
-                Predicciones (IA)
-              </button>
-            )}
-            {canViewPage('creditos') && (
-              <button onClick={()=>{setView('creditos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='creditos' ? 'bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 7h16v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7z"/><path d="M4 7l2-3h12l2 3"/></svg>
-                Créditos (Admin)
-              </button>
-            )}
-            {canViewPage('misdeudas') && (
-              <button onClick={()=>{setView('misdeudas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='misdeudas' ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 8c-3.866 0-7 2.239-7 5s3 5 7 5 7-2.239 7-5-3.134-5-7-5z"/><path d="M12 2v6"/></svg>
-                Mis Deudas
-              </button>
-            )}
-            {canViewPage('compras') && (
-              <button onClick={()=>{setView('compras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='compras' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
-                Compras
-              </button>
-            )}
-            {canViewPage('caja') && (
-              <button onClick={()=>{setView('gastos'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='gastos' ? 'bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 8c-3.866 0-7 2.239-7 5s3.134 5 7 5 7-2.239 7-5-3.134-5-7-5z"/><path d="M12 2v6"/></svg>
-                Gastos
-              </button>
-            )}
-            {canViewPage('proveedores') && (
-              <button onClick={()=>{setView('proveedores'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='proveedores' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2-2v2H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
-                Proveedores
-              </button>
-            )}
-            {canViewPage('productos') && (
-              <button onClick={()=>changeView('productos')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='productos' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.2"/></svg>
-                Productos
-              </button>
-            )}
-            {canViewPage('rutas') && (
-              <button onClick={()=>{setView('rutas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='rutas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                Rutas
-              </button>
-            )}
-            {canViewPage('cuentas') && (
-              <button onClick={()=>{setView('cuentas'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='cuentas' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v9a2 2 0 002 2z"/></svg>
-                Cuentas
-              </button>
-            )}
-            {canViewPage('usuarios') && (
-              <>
-                <button onClick={()=>{setView('usuarios'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='usuarios' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/></svg>
-                  Usuarios
-                </button>
-                <button onClick={()=>{setView('roles'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='roles' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4M21 12c0 1.66-4 3-9 3s-9-1.34-9-3m18 0c0-1.66-4-3-9-3s-9 1.34-9 3m18 0v9c0 1.66-4 3-9 3s-9-1.34-9-3V12"/></svg>
-                  Roles y Permisos
-                </button>
-              </>
-            )}
-            {canViewPage('superadmin') && (
-              <button onClick={()=>{setView('superadmin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${view==='superadmin' ? 'bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
-                SuperAdmin
-              </button>
+                {canViewPage('superadmin') && (
+                  <button onClick={()=>{setView('superadmin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='superadmin' ? 'bg-purple-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+                    SuperAdmin
+                  </button>
+                )}
+              </MenuSection>
             )}
           </nav>
           
@@ -563,17 +701,22 @@ export default function App(){
 
         {/* Main content */}
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
+          {view === 'dashboard' && <Dashboard API_ANALYTICS={API_ANALYTICS} userRole={userRole} />}
           {view === 'tipos' && canViewPage('tipos') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
+            {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter || (isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null)} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
           {view === 'personas_mapa' && canViewPage('personas') && <PersonasEnMapa API_PERSONAS={API_PERSONS} userRole={userRole} />}
+          {view === 'empleados' && canViewPage('personas') && <Empleados API={API_PERSONS} userRole={userRole} permissions={perms} />}
+          {view === 'asistencia_reportes' && canViewPage('personas') && <AsistenciaReportes API={API_PERSONS} userRole={userRole} dark={dark} />}
           {view === 'empresas' && canViewPage('empresas') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
           {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
+            {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} selectedCompanyId={isSuperAdmin() ? selectedCompanyId : null} />}
           {view === 'caja' && canViewPage('caja') && <Caja />}
-          {view === 'ventas' && canViewPage('ventas') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} />}
+          {view === 'ventas' && canViewPage('ventas') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} companyFilter={isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null} />}
           {view === 'predicciones' && canViewPage('ventas') && <Predicciones userRole={userRole} />}
           {view === 'creditos' && canViewPage('creditos') && <Creditos API={API_VENTAS} API_PERSONAS={API_PERSONS} userRole={userRole} />}
           {view === 'misdeudas' && canViewPage('misdeudas') && <MisDeudas API={API_VENTAS} />}
-          {view === 'compras' && canViewPage('compras') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} />}
+          {view === 'compras' && canViewPage('compras') && <Compras API={API_COMPRAS} dark={dark} userRole={userRole} companyFilter={isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null} />}
           {view === 'gastos' && canViewPage('caja') && <Gastos API={API_GASTOS} userRole={userRole} />}
           {view === 'proveedores' && canViewPage('proveedores') && <Proveedores API={API_PROVEEDORES} dark={dark} userRole={userRole} permissions={perms} />}
           {view === 'productos' && canViewPage('productos') && <Productos API={API_PRESTAMOS} userRole={userRole} permissions={perms} clienteInfo={loggedUser} />}
@@ -581,7 +724,10 @@ export default function App(){
           {view === 'cuentas' && canViewPage('cuentas') && <Cuentas />}
           {view === 'usuarios' && canViewPage('usuarios') && <Usuarios API={API_PERSONS} userRole={userRole} />}
           {view === 'roles' && canViewPage('roles') && <RoleManagement API={API_PERSONS} userRole={userRole} currentUserPermissions={perms} onPermissionsUpdate={refreshUserSession} />}
+          {view === 'roles_matrix' && canViewPage('roles') && <RoleMatrix API={API_PERSONS} userRole={userRole} />}
           {view === 'superadmin' && canViewPage('superadmin') && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
+          {view === 'chat' && canViewPage('chat') && <ChatPanel API_BASE={`${proto}//${host}/api/chat`} userRole={userRole} />}
+          {view === 'gamification' && <Gamification dark={dark} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
@@ -602,6 +748,9 @@ export default function App(){
           )}
         </main>
       </div>
+
+      {/* Offline Status Indicator */}
+      {loggedUser && <OfflineStatus dark={dark} />}
 
       {/* Footer mejorado */}
       <footer className={`${dark ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-600'} border-t py-4`}>

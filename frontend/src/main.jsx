@@ -1,6 +1,15 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+
+// Registrar service worker para soporte offline básico
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.warn('SW registration failed', err)
+    })
+  })
+}
 import './index.css'
 
 // Cargar versión desde version.json y exponer en window

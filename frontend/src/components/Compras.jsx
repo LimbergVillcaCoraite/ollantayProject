@@ -46,7 +46,7 @@ function ProductDropdownPortal({ anchorEl, open, children }) {
   );
 }
 
-export default function Compras({ API, userRole }) {
+export default function Compras({ API, userRole, companyFilter }) {
   // Vista/Tab state
   const [activeTab, setActiveTab] = useState('compras') // 'compras' | 'creditos'
   
@@ -90,6 +90,7 @@ export default function Compras({ API, userRole }) {
   const BASE_URL = `${proto}//${host}`
   const API_PROVEEDORES = `${proto}//${host}/api/proveedores`
   const API_PRESTAMOS = `${proto}//${host}/api/prestamos`
+  const API_EXPORT = `${proto}//${host}/api/export`
 
   // Data for form selects
   const [proveedores, setProveedores] = useState([])
@@ -172,10 +173,12 @@ export default function Compras({ API, userRole }) {
       params.set('limit', String(pageSize))
       if (fDesde) params.set('fecha_inicio', fDesde)
       if (fHasta) params.set('fecha_fin', fHasta)
-      if (fProveedor) params.set('idProveedor', String(fProveedor))
-      if (fTipoPago) params.set('idTipoPago', String(fTipoPago))
+  if (fProveedor) params.set('idProveedor', String(fProveedor))
+  if (fTipoPago) params.set('idTipoPago', String(fTipoPago))
       if (fIdProducto) params.set('idProducto', String(fIdProducto))
-      if (selectedEmpresa) params.set('idEmpresa', String(selectedEmpresa))
+  if (companyFilter?.id) params.set('idEmpresa', String(companyFilter.id))
+  // Performance: pedir listado en modo resumen (sin detalles ni comprobantes)
+  params.set('summary', 'true')
       const url = `${API}?${params.toString()}`
       console.log('[Compras] GET', url)
       const res = await fetch(url, { credentials: 'include', headers: userRole ? { 'X-User-Role': userRole } : {} })
@@ -844,6 +847,50 @@ export default function Compras({ API, userRole }) {
     }
   }
 
+  // Export functions
+  const [exporting, setExporting] = useState(false)
+  
+  const handleExport = async (format) => {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams()
+      if (filtroFechaInicio) params.append('fecha_inicio', filtroFechaInicio)
+      if (filtroFechaFin) params.append('fecha_fin', filtroFechaFin)
+      if (filtroProveedor) params.append('id_proveedor', filtroProveedor)
+      params.append('format', format)
+      
+      const headers = {}
+      if (userRole) headers['X-User-Role'] = userRole
+      
+      const res = await fetch(`${API_EXPORT}/export/compras?${params.toString()}`, {
+        method: 'GET',
+        headers,
+        credentials: 'include'
+      })
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `compras_${new Date().toISOString().split('T')[0]}.${format === 'pdf' ? 'pdf' : 'xlsx'}`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      
+      showToast(`Reporte ${format.toUpperCase()} descargado`, 'success')
+    } catch (err) {
+      console.error('Error exportando:', err)
+      showToast('Error al exportar: ' + err.message, 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="p-4 max-w-7xl mx-auto">
       {/* Filtro de empresa para superadmin */}
@@ -855,12 +902,28 @@ export default function Compras({ API, userRole }) {
       
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h2 className="text-xl sm:text-2xl font-bold dark:text-white">Compras</h2>
-        {canManage && (
+        <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setShowForm(v => !v)}
-            className="w-full sm:w-auto px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium"
-          >{showForm ? 'Cerrar' : 'Nueva compra'}</button>
-        )}
+            onClick={() => handleExport('pdf')}
+            disabled={exporting}
+            className="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700 text-sm font-medium disabled:opacity-50 flex items-center gap-1"
+          >
+            📄 {exporting ? 'Exportando...' : 'PDF'}
+          </button>
+          <button
+            onClick={() => handleExport('excel')}
+            disabled={exporting}
+            className="px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700 text-sm font-medium disabled:opacity-50 flex items-center gap-1"
+          >
+            📊 {exporting ? 'Exportando...' : 'Excel'}
+          </button>
+          {canManage && (
+            <button
+              onClick={() => setShowForm(v => !v)}
+              className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium"
+            >{showForm ? 'Cerrar' : 'Nueva compra'}</button>
+          )}
+        </div>
       </div>
       
       {/* Pestañas */}

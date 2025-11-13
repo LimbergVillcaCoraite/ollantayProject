@@ -462,6 +462,25 @@ def listar_creditos_alias(
         traceback.print_exc()
         raise
 
+@app.get('/ventas/creditos/cliente')
+def creditos_por_cliente_alias(
+    idPersona: int = Query(..., description="ID del cliente persona"),
+    incluir_todos: Optional[bool] = Query(False, description="Incluir también créditos ya pagados"),
+    request: Request = None
+):
+    """Alias proxy de /creditos/cliente para entornos donde /api/ventas/* se reescribe a /ventas/*.
+
+    El Nginx actual reescribe /api/ventas/creditos/cliente -> /ventas/creditos/cliente, pero el endpoint
+    original vive en /creditos/cliente. Esta función evita 404 Not Found en la UI de 'Gestión de Créditos'.
+    """
+    print(f"DEBUG ALIAS: creditos/cliente alias hit idPersona={idPersona} incluir_todos={incluir_todos}")
+    try:
+        return creditos_por_cliente(idPersona=idPersona, incluir_todos=incluir_todos, request=request)
+    except Exception as e:
+        print(f"DEBUG ALIAS ERROR creditos/cliente: {e}")
+        import traceback; traceback.print_exc()
+        raise
+
 
 # ========================
 # Créditos por cliente (resumen)
@@ -499,15 +518,15 @@ def creditos_por_cliente(
         if role != 'superadmin' and user_company is not None:
             where_scoping = ' AND v.idEmpresa = %s'
             params.append(user_company)
-        # Sólo ventas crédito; estado=1 (no anuladas)
+        # Sólo ventas crédito (idTipoPago = 1); estado=1 (no anuladas)
+        # IMPORTANT: idTipoPago = 1 es "Pago al crédito", no el tipo de venta (mayorista/minorista)
         sql = '''
             SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado, v.idEmpresa,
                    e.nombre_empresa AS nombreEmpresa
             FROM venta_O v
             LEFT JOIN empresa_O e ON v.idEmpresa = e.id_empresa
-            WHERE v.idCliente = %s AND v.estado = 1 AND v.idTipoVenta IN (
-                SELECT idTipoVenta FROM tipoVenta WHERE nombreTipoVenta LIKE 'Credito%'
-            )''' + where_scoping + ' ORDER BY v.fechaVenta ASC, v.idVenta ASC'
+            WHERE v.idCliente = %s AND v.estado = 1 AND v.idTipoPago = 1
+            ''' + where_scoping + ' ORDER BY v.fechaVenta ASC, v.idVenta ASC'
         cur.execute(sql, tuple(params))
         rows = cur.fetchall() or []
         creditos = []
@@ -696,6 +715,13 @@ def pagar_creditos(payload: PagoCreditosIn, request: Request = None):
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# Alias para compatibilidad con el reverse proxy (rewrite /api/ventas -> /ventas)
+# Nginx reescribe /api/ventas/creditos/pagos a /ventas/creditos/pagos, por lo que
+# exponemos esta ruta alias que delega a la implementación principal.
+@app.post('/ventas/creditos/pagos')
+def pagar_creditos_alias(payload: PagoCreditosIn, request: Request = None):
+    return pagar_creditos(payload, request)
+
 
 # ========================
 # Mis deudas (cliente autenticado)
@@ -703,7 +729,7 @@ def pagar_creditos(payload: PagoCreditosIn, request: Request = None):
 
 @app.get('/mis-deudas')
 def mis_deudas(request: Request = None):
-    """Deudas del cliente autenticado (ventas a crédito con saldo pendiente)."""
+    """Deudas del cliente autenticado (ventas a credito con saldo pendiente) con descripcion de productos."""
     try:
         role = get_role(None, request)
         if role not in ('admin','editor','superadmin','viewer','cliente'):
@@ -722,9 +748,17 @@ def mis_deudas(request: Request = None):
 
         query = f'''
             SELECT v.idVenta, v.fechaVenta, v.montoTotal, v.montoPagado,
-                   (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo
+                   (COALESCE(v.montoTotal,0) - COALESCE(v.montoPagado,0)) AS saldo,
+                   GROUP_CONCAT(
+                       CONCAT(dv.cantidad_caja, 'x ', p.nombreProducto)
+                       ORDER BY dv.idDetalleVenta
+                       SEPARATOR ', '
+                   ) as descripcion
             FROM venta_O v
+            LEFT JOIN detalle_venta_O dv ON v.idVenta = dv.idVenta
+            LEFT JOIN producto_O p ON dv.idProducto = p.idProducto
             WHERE {' AND '.join(where)}
+            GROUP BY v.idVenta
             ORDER BY v.fechaVenta DESC, v.idVenta DESC
         '''
         cur.execute(query, tuple(params))

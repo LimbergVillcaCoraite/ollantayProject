@@ -176,58 +176,58 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
     }
   })
 
-  // Validaciones avanzadas
+  // Validaciones avanzadas (acentos y caracteres corregidos de mojibake)
   const validateForm = () => {
     const errors = {}
-    
+
     // Validar nombre del producto
     if (!form.nombreProducto.trim()) {
       errors.nombreProducto = 'El nombre del producto es obligatorio'
     } else if (form.nombreProducto.trim().length < 2) {
       errors.nombreProducto = 'El nombre debe tener al menos 2 caracteres'
     } else if (form.nombreProducto.trim().length > 100) {
-      errors.nombreProducto = 'El nombre no puede tener m�s de 100 caracteres'
-    } else if (!/^[a-zA-Z������������0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
-      errors.nombreProducto = 'El nombre contiene caracteres no v�lidos'
+      errors.nombreProducto = 'El nombre no puede tener más de 100 caracteres'
+    } else if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñÜü0-9\s\-_.,()]+$/.test(form.nombreProducto.trim())) {
+      errors.nombreProducto = 'El nombre contiene caracteres no válidos'
     }
-    
+
     // Validar duplicados de nombre (solo si no estamos editando)
     if (!editingId) {
-      const nombreExistente = productos.find(p => 
+      const nombreExistente = productos.find(p =>
         p.nombreProducto.toLowerCase() === form.nombreProducto.trim().toLowerCase()
       )
       if (nombreExistente) {
         errors.nombreProducto = 'Ya existe un producto con este nombre'
       }
     }
-    
+
     // Validar stock
     if (form.stockCaja < 0) {
       errors.stockCaja = 'El stock no puede ser negativo'
     } else if (form.stockCaja > 999999) {
       errors.stockCaja = 'El stock es demasiado alto'
     }
-    
+
     // Validar tipo de botella
     if (!form.idTipoBotella) {
       errors.idTipoBotella = 'Debe seleccionar un tipo de botella'
     }
-    
+
     // Validar empresa (solo para superadmin)
     if (userRole === 'superadmin' && !form.idEmpresa) {
       errors.idEmpresa = 'Debe seleccionar una empresa'
     }
-    
+
     // Validar precios
     const precios = ['minorista', 'mayorista', 'especial']
     const preciosNumericos = {}
-    
+
     precios.forEach(tipo => {
       const precio = form.precios[tipo]
       if (precio && precio.trim()) {
         const num = parseFloat(precio)
         if (isNaN(num) || num < 0) {
-          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un n�mero v�lido mayor o igual a 0`
+          errors[`precio_${tipo}`] = `El precio ${tipo} debe ser un número válido mayor o igual a 0`
         } else if (num > 999999.99) {
           errors[`precio_${tipo}`] = `El precio ${tipo} es demasiado alto`
         } else {
@@ -235,29 +235,29 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
         }
       }
     })
-    
-    // Validar l�gica de precios (mayorista < minorista)
-    if (preciosNumericos.mayorista && preciosNumericos.minorista && 
+
+    // Validar lógica de precios (mayorista < minorista)
+    if (preciosNumericos.mayorista && preciosNumericos.minorista &&
         preciosNumericos.mayorista >= preciosNumericos.minorista) {
       errors.precio_mayorista = 'El precio mayorista debe ser menor al precio minorista'
     }
-    
+
     // Validar imagen (si se proporciona)
     if (form.imagen_producto) {
       const file = form.imagen_producto
       const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
       if (!validTypes.includes(file.type)) {
-        errors.imagen_producto = 'Solo se permiten im�genes (JPG, PNG, GIF, WebP)'
+        errors.imagen_producto = 'Solo se permiten imágenes (JPG, PNG, GIF, WebP)'
       } else if (file.size > 5 * 1024 * 1024) { // 5MB
         errors.imagen_producto = 'La imagen no puede ser mayor a 5MB'
       }
     }
-    
+
     setValidationErrors(errors)
     return Object.keys(errors).length === 0
   }
 
-  // Limpiar errores de validaci�n cuando cambie el campo
+  // Limpiar errores de validación cuando cambie el campo
   const clearFieldError = (fieldName) => {
     if (validationErrors[fieldName]) {
       setValidationErrors(prev => {
@@ -369,22 +369,24 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
   }
 
   const loadProveedores = async () => {
+    // Usar siempre el proxy /api/proveedores para evitar bloqueo por CSP (connect-src restringido a https/self)
     try {
       const headers = { 'Content-Type': 'application/json' }
       if (userRole) headers['X-User-Role'] = userRole
-
-      const res = await fetch('http://localhost:8001/api/proveedores', {
+      // Endpoint tras nginx: /api/proveedores -> proveedores_service
+      const res = await fetch('/api/proveedores', {
         method: 'GET',
         headers,
         credentials: 'include'
       })
-      
-      if (res.ok) {
-        const data = await res.json()
-        setProveedores(Array.isArray(data) ? data : [])
+      if (!res.ok) {
+        const txt = await res.text().catch(()=> '')
+        throw new Error(txt || `HTTP ${res.status}`)
       }
+      const data = await res.json().catch(()=> [])
+      setProveedores(Array.isArray(data) ? data : [])
     } catch (err) {
-      console.error('Error loading proveedores:', err)
+      console.error('Error loading proveedores (via proxy):', err.message || err)
       setProveedores([])
     }
   }
@@ -967,7 +969,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
             <option value="">Todos los proveedores</option>
             {proveedores.map((prov) => (
               <option key={prov.idProveedor} value={prov.idProveedor}>
-                {prov.nombreProveedor || prov.nombre}
+                {prov.nombreProveedor || prov.nombre || prov.nombreComercial}
               </option>
             ))}
           </select>
@@ -1096,7 +1098,7 @@ export default function Productos({ API, userRole = 'admin', permissions = [], c
                   <option value="">El proveedor se asigna al crear un lote</option>
                   {proveedores.map((prov) => (
                     <option key={prov.idProveedor} value={prov.idProveedor}>
-                      {prov.nombreProveedor || prov.nombre}
+                      {prov.nombreProveedor || prov.nombre || prov.nombreComercial}
                     </option>
                   ))}
                 </select>

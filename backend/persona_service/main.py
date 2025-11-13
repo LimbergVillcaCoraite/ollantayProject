@@ -14,6 +14,10 @@ import jwt
 from datetime import datetime, timedelta
 import bcrypt
 from fastapi.responses import JSONResponse
+import uuid
+import segno
+import hashlib
+import base64
 
 router = APIRouter()
 
@@ -161,6 +165,40 @@ class PermissionOut(BaseModel):
 class RolePermissionsIn(BaseModel):
     perm_ids: List[int]
 
+class SignFirmaIn(BaseModel):
+    id_persona: int
+    tipo_documento: str = Field(..., max_length=40)  # asistencia | prestamo | otro
+    id_referencia: Optional[str] = Field(None, max_length=100)
+    data_url: str  # data:image/png;base64,...
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+class FirmaOut(BaseModel):
+    id_firma: int
+    id_persona: int
+    tipo_documento: str
+    id_referencia: Optional[str] = None
+    created_at: datetime
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+# === Rostros (captura facial placeholder) ===
+class FaceIn(BaseModel):
+    id_persona: int
+    data_url: str  # data:image/jpeg;base64,... or png
+    tipo_documento: Optional[str] = 'rostro'
+    id_referencia: Optional[str] = None
+
+class FaceVerifyIn(BaseModel):
+    id_persona: int
+    data_url: str
+
+class FaceOut(BaseModel):
+    id_face: int
+    id_persona: int
+    created_at: datetime
+    hash_sha256: str
+
 
 def ensure_schema():
     """Ensure optional columns required by the service exist."""
@@ -205,6 +243,14 @@ def _startup():
         os.makedirs(UPLOAD_DIR, exist_ok=True)
     except Exception:
         pass
+    try:
+        ensure_firma_table()
+    except Exception:
+        pass
+    try:
+        ensure_face_table()
+    except Exception:
+        pass
 
 # Serve static uploads under /uploads (proxied as /api/personas/uploads via nginx)
 app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
@@ -243,6 +289,14 @@ def ensure_ubicacion_persona_table():
 @app.on_event('startup')
 def _startup_ubicacion_persona():
     ensure_ubicacion_persona_table()
+    try:
+        ensure_firma_table()
+    except Exception:
+        pass
+    try:
+        ensure_face_table()
+    except Exception:
+        pass
 
 @app.on_event('startup')
 def _auto_sync_permissions():
@@ -253,23 +307,31 @@ def _auto_sync_permissions():
         cursor = conn.cursor(dictionary=True)
         
         # Mapeo completo de páginas (debe coincidir con usePermissions.js)
+        # Si agregas una nueva interfaz, añádela aquí para que se auto-genere el permiso base.
         page_permissions = {
+            'dashboard': {'resource': 'analytics', 'action': 'view', 'description': 'Ver dashboard analítico'},
             'tipos': {'resource': 'tipos', 'action': 'view', 'description': 'Ver tipos'},
+            'tipocajas': {'resource': 'tipocajas', 'action': 'view', 'description': 'Ver tipos de caja'},
             'personas': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas'},
             'personas_mapa': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas en mapa'},
             'empresas': {'resource': 'empresas', 'action': 'view', 'description': 'Ver empresas'},
             'prestamos': {'resource': 'prestamos', 'action': 'view', 'description': 'Ver prestamos'},
             'productos': {'resource': 'productos', 'action': 'view', 'description': 'Ver productos'},
+            'productos_lotes': {'resource': 'lotes', 'action': 'view', 'description': 'Ver lotes de productos'},
             'caja': {'resource': 'caja', 'action': 'view', 'description': 'Ver caja'},
             'ventas': {'resource': 'ventas', 'action': 'view', 'description': 'Ver ventas'},
-            'predicciones': {'resource': 'ventas', 'action': 'view', 'description': 'Ver predicciones (IA)'},
-            'creditos': {'resource': 'ventas', 'action': 'view', 'description': 'Ver creditos (Admin)'},
-            'misdeudas': {'resource': 'none', 'action': 'none', 'description': 'Ver mis deudas (todos)'},
+            'predicciones': {'resource': 'ventas', 'action': 'view', 'description': 'Ver predicciones IA'},
+            'ai': {'resource': 'ai', 'action': 'view', 'description': 'Ver módulo IA'},
+            'creditos': {'resource': 'creditos', 'action': 'view', 'description': 'Ver créditos Admin'},
+            'misdeudas': {'resource': 'misdeudas', 'action': 'view', 'description': 'Ver mis deudas'},
             'compras': {'resource': 'compras', 'action': 'view', 'description': 'Ver compras'},
-            'gastos': {'resource': 'caja', 'action': 'view', 'description': 'Ver gastos'},
+            'gastos': {'resource': 'gastos', 'action': 'view', 'description': 'Ver gastos'},
             'proveedores': {'resource': 'proveedores', 'action': 'view', 'description': 'Ver proveedores'},
             'rutas': {'resource': 'rutas', 'action': 'view', 'description': 'Ver rutas'},
             'cuentas': {'resource': 'cuentas', 'action': 'view', 'description': 'Ver cuentas'},
+            'entregas': {'resource': 'entregas', 'action': 'view', 'description': 'Ver entregas'},
+            'reportes': {'resource': 'reportes', 'action': 'view', 'description': 'Ver reportes'},
+            'chat': {'resource': 'chat', 'action': 'view', 'description': 'Ver chat interno'},
             'usuarios': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar usuarios'},
             'roles': {'resource': 'roles', 'action': 'manage', 'description': 'Administrar roles'},
             'superadmin': {'resource': 'superadmin', 'action': 'access', 'description': 'Acceso SuperAdmin'}
@@ -327,6 +389,15 @@ def _auto_sync_permissions():
             print("✅ Auto-sync: Todos los permisos ya existen")
     except Exception as e:
         print(f"❌ Error en auto-sync de permisos: {e}")
+    # Ensure firma table after permissions sync
+    try:
+        ensure_firma_table()
+    except Exception as e:
+        print(f"⚠️ No se pudo asegurar tabla firmas: {e}")
+    try:
+        ensure_face_table()
+    except Exception as e:
+        print(f"⚠️ No se pudo asegurar tabla rostros: {e}")
 
 # POST: Actualizar ubicación de persona
 @app.post('/persons/{id}/ubicacion', response_model=UbicacionPersonaOut)
@@ -342,6 +413,10 @@ async def actualizar_ubicacion_persona(id: int, body: UbicacionPersonaIn, reques
             cur.close(); conn.close()
             raise HTTPException(status_code=404, detail='Persona no encontrada')
         id_empresa = row['id_empresa']
+        # Validar que la persona tiene empresa asignada
+        if id_empresa is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=400, detail='La persona no tiene empresa asignada. Contacte al administrador.')
         # Permisos: superadmin, admin/editor de la empresa, o la propia persona
         persona_id = None
         try:
@@ -916,6 +991,49 @@ def create_empresa(payload: EmpresaIn, x_user_role: Optional[str] = Header(None)
         conn.commit()
         new_id = cur2.lastrowid
         cur2.close()
+        
+        print(f"✅ Empresa {new_id} creada. Iniciando seed de permisos...")
+        
+        # Post-creation: seed company-specific role_permission entries to avoid blank permission sets
+        try:
+            # Fetch global roles and their permissions
+            rcur = conn.cursor(dictionary=True)
+            rcur.execute('SELECT idrole, name FROM role_O WHERE id_empresa IS NULL')
+            global_roles = rcur.fetchall() or []
+            
+            # Map global permissions for each role
+            for gr in global_roles:
+                # Get all permissions for this global role
+                pcur = conn.cursor(dictionary=True)
+                pcur.execute('SELECT perm_id FROM role_permission_O WHERE role_id=%s AND id_empresa IS NULL', (gr['idrole'],))
+                perm_rows = pcur.fetchall() or []
+                
+                # Insert company-scoped permissions
+                for pr in perm_rows:
+                    ins = conn.cursor()
+                    try:
+                        ins.execute('INSERT INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE id_empresa=id_empresa', 
+                                    (gr['idrole'], pr['perm_id'], new_id))
+                        print(f"  ✅ Seeded permission perm_id={pr['perm_id']} for role={gr['name']} (id={gr['idrole']}) in empresa {new_id}")
+                    except Exception as ie:
+                        print(f"  ⚠️ Failed to seed permission perm_id={pr['perm_id']} for role {gr['name']}: {ie}")
+                    finally:
+                        ins.close()
+                pcur.close()
+            
+            conn.commit()
+            rcur.close()
+            print(f"✅ Seed de permisos completado para empresa {new_id}")
+        except Exception as se:
+            print(f"❌ Seed roles for empresa {new_id} falló: {se}")
+            # Don't fail the entire operation if seed fails
+        
+        # Trigger permission auto-sync to ensure new pages permissions exist
+        try:
+            _auto_sync_permissions()
+        except Exception as synce:
+            print(f"⚠️ Auto-sync post empresa falló: {synce}")
+        
         cursor.close()
         conn.close()
         return {'id_empresa': new_id, 'nombre_empresa': nombre, 'direccion_empresa': direccion, 'estado_empresa': int(bool(payload.estado_empresa))}
@@ -962,6 +1080,52 @@ def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Hea
         cursor.close()
         conn.close()
         return {'id_empresa': id, 'nombre_empresa': nombre, 'direccion_empresa': direccion, 'estado_empresa': int(bool(payload.estado_empresa))}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/empresas/{id}/assign-persona')
+def assign_persona_to_empresa(id: int, body: Dict[str, int], request: Request):
+    """Asigna una persona existente a una empresa. Solo superadmin o admin de su propia empresa.
+    body: { "id_persona": int }
+    Si la persona tenía otra empresa, se actualiza. No altera roles, asume que permisos están sembrados.
+    """
+    role = get_role(None, request)
+    jwt_company_id = get_company_id_from_request(request)
+    id_persona = body.get('id_persona') if body else None
+    if not id_persona:
+        raise HTTPException(status_code=400, detail='id_persona requerido')
+    # Autorización:
+    # superadmin puede asignar a cualquier empresa
+    # admin/editor solo a su propia empresa
+    if role != 'superadmin':
+        if role not in ('admin','editor'):
+            raise HTTPException(status_code=403, detail='Permission denied')
+        if jwt_company_id is None or jwt_company_id != id:
+            raise HTTPException(status_code=403, detail='Solo puede asignar personas a su propia empresa')
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # validar empresa destino
+        cur.execute('SELECT id_empresa FROM empresa_O WHERE id_empresa=%s', (id,))
+        dest = cur.fetchone()
+        if not dest:
+            cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Empresa no encontrada')
+        # validar persona
+        cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona=%s', (id_persona,))
+        persona_row = cur.fetchone()
+        if not persona_row:
+            cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # update
+        upd = conn.cursor()
+        upd.execute('UPDATE persona_O SET id_empresa=%s WHERE id_persona=%s', (id, id_persona))
+        conn.commit(); upd.close()
+        # devolver persona actualizada
+        cur.execute('SELECT id_persona, nombres_persona, apellido_paternoPersona, apellido_maternoPer, telefono_persona, id_tipoPersona, ci_persona, direccion_persona, fotoPersona, id_empresa FROM persona_O WHERE id_persona=%s', (id_persona,))
+        updated = cur.fetchone()
+        cur.close(); conn.close()
+        return updated
     except HTTPException:
         raise
     except Exception as e:
@@ -1066,6 +1230,432 @@ def require_admin(x_user_role: Optional[str] = Header(None), request: Request = 
     if role not in ('admin', 'superadmin'):
         raise HTTPException(status_code=403, detail=f'Admin required (role={role})')
     return role
+
+# ========================
+# Empleados: información laboral
+# ========================
+
+def ensure_empleado_info_table(conn):
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS empleado_info_O (
+            id_persona INT NOT NULL PRIMARY KEY,
+            cargo VARCHAR(100) NULL,
+            salario DECIMAL(10,2) NULL,
+            fecha_ingreso DATE NULL,
+            estado INT NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            CONSTRAINT fk_empleado_persona FOREIGN KEY (id_persona) REFERENCES persona_O(id_persona) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+    conn.commit(); cur.close()
+
+class EmpleadoInfoIn(BaseModel):
+    cargo: Optional[str] = Field(default=None, max_length=100)
+    salario: Optional[float] = Field(default=None, ge=0)
+    fecha_ingreso: Optional[str] = None  # YYYY-MM-DD
+    estado: Optional[int] = Field(default=1, ge=0, le=1)
+    set_as_empleado: Optional[bool] = Field(default=True)
+
+@app.get('/empleados')
+def list_empleados(q: Optional[str] = None, estado: Optional[int] = None, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_empleado_info_table(conn)
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        sql = '''
+            SELECT p.id_persona, p.nombres_persona, p.apellido_paternoPersona, p.apellido_maternoPer,
+                   p.ci_persona, p.telefono_persona,
+                   p.direccion_persona, p.id_tipoPersona, p.id_empresa,
+                   ei.cargo, ei.salario, ei.fecha_ingreso, ei.estado
+            FROM persona_O p
+            LEFT JOIN empleado_info_O ei ON ei.id_persona = p.id_persona
+        '''
+        where = ['(p.id_tipoPersona = 3 OR ei.id_persona IS NOT NULL)']
+        params = []
+        if role != 'superadmin' and user_company is not None:
+            where.append('p.id_empresa = %s'); params.append(user_company)
+        if estado is not None:
+            where.append('(ei.estado = %s OR ei.estado IS NULL)'); params.append(estado)
+        if q:
+            like = f"%{q}%"; where.append('(p.nombres_persona LIKE %s OR p.apellido_paternoPersona LIKE %s OR p.apellido_maternoPer LIKE %s OR p.ci_persona LIKE %s)'); params.extend([like, like, like, like])
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        sql += ' ORDER BY p.nombres_persona ASC'
+        cur.execute(sql, tuple(params)); rows = cur.fetchall() or []
+        for r in rows:
+            if r.get('salario') is not None:
+                try: r['salario'] = float(r['salario'])
+                except: r['salario'] = None
+            if r.get('fecha_ingreso'):
+                try: r['fecha_ingreso'] = r['fecha_ingreso'].isoformat()
+                except: r['fecha_ingreso'] = str(r['fecha_ingreso'])
+            if r.get('id_tipoPersona') == 3 and r.get('estado') is None:
+                r['estado'] = 1
+        cur.close(); conn.close(); return rows
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.put('/empleados/{id_persona}/info')
+def upsert_empleado_info(id_persona: int, payload: EmpleadoInfoIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_empleado_info_table(conn)
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona, id_tipoPersona FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona, id_tipoPersona FROM persona_O WHERE id_persona=%s', (id_persona,))
+        p = cur.fetchone()
+        if not p: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        upd = conn.cursor(); upd.execute('UPDATE empleado_info_O SET cargo=%s, salario=%s, fecha_ingreso=%s, estado=%s WHERE id_persona=%s', (payload.cargo, payload.salario, payload.fecha_ingreso, payload.estado if payload.estado is not None else 1, id_persona))
+        if upd.rowcount == 0:
+            upd.execute('INSERT INTO empleado_info_O (id_persona, cargo, salario, fecha_ingreso, estado) VALUES (%s,%s,%s,%s,%s)', (id_persona, payload.cargo, payload.salario, payload.fecha_ingreso, payload.estado if payload.estado is not None else 1))
+        conn.commit(); upd.close()
+        if payload.set_as_empleado and int(p.get('id_tipoPersona') or 0) != 3:
+            cur2 = conn.cursor(); cur2.execute('UPDATE persona_O SET id_tipoPersona=3 WHERE id_persona=%s', (id_persona,)); conn.commit(); cur2.close()
+        cur.execute('SELECT p.id_persona, p.nombres_persona, p.apellido_paternoPersona, p.apellido_maternoPer, p.ci_persona, ei.cargo, ei.salario, ei.fecha_ingreso, ei.estado FROM persona_O p LEFT JOIN empleado_info_O ei ON ei.id_persona=p.id_persona WHERE p.id_persona=%s', (id_persona,))
+        row = cur.fetchone() or {}
+        if row.get('salario') is not None:
+            try: row['salario'] = float(row['salario'])
+            except: row['salario'] = None
+        if row.get('fecha_ingreso'):
+            try: row['fecha_ingreso'] = row['fecha_ingreso'].isoformat()
+            except: row['fecha_ingreso'] = str(row['fecha_ingreso'])
+        cur.close(); conn.close(); return row
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# ========================
+# Asistencia (entrada/salida)
+# ========================
+
+def ensure_asistencia_table(conn):
+    cur = conn.cursor(); cur.execute('''
+        CREATE TABLE IF NOT EXISTS asistencia_O (
+            id INT NOT NULL AUTO_INCREMENT,
+            id_persona INT NOT NULL,
+            tipo ENUM('entrada','salida') NOT NULL,
+            timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            geo_lat DECIMAL(9,6) NULL,
+            geo_lng DECIMAL(9,6) NULL,
+            nota VARCHAR(255) NULL,
+            PRIMARY KEY (id),
+            KEY idx_persona_time (id_persona, timestamp),
+            CONSTRAINT fk_asist_persona FOREIGN KEY (id_persona) REFERENCES persona_O(id_persona) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    '''); conn.commit(); cur.close()
+
+def ensure_empresa_geofence_columns(conn):
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            ALTER TABLE empresa_O
+            ADD COLUMN IF NOT EXISTS geo_lat DECIMAL(9,6) NULL,
+            ADD COLUMN IF NOT EXISTS geo_lng DECIMAL(9,6) NULL,
+            ADD COLUMN IF NOT EXISTS geo_radius_m INT NULL
+        """)
+        conn.commit(); cur.close()
+    except Exception:
+        try:
+            # Fallback for MySQL versions without IF NOT EXISTS per-column
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME='empresa_O' AND COLUMN_NAME='geo_lat'", (os.getenv('DATABASE_NAME','SystemaOllantay'),))
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE empresa_O ADD COLUMN geo_lat DECIMAL(9,6) NULL")
+            cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME='empresa_O' AND COLUMN_NAME='geo_lng'", (os.getenv('DATABASE_NAME','SystemaOllantay'),))
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE empresa_O ADD COLUMN geo_lng DECIMAL(9,6) NULL")
+            cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME='empresa_O' AND COLUMN_NAME='geo_radius_m'", (os.getenv('DATABASE_NAME','SystemaOllantay'),))
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE empresa_O ADD COLUMN geo_radius_m INT NULL")
+            conn.commit(); cur.close()
+        except Exception:
+            pass
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    from math import radians, sin, cos, sqrt, atan2
+    R = 6371000.0
+    dlat = radians((lat2 or 0) - (lat1 or 0))
+    dlon = radians((lon2 or 0) - (lon1 or 0))
+    a = sin(dlat/2)**2 + cos(radians(lat1 or 0))*cos(radians(lat2 or 0))*sin(dlon/2)**2
+    c = 2*atan2(sqrt(a), sqrt(1-a))
+    return R*c
+
+def ensure_asistencia_token_table(conn):
+    cur = conn.cursor(); cur.execute('''
+        CREATE TABLE IF NOT EXISTS asistencia_token_O (
+            jti VARCHAR(64) PRIMARY KEY,
+            id_persona INT NOT NULL,
+            issued_at DATETIME NOT NULL,
+            expires_at DATETIME NOT NULL,
+            used_at DATETIME NULL,
+            KEY idx_persona_exp (id_persona, expires_at),
+            CONSTRAINT fk_asist_token_persona FOREIGN KEY (id_persona) REFERENCES persona_O(id_persona) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    '''); conn.commit(); cur.close()
+
+class CheckInOutIn(BaseModel):
+    id_persona: int
+    geo_lat: Optional[float] = None
+    geo_lng: Optional[float] = None
+    nota: Optional[str] = Field(default=None, max_length=255)
+
+class ScanQRIn(BaseModel):
+    token: str
+    geo_lat: Optional[float] = None
+    geo_lng: Optional[float] = None
+    nota: Optional[str] = Field(default=None, max_length=255)
+
+@app.post('/asistencia/checkin')
+def asistencia_checkin(payload: CheckInOutIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_asistencia_table(conn)
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (payload.id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s', (payload.id_persona,))
+        pr = cur.fetchone()
+        if not pr: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # Geofencing: if empresa has geo fence configured, require location within radius
+        ensure_empresa_geofence_columns(conn)
+        cur.execute('SELECT e.geo_lat, e.geo_lng, e.geo_radius_m FROM empresa_O e JOIN persona_O p ON p.id_empresa=e.id_empresa WHERE p.id_persona=%s', (payload.id_persona,))
+        geo = cur.fetchone() or {}
+        if geo and geo.get('geo_lat') is not None and geo.get('geo_lng') is not None and geo.get('geo_radius_m'):
+            if payload.geo_lat is None or payload.geo_lng is None:
+                cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Se requiere ubicación para validar geocerca')
+            dist = _haversine_m(float(geo['geo_lat']), float(geo['geo_lng']), float(payload.geo_lat), float(payload.geo_lng))
+            if dist > float(geo['geo_radius_m']):
+                cur.close(); conn.close(); raise HTTPException(status_code=403, detail='Fuera de zona laboral')
+        ins = conn.cursor(); ins.execute('INSERT INTO asistencia_O (id_persona, tipo, geo_lat, geo_lng, nota) VALUES (%s,\'entrada\',%s,%s,%s)', (payload.id_persona, payload.geo_lat, payload.geo_lng, payload.nota)); conn.commit(); ins.close(); cur.close(); conn.close(); return {'status':'ok'}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/asistencia/checkout')
+def asistencia_checkout(payload: CheckInOutIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_asistencia_table(conn)
+        cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (payload.id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s', (payload.id_persona,))
+        if not cur.fetchone(): cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # Geofencing
+        ensure_empresa_geofence_columns(conn)
+        cur.execute('SELECT e.geo_lat, e.geo_lng, e.geo_radius_m FROM empresa_O e JOIN persona_O p ON p.id_empresa=e.id_empresa WHERE p.id_persona=%s', (payload.id_persona,))
+        geo = cur.fetchone() or {}
+        if geo and geo.get('geo_lat') is not None and geo.get('geo_lng') is not None and geo.get('geo_radius_m'):
+            if payload.geo_lat is None or payload.geo_lng is None:
+                cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Se requiere ubicación para validar geocerca')
+            dist = _haversine_m(float(geo['geo_lat']), float(geo['geo_lng']), float(payload.geo_lat), float(payload.geo_lng))
+            if dist > float(geo['geo_radius_m']):
+                cur.close(); conn.close(); raise HTTPException(status_code=403, detail='Fuera de zona laboral')
+        ins = conn.cursor(); ins.execute('INSERT INTO asistencia_O (id_persona, tipo, geo_lat, geo_lng, nota) VALUES (%s,\'salida\',%s,%s,%s)', (payload.id_persona, payload.geo_lat, payload.geo_lng, payload.nota)); conn.commit(); ins.close(); cur.close(); conn.close(); return {'status':'ok'}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/asistencia/qr/{id_persona}')
+def generate_qr(id_persona: int, ttl: Optional[int] = 60, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Genera un token QR efímero (JWT) para asistencia y devuelve SVG embebido."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin','viewer'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    ttl = max(15, min(600, int(ttl or 60)))  # 15s..10m
+    try:
+        # Validar que persona pertenece a la empresa (si no es superadmin)
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s', (id_persona,))
+        pr = cur.fetchone();
+        if not pr: cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # Crear JWT con jti, exp
+        jti = uuid.uuid4().hex[:32]
+        payload = {
+            'typ': 'asistencia-qr',
+            'sub': str(id_persona),
+            'jti': jti,
+            'exp': int((datetime.utcnow() + timedelta(seconds=ttl)).timestamp())
+        }
+        token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+        # Persistir registro emitido (para evitar reuso)
+        ensure_asistencia_token_table(conn)
+        cur2 = conn.cursor()
+        cur2.execute('INSERT INTO asistencia_token_O (jti, id_persona, issued_at, expires_at) VALUES (%s,%s,UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s SECOND))', (jti, id_persona, ttl))
+        conn.commit(); cur2.close(); cur.close(); conn.close()
+        # Generar QR SVG (contenido = token)
+        q = segno.make(token, error='M')
+        svg = q.svg_inline(scale=4)
+        return {'token': token, 'svg': svg, 'expires_in': ttl}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/asistencia/scan')
+def scan_qr(payload: ScanQRIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Valida token QR y registra entrada/salida alternando, con geofencing."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        # Decodificar y validar token
+        data = jwt.decode(payload.token, JWT_SECRET, algorithms=[JWT_ALG])
+        if data.get('typ') != 'asistencia-qr':
+            raise HTTPException(status_code=400, detail='Token inválido')
+        id_persona = int(data.get('sub'))
+        jti = data.get('jti')
+        conn = get_db_connection(); ensure_asistencia_table(conn); ensure_asistencia_token_table(conn)
+        cur = conn.cursor(dictionary=True)
+        # Validar scoping empresa
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona FROM persona_O WHERE id_persona=%s', (id_persona,))
+        if not cur.fetchone(): cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        # Validar jti no usado y no expirado
+        cur.execute('SELECT jti, used_at, expires_at FROM asistencia_token_O WHERE jti=%s', (jti,))
+        row = cur.fetchone()
+        if not row: cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Token no reconocido')
+        if row.get('used_at') is not None: cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Token ya utilizado')
+        # Geofencing
+        ensure_empresa_geofence_columns(conn)
+        cur.execute('SELECT e.geo_lat, e.geo_lng, e.geo_radius_m FROM empresa_O e JOIN persona_O p ON p.id_empresa=e.id_empresa WHERE p.id_persona=%s', (id_persona,))
+        geo = cur.fetchone() or {}
+        if geo and geo.get('geo_lat') is not None and geo.get('geo_lng') is not None and geo.get('geo_radius_m'):
+            if payload.geo_lat is None or payload.geo_lng is None:
+                cur.close(); conn.close(); raise HTTPException(status_code=400, detail='Se requiere ubicación para validar geocerca')
+            dist = _haversine_m(float(geo['geo_lat']), float(geo['geo_lng']), float(payload.geo_lat), float(payload.geo_lng))
+            if dist > float(geo['geo_radius_m']):
+                cur.close(); conn.close(); raise HTTPException(status_code=403, detail='Fuera de zona laboral')
+        # Determinar acción: si última marca del día es 'entrada' sin salida posterior, registrar 'salida', sino 'entrada'
+        cur.execute('''
+            SELECT tipo FROM asistencia_O 
+            WHERE id_persona=%s AND DATE(timestamp)=CURDATE() 
+            ORDER BY timestamp DESC LIMIT 1
+        ''', (id_persona,))
+        last = cur.fetchone()
+        next_tipo = 'salida' if (last and last.get('tipo') == 'entrada') else 'entrada'
+        ins = conn.cursor(); ins.execute('INSERT INTO asistencia_O (id_persona, tipo, geo_lat, geo_lng, nota) VALUES (%s,%s,%s,%s,%s)', (id_persona, next_tipo, payload.geo_lat, payload.geo_lng, payload.nota)); conn.commit(); ins.close()
+        # Marcar token como usado
+        up = conn.cursor(); up.execute('UPDATE asistencia_token_O SET used_at=UTC_TIMESTAMP() WHERE jti=%s', (jti,)); conn.commit(); up.close(); cur.close(); conn.close()
+        return {'status':'ok', 'accion': next_tipo}
+    except HTTPException: raise
+    except jwt.ExpiredSignatureError: raise HTTPException(status_code=400, detail='Token expirado')
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/asistencia/estadisticas')
+def asistencia_estadisticas(desde: Optional[str] = None, hasta: Optional[str] = None, id_persona: Optional[int] = None, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_asistencia_table(conn)
+        cur = conn.cursor(dictionary=True)
+        sql = 'SELECT id_persona, tipo, timestamp, geo_lat, geo_lng FROM asistencia_O'
+        where = []; params = []
+        if id_persona:
+            where.append('id_persona=%s'); params.append(id_persona)
+        if desde:
+            where.append('timestamp >= %s'); params.append(desde)
+        if hasta:
+            where.append('timestamp <= %s'); params.append(hasta)
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        sql += ' ORDER BY id_persona ASC, timestamp ASC'
+        cur.execute(sql, tuple(params)); rows = cur.fetchall() or []
+        stats = {}
+        for r in rows:
+            pid = r['id_persona']; stats.setdefault(pid, {'id_persona': pid, 'entradas': 0, 'salidas': 0})
+            if r['tipo'] == 'entrada': stats[pid]['entradas'] += 1
+            else: stats[pid]['salidas'] += 1
+        cur.close(); conn.close(); return {'items': list(stats.values()), 'total': len(stats)}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/asistencia/registros')
+def asistencia_registros(desde: Optional[str] = None, hasta: Optional[str] = None, id_persona: Optional[int] = None, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Retorna registros detallados individuales de asistencia (no solo estadísticas agregadas)"""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); ensure_asistencia_table(conn)
+        cur = conn.cursor(dictionary=True)
+        
+        # Query base para obtener registros con información del empleado
+        sql = '''
+            SELECT 
+                a.id_asistencia,
+                a.id_persona,
+                a.tipo,
+                a.timestamp,
+                a.geo_lat,
+                a.geo_lng,
+                a.nota,
+                p.nombre,
+                p.apellido_paterno,
+                p.apellido_materno
+            FROM asistencia_O a
+            LEFT JOIN persona_O p ON a.id_persona = p.id_persona
+        '''
+        
+        where = []; params = []
+        
+        # Filtros opcionales
+        if id_persona:
+            where.append('a.id_persona=%s'); params.append(id_persona)
+        if desde:
+            where.append('a.timestamp >= %s'); params.append(desde)
+        if hasta:
+            where.append('a.timestamp <= %s'); params.append(hasta)
+        
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        
+        sql += ' ORDER BY a.timestamp DESC'
+        
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+        
+        # Formatear resultados
+        registros = []
+        for r in rows:
+            nombre_completo = f"{r['nombre'] or ''} {r['apellido_paterno'] or ''} {r['apellido_materno'] or ''}".strip()
+            registros.append({
+                'id_asistencia': r['id_asistencia'],
+                'id_persona': r['id_persona'],
+                'nombre_empleado': nombre_completo,
+                'tipo': r['tipo'],
+                'timestamp': r['timestamp'].isoformat() if r['timestamp'] else None,
+                'geo_lat': float(r['geo_lat']) if r['geo_lat'] else None,
+                'geo_lng': float(r['geo_lng']) if r['geo_lng'] else None,
+                'nota': r['nota']
+            })
+        
+        cur.close(); conn.close()
+        return {'items': registros, 'total': len(registros)}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get('/auth/me')
@@ -1891,6 +2481,106 @@ def get_role_permissions(id, x_user_role: Optional[str] = Header(None), request:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get('/roles/matrix')
+def get_roles_matrix(company_id: Optional[int] = None, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Devuelve una matriz roles x permisos para una empresa (o global si company_id es null).
+    Formato: { roles: [...], permissions: [...], assignments: { [role_id]: [perm_id,...] } }
+    Superadmin: puede pasar cualquier company_id (o omitido para global). Admin: sólo su propia empresa.
+    """
+    role = get_role(x_user_role, request)
+    if role not in ['admin','superadmin']:
+        raise HTTPException(status_code=403, detail='Acceso denegado')
+    if role != 'superadmin':
+        # For admin force company_id to its own
+        user_company_id = get_company_id_from_request(request)
+        if user_company_id is None:
+            raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+        company_id = user_company_id
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # Roles disponibles en este contexto (similar a list_roles lógica simplificada)
+        if role == 'superadmin' and company_id is None:
+            cur.execute('''SELECT idrole, name, description, id_empresa FROM role_O WHERE id_empresa IS NULL ORDER BY idrole''')
+        elif role == 'superadmin':
+            # company-specific + global (excluye superadmin global aparte de list)
+            cur.execute('''SELECT idrole, name, description, id_empresa FROM role_O WHERE id_empresa IS NULL OR id_empresa = %s ORDER BY id_empresa IS NULL DESC, idrole''', (company_id,))
+        else:
+            cur.execute('''SELECT idrole, name, description, id_empresa FROM role_O WHERE (id_empresa IS NULL AND name != 'superadmin') OR id_empresa = %s ORDER BY id_empresa IS NULL DESC, idrole''', (company_id,))
+        roles = cur.fetchall()
+        # Permisos base
+        pcur = conn.cursor(dictionary=True); pcur.execute('SELECT id_perm, resource, action, description FROM permission_O ORDER BY resource, action'); permissions = pcur.fetchall(); pcur.close()
+        # Asignaciones (solo scoped a la empresa si company_id especificado, si global company_id None usamos id_empresa IS NULL)
+        matrix = {}
+        for r in roles:
+            rc = conn.cursor(dictionary=True)
+            if company_id is None:
+                rc.execute('SELECT perm_id FROM role_permission_O WHERE role_id=%s AND id_empresa IS NULL', (r['idrole'],))
+            else:
+                # incluir también global (NULL) para que se visualicen heredados? -> Mantener sólo propios a la empresa para simplificar UI; heredados se pueden ver aparte
+                rc.execute('SELECT perm_id FROM role_permission_O WHERE role_id=%s AND (id_empresa = %s OR id_empresa IS NULL)', (r['idrole'], company_id))
+            matrix[r['idrole']] = [row['perm_id'] for row in rc.fetchall()] ; rc.close()
+        cur.close(); conn.close()
+        return {'roles': roles, 'permissions': permissions, 'assignments': matrix, 'company_id': company_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class RoleMatrixUpdate(BaseModel):
+    company_id: Optional[int]
+    changes: List[Dict[str, Dict[str, int]]]  # each dict contains role_id, perm_id, assigned (as 0/1 or bool)
+
+@app.post('/roles/matrix/update')
+def update_roles_matrix(payload: RoleMatrixUpdate, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Actualiza asignaciones de permisos en lote para una empresa.
+    Cada cambio indica si debe existir (assigned true) o eliminarse (assigned false) una fila en role_permission_O.
+    Reglas:
+      - Admin sólo su empresa.
+      - Superadmin puede global (company_id null) o cualquier empresa.
+    """
+    role = get_role(x_user_role, request)
+    if role not in ['admin','superadmin']:
+        raise HTTPException(status_code=403, detail='Acceso denegado')
+    target_company_id = payload.company_id
+    if role != 'superadmin':
+        user_company_id = get_company_id_from_request(request)
+        if user_company_id is None:
+            raise HTTPException(status_code=400, detail='No se pudo determinar la empresa del usuario')
+        if target_company_id is not None and target_company_id != user_company_id:
+            raise HTTPException(status_code=403, detail='Solo puede modificar su propia empresa')
+        target_company_id = user_company_id  # force
+    # Validar lista
+    if not payload.changes:
+        return {'updated': 0}
+    try:
+        conn = get_db_connection(); updated = 0
+        for ch in payload.changes:
+            role_id = ch.get('role_id'); perm_id = ch.get('perm_id'); assigned = ch.get('assigned')
+            if not role_id or not perm_id or assigned not in [True, False]:
+                continue
+            cursor = conn.cursor()
+            if assigned:
+                # Insert IGNORE para evitar duplicados
+                if target_company_id is None:
+                    cursor.execute('INSERT IGNORE INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s,%s,NULL)', (role_id, perm_id))
+                else:
+                    cursor.execute('INSERT IGNORE INTO role_permission_O (role_id, perm_id, id_empresa) VALUES (%s,%s,%s)', (role_id, perm_id, target_company_id))
+                updated += cursor.rowcount
+            else:
+                # Delete tanto scoped como global si company_id None
+                if target_company_id is None:
+                    cursor.execute('DELETE FROM role_permission_O WHERE role_id=%s AND perm_id=%s AND id_empresa IS NULL', (role_id, perm_id))
+                else:
+                    cursor.execute('DELETE FROM role_permission_O WHERE role_id=%s AND perm_id=%s AND (id_empresa=%s OR id_empresa IS NULL)', (role_id, perm_id, target_company_id))
+                updated += cursor.rowcount
+            cursor.close()
+        conn.commit(); conn.close()
+        return {'updated': updated}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Removed legacy set_role_permissions to avoid duplicate route and 204 responses; use update_role_permissions instead.
 
@@ -2343,6 +3033,7 @@ def get_available_pages(x_user_role: Optional[str] = Header(None), request: Requ
         'tipos': {'resource': 'tipos', 'action': 'view', 'description': 'Ver tipos'},
         'personas': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas'},
         'personas_mapa': {'resource': 'personas', 'action': 'view', 'description': 'Ver personas en mapa'},
+        'empleados': {'resource': 'personas', 'action': 'view', 'description': 'Ver empleados'},
         'empresas': {'resource': 'empresas', 'action': 'view', 'description': 'Ver empresas'},
         'prestamos': {'resource': 'prestamos', 'action': 'view', 'description': 'Ver prestamos'},
         'productos': {'resource': 'productos', 'action': 'view', 'description': 'Ver productos'},
@@ -2478,3 +3169,231 @@ def sync_permissions(x_user_role: Optional[str] = Header(None), request: Request
     except Exception as e:
         print(f"❌ ERROR syncing permissions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ================== FIRMAS DIGITALES ==================
+
+def ensure_firma_table():
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS firma_documento_O (
+                id_firma INT AUTO_INCREMENT PRIMARY KEY,
+                id_empresa INT NOT NULL,
+                id_persona INT NOT NULL,
+                tipo_documento VARCHAR(40) NOT NULL,
+                id_referencia VARCHAR(100) NULL,
+                data_png MEDIUMTEXT NOT NULL,
+                hash_sha256 CHAR(64) NOT NULL,
+                width INT NULL,
+                height INT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_firma_empresa_persona (id_empresa, id_persona),
+                INDEX idx_firma_tipo (tipo_documento)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        ''')
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print(f"Error ensure_firma_table: {e}")
+
+def ensure_face_table():
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS persona_face_O (
+                id_face INT AUTO_INCREMENT PRIMARY KEY,
+                id_empresa INT NOT NULL,
+                id_persona INT NOT NULL,
+                data_jpg MEDIUMTEXT NOT NULL,
+                hash_sha256 CHAR(64) NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_face_empresa_persona (id_empresa, id_persona)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        ''')
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print(f"Error ensure_face_table: {e}")
+
+
+@app.post('/firmas', response_model=FirmaOut)
+def crear_firma(payload: SignFirmaIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Registra una firma digital PNG (data URL) asociada a una persona y tipo de documento."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    if not payload.data_url.startswith('data:image'):
+        raise HTTPException(status_code=400, detail='Formato data_url inválido')
+    # Extraer base64
+    try:
+        b64_part = payload.data_url.split(',')[1]
+    except Exception:
+        raise HTTPException(status_code=400, detail='data_url mal formado')
+    # Validar tamaño (< 2MB)
+    try:
+        raw_bytes = base64.b64decode(b64_part)
+    except Exception:
+        raise HTTPException(status_code=400, detail='Base64 inválido')
+    if len(raw_bytes) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail='Firma demasiado grande (max 2MB)')
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    # Scope empresa
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_firma_table(); cur = conn.cursor(dictionary=True)
+        # Validar persona pertenece a empresa (si no superadmin)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (payload.id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona=%s', (payload.id_persona,))
+        pr = cur.fetchone()
+        if not pr:
+            cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        id_empresa = pr['id_empresa']
+        ins = conn.cursor()
+        ins.execute('''
+            INSERT INTO firma_documento_O (id_empresa, id_persona, tipo_documento, id_referencia, data_png, hash_sha256, width, height)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        ''', (id_empresa, payload.id_persona, payload.tipo_documento, payload.id_referencia, payload.data_url, sha, payload.width, payload.height))
+        conn.commit()
+        new_id = ins.lastrowid
+        ins.close(); cur.close(); conn.close()
+        return {
+            'id_firma': new_id,
+            'id_persona': payload.id_persona,
+            'tipo_documento': payload.tipo_documento,
+            'id_referencia': payload.id_referencia,
+            'created_at': datetime.utcnow(),
+            'width': payload.width,
+            'height': payload.height
+        }
+    except HTTPException: raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/firmas', response_model=List[FirmaOut])
+def listar_firmas(id_persona: Optional[int] = None, tipo_documento: Optional[str] = None, limit: int = 50, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    limit = max(1, min(200, limit))
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_firma_table(); cur = conn.cursor(dictionary=True)
+        base = 'SELECT id_firma, id_persona, tipo_documento, id_referencia, created_at, width, height FROM firma_documento_O WHERE 1=1'
+        params = []
+        if role != 'superadmin' and user_company is not None:
+            base += ' AND id_empresa=%s'; params.append(user_company)
+        if id_persona:
+            base += ' AND id_persona=%s'; params.append(id_persona)
+        if tipo_documento:
+            base += ' AND tipo_documento=%s'; params.append(tipo_documento)
+        base += ' ORDER BY created_at DESC LIMIT %s'; params.append(limit)
+        cur.execute(base, params)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return rows
+    except HTTPException: raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/firmas/{id_firma}')
+def obtener_firma(id_firma: int, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_firma_table(); cur = conn.cursor(dictionary=True)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_firma, id_persona, tipo_documento, id_referencia, created_at, width, height, data_png FROM firma_documento_O WHERE id_firma=%s AND id_empresa=%s', (id_firma, user_company))
+        else:
+            cur.execute('SELECT id_firma, id_persona, tipo_documento, id_referencia, created_at, width, height, data_png FROM firma_documento_O WHERE id_firma=%s', (id_firma,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if not row: raise HTTPException(status_code=404, detail='Firma no encontrada')
+        return row
+    except HTTPException: raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ================== ROSTROS (FACE CAPTURE PLACEHOLDER) ==================
+
+@app.post('/faces', response_model=FaceOut)
+def crear_face(payload: FaceIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    if not payload.data_url.startswith('data:image'):
+        raise HTTPException(status_code=400, detail='Formato data_url inválido')
+    try:
+        b64_part = payload.data_url.split(',')[1]
+    except Exception:
+        raise HTTPException(status_code=400, detail='data_url mal formado')
+    try:
+        raw_bytes = base64.b64decode(b64_part)
+    except Exception:
+        raise HTTPException(status_code=400, detail='Base64 inválido')
+    if len(raw_bytes) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail='Imagen demasiado grande (max 2MB)')
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_face_table(); cur = conn.cursor(dictionary=True)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona=%s AND id_empresa=%s', (payload.id_persona, user_company))
+        else:
+            cur.execute('SELECT id_persona, id_empresa FROM persona_O WHERE id_persona=%s', (payload.id_persona,))
+        pr = cur.fetchone()
+        if not pr:
+            cur.close(); conn.close(); raise HTTPException(status_code=404, detail='Persona no encontrada')
+        id_empresa = pr['id_empresa']
+        ins = conn.cursor()
+        ins.execute('INSERT INTO persona_face_O (id_empresa, id_persona, data_jpg, hash_sha256) VALUES (%s,%s,%s,%s)', (id_empresa, payload.id_persona, payload.data_url, sha))
+        conn.commit(); new_id = ins.lastrowid; ins.close(); cur.close(); conn.close()
+        return {'id_face': new_id, 'id_persona': payload.id_persona, 'created_at': datetime.utcnow(), 'hash_sha256': sha}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/faces/{id_persona}', response_model=List[FaceOut])
+def listar_faces(id_persona: int, limit: int = 5, x_user_role: Optional[str] = Header(None), request: Request = None):
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    limit = max(1, min(20, limit))
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_face_table(); cur = conn.cursor(dictionary=True)
+        base = 'SELECT id_face, id_persona, created_at, hash_sha256 FROM persona_face_O WHERE id_persona=%s'
+        params = [id_persona]
+        if role != 'superadmin' and user_company is not None:
+            base += ' AND id_empresa=%s'; params.append(user_company)
+        base += ' ORDER BY created_at DESC LIMIT %s'; params.append(limit)
+        cur.execute(base, params)
+        rows = cur.fetchall(); cur.close(); conn.close(); return rows
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/faces/verify')
+def verificar_face(payload: FaceVerifyIn, x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Placeholder de verificación: compara hash SHA256 de la imagen enviada con el último rostro capturado."""
+    role = get_role(x_user_role, request)
+    if role not in ('admin','editor','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        b64_part = payload.data_url.split(',')[1]
+        raw_bytes = base64.b64decode(b64_part)
+        sha_in = hashlib.sha256(raw_bytes).hexdigest()
+    except Exception:
+        raise HTTPException(status_code=400, detail='Imagen inválida')
+    user_company = get_company_id_from_request(request)
+    try:
+        conn = get_db_connection(); ensure_face_table(); cur = conn.cursor(dictionary=True)
+        if role != 'superadmin' and user_company is not None:
+            cur.execute('SELECT hash_sha256 FROM persona_face_O WHERE id_persona=%s AND id_empresa=%s ORDER BY created_at DESC LIMIT 1', (payload.id_persona, user_company))
+        else:
+            cur.execute('SELECT hash_sha256 FROM persona_face_O WHERE id_persona=%s ORDER BY created_at DESC LIMIT 1', (payload.id_persona,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail='No hay rostro registrado')
+        match = (row['hash_sha256'] == sha_in)
+        return {'match': match, 'hash_input': sha_in, 'hash_stored': row['hash_sha256']}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))

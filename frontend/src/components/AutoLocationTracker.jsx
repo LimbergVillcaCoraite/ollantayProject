@@ -41,9 +41,12 @@ export default function AutoLocationTracker({ API_PERSONAS, loggedUser, enabled 
         if (response.ok) {
           lastSentRef.current = now;
           console.log('✓ Ubicación actualizada automáticamente');
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('Error al actualizar ubicación:', errorData.detail || response.statusText);
         }
       } catch (error) {
-        console.log('Error al enviar ubicación:', error);
+        console.error('Error al enviar ubicación:', error);
       }
     };
 

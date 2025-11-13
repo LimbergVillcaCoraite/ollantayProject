@@ -9,10 +9,16 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
   const [error, setError] = useState('')
   const [cliente, setCliente] = useState('')
   const [clientes, setClientes] = useState([])
+  // Inline detail state
+  const [expandedId, setExpandedId] = useState(null)
+  const [detailsCache, setDetailsCache] = useState({})
+  const [rowLoading, setRowLoading] = useState(null)
+  const [rowError, setRowError] = useState(null)
 
   const loadClientes = async() => {
     try{
-  const res = await fetch(`${API_PERSONAS}/personas?tipo=cliente`, { credentials: 'include' })
+      // tipo=1 es cliente (verificar en tipo_personaO)
+      const res = await fetch(`${API_PERSONAS}/persons?tipo=1`, { credentials: 'include' })
       if(!res.ok) throw new Error('Error listando clientes')
       const json = await res.json()
       setClientes(json || [])
@@ -117,9 +123,124 @@ export default function Creditos({ API, API_PERSONAS, userRole }){
                     <td className={`p-2 text-right font-semibold ${(Number(c.saldo)||0) === 0 ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>{formatMoney(c.saldo)}</td>
                     <td className="p-2">
                       <div className="flex items-center gap-2">
-                        <a href={`#/ventas?id=${c.idVenta}`} className="text-blue-600 hover:underline">Ver</a>
+                        <button
+                          onClick={async () => {
+                            setRowError(null)
+                            if (expandedId === c.idVenta) {
+                              setExpandedId(null)
+                              return
+                            }
+                            if (!detailsCache[c.idVenta]) {
+                              try {
+                                setRowLoading(c.idVenta)
+                                // IMPORTANT: API already points to /api/ventas so we must not append another /ventas segment.
+                                // Correct detail endpoint is /ventas/{id} after proxy rewrite.
+                                const res = await fetch(`${API}/${c.idVenta}`, { credentials: 'include' })
+                                if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                                const data = await res.json()
+                                setDetailsCache(prev => ({ ...prev, [c.idVenta]: data }))
+                              } catch (e) {
+                                console.error(e)
+                                setRowError(`No se pudo cargar el detalle: ${e.message || e}`)
+                              } finally {
+                                setRowLoading(null)
+                              }
+                            }
+                            setExpandedId(c.idVenta)
+                          }}
+                          className="text-blue-600 hover:underline"
+                        >
+                          {expandedId === c.idVenta ? 'Ocultar' : 'Ver'}
+                        </button>
+                        <a href={`#/ventas?id=${c.idVenta}`} className="text-gray-600 hover:underline">Abrir</a>
                         {/* Placeholder para cobrar o imprimir */}
                       </div>
+                    </td>
+                  </tr>
+                ))}
+                {/* Expanded rows */}
+                {credits.map((c) => (
+                  <tr key={`exp-${c.idVenta}`} className="border-t dark:border-gray-700">
+                    <td colSpan={7} className="p-0">
+                      {expandedId === c.idVenta && (
+                        <div className="px-4 py-3 bg-gray-50 dark:bg-gray-900">
+                          {rowLoading === c.idVenta && (
+                            <div className="text-sm text-gray-600 dark:text-gray-400">Cargando detalle...</div>
+                          )}
+                          {rowError && (
+                            <div className="text-sm text-red-600 dark:text-red-400">{rowError}</div>
+                          )}
+                          {detailsCache[c.idVenta] && (
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                              <div className="lg:col-span-2">
+                                <div className="font-semibold mb-2 dark:text-gray-100">Productos</div>
+                                <div className="overflow-auto">
+                                  <table className="min-w-full text-sm">
+                                    <thead>
+                                      <tr className="text-left text-gray-600 dark:text-gray-300">
+                                        <th className="p-2">Producto</th>
+                                        <th className="p-2 text-right">Cantidad</th>
+                                        <th className="p-2 text-right">P. Unitario</th>
+                                        <th className="p-2 text-right">Subtotal</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(detailsCache[c.idVenta].detalles || []).map((d) => (
+                                        <tr key={d.idDetalle} className="border-t dark:border-gray-700">
+                                          <td className="p-2">{d.nombreProducto}</td>
+                                          <td className="p-2 text-right">{Number(d.cantidad_caja) || 0}</td>
+                                          <td className="p-2 text-right">{formatMoney(d.precio_unitario)}</td>
+                                          <td className="p-2 text-right">{formatMoney(d.subtotal)}</td>
+                                        </tr>
+                                      ))}
+                                      {(detailsCache[c.idVenta].detalles || []).length === 0 && (
+                                        <tr>
+                                          <td colSpan={4} className="p-2 text-center text-gray-500 dark:text-gray-400">Sin detalles</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                              <div className="lg:col-span-1">
+                                <div className="font-semibold mb-2 dark:text-gray-100">Resumen</div>
+                                <div className="space-y-1 text-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-600 dark:text-gray-300">Cliente</span>
+                                    <span className="font-medium dark:text-gray-100">{detailsCache[c.idVenta].nombreCliente}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-600 dark:text-gray-300">Empresa</span>
+                                    <span className="font-medium dark:text-gray-100">{detailsCache[c.idVenta].nombreEmpresa}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-600 dark:text-gray-300">Fecha</span>
+                                    <span className="font-medium dark:text-gray-100">{detailsCache[c.idVenta].fechaVenta}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between pt-2">
+                                    <span className="text-gray-700 dark:text-gray-200">Total</span>
+                                    <span className="font-semibold">{formatMoney(detailsCache[c.idVenta].montoTotal)}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-700 dark:text-gray-200">Pagado</span>
+                                    <span className="font-semibold">{formatMoney(detailsCache[c.idVenta].montoPagado)}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-700 dark:text-gray-200">Saldo</span>
+                                    <span className="font-semibold">{formatMoney((Number(detailsCache[c.idVenta].montoTotal)||0) - (Number(detailsCache[c.idVenta].montoPagado)||0))}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-700 dark:text-gray-200">Estado</span>
+                                    <span className={`font-semibold ${((detailsCache[c.idVenta].estado_pago||'')==='Pagado') ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                                      {detailsCache[c.idVenta].estado_pago || 'No Pagado'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -232,6 +232,9 @@ services:
       - rutas_service
       - entregas_service
       - ai_service
+      - analytics_service
+      - notifications_service
+      - export_service
     ports:
       - "80:80"
       - "443:443"
@@ -287,6 +290,95 @@ services:
       DATABASE_PASSWORD: P4assw@rd
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  analytics_service:
+    build:
+      context: ./backend/analytics_service
+      dockerfile: Dockerfile
+    container_name: analytics_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8012:8012"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  notifications_service:
+    build:
+      context: ./backend/notifications_service
+      dockerfile: Dockerfile
+    container_name: notifications_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8013:8013"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  export_service:
+    build:
+      context: ./backend/export_service
+      dockerfile: Dockerfile
+    container_name: export_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8014:8014"
+    environment:
+      DB_HOST: mysql8032
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: P4assw@rd
+      DB_NAME: SystemaOllantay
+
+  chat_service:
+    build:
+      context: ./backend/chat_service
+      dockerfile: Dockerfile
+    container_name: chat_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8015:8015"
+    environment:
+      DATABASE_HOST: mysql8032
+      DATABASE_PORT: "3306"
+      DATABASE_USER: root
+      DATABASE_PASSWORD: P4assw@rd
+      DATABASE_NAME: SystemaOllantay
+      ALLOW_ORIGIN_REGEX: 'https?://.*'
+
+  gamification_service:
+    build:
+      context: ./backend/gamification_service
+      dockerfile: Dockerfile
+    container_name: gamification_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8016:8016"
+    environment:
+      DB_HOST: mysql8032
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: P4assw@rd
+      DB_NAME: SystemaOllantay
+      JWT_SECRET: supersecretkey123
 
 volumes:
   mysql8032-data:

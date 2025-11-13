@@ -407,6 +407,58 @@ Este proyecto está bajo la Licencia MIT. Ver el archivo `LICENSE` para más det
 
 ---
 
-**Sistema Ollantay 1.0** - Desarrollado con ❤️ para la gestión eficiente de préstamos empresariales.
+**Sistema Ollantay 2.0** - Sistema de gestion empresarial multiempresa con arquitectura de microservicios.
 
-Para soporte técnico o consultas: [Crear Issue](https://github.com/tu-usuario/ollantay-project/issues)
+## Stack Tecnologico
+
+- **Backend**: FastAPI (Python 3.9+)
+- **Frontend Web**: React 18 + Vite + Tailwind CSS
+- **Mobile**: React Native + Expo
+- **Base de Datos**: MySQL 8.0.32
+- **Contenedores**: Docker + Docker Compose
+- **Proxy**: Nginx con SSL/TLS
+- **CI/CD**: GitHub Actions
+
+## Aplicaciones
+
+### Web (React)
+- Interfaz administrativa completa
+- Gestion de ventas, productos, clientes
+- Modulos de contabilidad y reportes
+- Sistema de permisos dinamico
+- Acceso: http://localhost:3000
+
+### Mobile (React Native/Expo)
+- App para vendedores y choferes
+- Gestion de entregas en campo
+- Vista de mis deudas para clientes
+- Sincronizacion con backend
+- Ver: [mobile/README.md](mobile/README.md)
+
+## Inicio Rapido
+
+```powershell
+# Clonar repositorio
+git clone https://github.com/LimbergVillcaCoraite/ollantayProject.git
+cd ollantayProject
+
+# Levantar servicios backend y web
+docker-compose up -d --build
+
+# Para la app movil
+cd mobile
+npm install
+npm start
+```
+
+## Documentacion
+
+- **App Movil**: [mobile/README.md](mobile/README.md)
+- **Permisos**: [PERMISSIONS-AUTO-SYNC.md](PERMISSIONS-AUTO-SYNC.md)
+- **CI/CD**: [GITHUB_ACTIONS_ORACLE_CLOUD.md](GITHUB_ACTIONS_ORACLE_CLOUD.md)
+
+## Soporte
+
+Para problemas o consultas: [Crear Issue](https://github.com/LimbergVillcaCoraite/ollantayProject/issues)
+
+---

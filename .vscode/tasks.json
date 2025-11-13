@@ -257,6 +257,16 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "Restart compra_service",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": [
+				"restart",
+				"compra_service"
+			],
+			"group": "build"
 		}
 	]
 }
