@@ -70,7 +70,7 @@ def verify_token(authorization: Optional[str] = Header(None)):
 # ENDPOINTS DE PUNTOS
 # =============================
 
-@app.post("/api/gamification/award-points")
+@app.post("/award-points")
 async def award_points(
     request: Request,
     user_data: dict = Depends(verify_token),
@@ -167,7 +167,7 @@ def _assign_badge(cursor, id_user: int, nombre_badge: str):
     except mysql.connector.Error as err:
         print(f"⚠️ Error asignando badge: {err}")
 
-@app.get("/api/gamification/user-stats/{id_user}")
+@app.get("/user-stats/{id_user}")
 async def get_user_stats(
     id_user: int,
     user_data: dict = Depends(verify_token),
@@ -226,7 +226,7 @@ async def get_user_stats(
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Database error: {err}")
 
-@app.get("/api/gamification/rankings")
+@app.get("/rankings")
 async def get_rankings(
     limit: int = 50,
     user_data: dict = Depends(verify_token),
@@ -265,7 +265,7 @@ async def get_rankings(
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Database error: {err}")
 
-@app.get("/api/gamification/badges")
+@app.get("/badges")
 async def list_badges(
     user_data: dict = Depends(verify_token),
     db: tuple = Depends(get_db)
@@ -290,7 +290,7 @@ async def list_badges(
 # TRIGGERS AUTOMÁTICOS
 # =============================
 
-@app.post("/api/gamification/trigger/venta")
+@app.post("/trigger/venta")
 async def trigger_venta(
     request: Request,
     user_data: dict = Depends(verify_token),

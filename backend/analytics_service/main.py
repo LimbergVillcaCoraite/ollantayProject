@@ -80,41 +80,49 @@ def realtime_stats(x_user_role: Optional[str] = Header(None), request: Request =
     company = get_company_id(request)
     try:
         conn = get_db(); cur = conn.cursor(dictionary=True)
-        where_company = ''
-        params: list[Any] = []
+        # Prestamos activos / mora / monto (sin monto monetario para préstamos de envases: devolver 0)
+        prestamos_where_company = ''
+        prestamos_params: list[Any] = []
         if role != 'superadmin' and company is not None:
-            where_company = ' AND p.idEmpresa = %s'
-            params.append(company)
-        # Prestamos activos / mora / monto
+            prestamos_where_company = ' AND p.idEmpresa = %s'
+            prestamos_params.append(company)
         cur.execute(f"""
             SELECT 
-              SUM(CASE WHEN p.estado=1 THEN 1 ELSE 0 END) activos,
-              SUM(CASE WHEN p.estado=1 AND p.fechaVencimiento < CURDATE() THEN 1 ELSE 0 END) mora,
-              SUM(CASE WHEN p.estado=1 THEN p.montoRestante ELSE 0 END) monto
+              SUM(CASE WHEN p.estado_prestamo = 0 THEN 1 ELSE 0 END) AS activos,
+              SUM(CASE WHEN p.estado_prestamo = 0 AND p.fecha_devolucion IS NULL AND p.fecha_prestamo < DATE_SUB(CURDATE(), INTERVAL 15 DAY) THEN 1 ELSE 0 END) AS mora,
+              0 AS monto
             FROM prestamo_O p
-            WHERE 1=1 {where_company}
-        """, tuple(params))
+            WHERE 1=1 {prestamos_where_company}
+        """, tuple(prestamos_params))
         row_p = cur.fetchone() or {}
         # Asistencias hoy (entradas registradas)
-        asist_query = "SELECT COUNT(*) c FROM asistencia_O a WHERE DATE(a.hora_entrada) = CURDATE()"
-        asist_params = ()
+        asist_query = (
+            "SELECT COUNT(*) c FROM asistencia_O a "
+            "JOIN persona_O p ON p.id_persona = a.id_persona "
+            "WHERE DATE(a.timestamp) = CURDATE()"
+        )
+        asist_params: tuple[Any, ...] = ()
         if role != 'superadmin' and company is not None:
-            asist_query += " AND a.idEmpresa = %s"
+            asist_query += " AND p.id_empresa = %s"
             asist_params = (company,)
         cur.execute(asist_query, asist_params)
         asist_hoy = int((cur.fetchone() or {}).get('c',0))
         
         # Empleados activos
-        emp_query = "SELECT COUNT(*) c FROM empleado_info_O e WHERE e.activo = 1"
-        emp_params = ()
+        emp_query = (
+            "SELECT COUNT(*) c FROM empleado_info_O e "
+            "JOIN persona_O p ON p.id_persona = e.id_persona "
+            "WHERE e.estado = 1"
+        )
+        emp_params: tuple[Any, ...] = ()
         if role != 'superadmin' and company is not None:
-            emp_query += " AND e.idEmpresa = %s"
+            emp_query += " AND p.id_empresa = %s"
             emp_params = (company,)
         cur.execute(emp_query, emp_params)
         empleados = int((cur.fetchone() or {}).get('c',0))
         
         # Ventas hoy
-        ventas_query = "SELECT COALESCE(SUM(v.total),0) total FROM venta_O v WHERE DATE(v.fechaVenta)=CURDATE()"
+        ventas_query = "SELECT COALESCE(SUM(v.montoTotal),0) total FROM venta_O v WHERE DATE(v.fechaVenta)=CURDATE()"
         ventas_params = ()
         if role != 'superadmin' and company is not None:
             ventas_query += " AND v.idEmpresa = %s"
@@ -164,23 +172,37 @@ def trends(payload: TrendRequest, x_user_role: Optional[str] = Header(None), req
     days = max(1, min(120, payload.days))
     try:
         conn = get_db(); cur = conn.cursor(dictionary=True)
-        scope_clause = ''
-        scope_params: list[Any] = []
-        if role != 'superadmin' and company is not None:
-            scope_clause = ' AND {table}.idEmpresa = %s'
-            scope_params.append(company)
-        # Build queries for prestamos, ventas, compras
         out: Dict[str, Any] = {}
+
+        # Prestamos: usar fecha_prestamo, total monetario no aplica -> 0; scoping por idEmpresa directa
+        prestamos_sql = (
+            "SELECT DATE(p.fecha_prestamo) d, 0 AS total, COUNT(*) n "
+            "FROM prestamo_O p "
+            "WHERE p.fecha_prestamo >= DATE_SUB(CURDATE(), INTERVAL %s DAY)"
+        )
+        prestamos_params: list[Any] = [days]
+        if role != 'superadmin' and company is not None:
+            prestamos_sql += " AND p.idEmpresa = %s"
+            prestamos_params.append(company)
+        prestamos_sql += " GROUP BY DATE(p.fecha_prestamo) ORDER BY d ASC"
+        cur.execute(prestamos_sql, tuple(prestamos_params))
+        out['prestamos'] = cur.fetchall() or []
+
+        # Ventas, Compras, Gastos: mantener genérico con idEmpresa
         for name, table, date_col, sum_col in [
-            ('prestamos','prestamo_O','fechaPrestamo','montoRestante'),
-            ('ventas','venta_O','fechaVenta','total'),
+            ('ventas','venta_O','fechaVenta','montoTotal'),
             ('compras','compra_O','fechaCompra','montoTotal'),
             ('gastos','gasto_O','fecha','monto'),
         ]:
+            scope_clause = ''
+            scope_params: list[Any] = []
+            if role != 'superadmin' and company is not None:
+                scope_clause = f' AND {table}.idEmpresa = %s'
+                scope_params.append(company)
             cur.execute(f"""
                 SELECT DATE({date_col}) d, COALESCE(SUM({sum_col}),0) total, COUNT(*) n
                 FROM {table}
-                WHERE {date_col} >= DATE_SUB(CURDATE(), INTERVAL %s DAY){scope_clause.replace('{table}', table)}
+                WHERE {date_col} >= DATE_SUB(CURDATE(), INTERVAL %s DAY){scope_clause}
                 GROUP BY DATE({date_col})
                 ORDER BY d ASC
             """, tuple([days] + scope_params))

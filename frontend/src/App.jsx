@@ -703,14 +703,12 @@ export default function App(){
         <main className="flex-1 w-full md:ml-0 p-6 max-w-7xl mx-auto">
           {view === 'dashboard' && <Dashboard API_ANALYTICS={API_ANALYTICS} userRole={userRole} />}
           {view === 'tipos' && canViewPage('tipos') && <Tipos API={API_TYPES} types={types} loading={typesLoading} error={typesError} onEdit={handleEditTipo} onDelete={handleDeleteTipo} onRefresh={loadTypes} dark={dark} userRole={userRole} permissions={perms} />}
-          {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
-            {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter || (isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null)} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
+          {view === 'personas' && canViewPage('personas') && <Personas API={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} permissions={perms} companyFilter={personasCompanyFilter || (isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null)} onClearCompanyFilter={()=>setPersonasCompanyFilter(null)} />}
           {view === 'personas_mapa' && canViewPage('personas') && <PersonasEnMapa API_PERSONAS={API_PERSONS} userRole={userRole} />}
           {view === 'empleados' && canViewPage('personas') && <Empleados API={API_PERSONS} userRole={userRole} permissions={perms} />}
           {view === 'asistencia_reportes' && canViewPage('personas') && <AsistenciaReportes API={API_PERSONS} userRole={userRole} dark={dark} />}
           {view === 'empresas' && canViewPage('empresas') && <Empresas API={API_PERSONS} userRole={userRole} permissions={perms} onOpenPersonasForEmpresa={(id, name)=>{ setPersonasCompanyFilter({id, name}); setView('personas'); setSidebarOpen(false) }} />}
-          {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} />}
-            {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} selectedCompanyId={isSuperAdmin() ? selectedCompanyId : null} />}
+          {view === 'prestamos' && canViewPage('prestamos') && <Prestamos API={API_PRESTAMOS} API_PERSONAS={API_PERSONS} API_TYPES={API_TYPES} dark={dark} userRole={userRole} loggedUser={loggedUser} permissions={perms} selectedCompanyId={isSuperAdmin() ? selectedCompanyId : null} />}
           {view === 'caja' && canViewPage('caja') && <Caja />}
           {view === 'ventas' && canViewPage('ventas') && <Ventas API={API_VENTAS} dark={dark} userRole={userRole} companyFilter={isSuperAdmin() && selectedCompanyId ? {id: selectedCompanyId} : null} />}
           {view === 'predicciones' && canViewPage('ventas') && <Predicciones userRole={userRole} />}

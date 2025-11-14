@@ -484,14 +484,20 @@ export default function Empleados({ API, userRole = 'admin', permissions = [] })
         <div className="flex gap-2">
           <button
             onClick={()=> setShowScanner(true)}
-            className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg font-medium transition-colors"
-          >Escanear QR</button>
+            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+            className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Escanear QR de asistencia con cámara"
+          >
+            📱 Escanear QR
+          </button>
         {canCreate && (
           <button
             onClick={() => { setShowCreate(true); setEditingId(null); setSelectedPersonaId(null); loadPersonas() }}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Asignar información laboral a una persona existente"
           >
-            Nuevo Empleado
+            ➕ Nuevo Empleado
           </button>
         )}
         </div>
@@ -655,16 +661,32 @@ export default function Empleados({ API, userRole = 'admin', permissions = [] })
               <button
                 type="button"
                 onClick={resetForm}
-                className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors"
+                disabled={submitting}
+                className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
                 disabled={submitting}
-                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                {submitting ? 'Guardando...' : editingId ? 'Actualizar' : 'Asignar'}
+                {submitting ? (
+                  <>
+                    <span className="inline-block animate-spin">⏳</span>
+                    <span>Guardando...</span>
+                  </>
+                ) : editingId ? (
+                  <>
+                    <span>✅</span>
+                    <span>Actualizar</span>
+                  </>
+                ) : (
+                  <>
+                    <span>💾</span>
+                    <span>Asignar Empleado</span>
+                  </>
+                )}
               </button>
             </div>
           </form>
@@ -745,54 +767,69 @@ export default function Empleados({ API, userRole = 'admin', permissions = [] })
                         {canEdit && (
                           <button
                             onClick={() => startEdit(emp)}
-                            className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300"
+                            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+                            className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Editar información del empleado"
                           >
-                            Editar
+                            ✏️ Editar
                           </button>
                         )}
                         {canEdit && (
                           <button
                             onClick={()=> setShowFirmaForId(emp.id_persona)}
-                            className="text-purple-600 hover:text-purple-900 dark:text-purple-400 dark:hover:text-purple-300"
-                          >Firmar</button>
+                            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+                            className="text-purple-600 hover:text-purple-900 dark:text-purple-400 dark:hover:text-purple-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Capturar firma digital"
+                          >
+                            {savingFirma && showFirmaForId === emp.id_persona ? '⏳' : '✍️'} Firma
+                          </button>
                         )}
                         {canEdit && (
                           <button
                             onClick={()=> setShowFaceForId(emp.id_persona)}
-                            className="text-pink-600 hover:text-pink-900 dark:text-pink-400 dark:hover:text-pink-300"
-                          >Rostro</button>
+                            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+                            className="text-pink-600 hover:text-pink-900 dark:text-pink-400 dark:hover:text-pink-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Capturar foto del rostro"
+                          >
+                            {savingFace && showFaceForId === emp.id_persona ? '⏳' : '📷'} Rostro
+                          </button>
                         )}
                         {canEdit && (
                           <>
                             <button
                               onClick={() => { setShowQRForId(emp.id_persona); fetchQR(emp.id_persona); }}
-                              className="text-teal-600 hover:text-teal-900 dark:text-teal-400 dark:hover:text-teal-300"
+                              disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+                              className="text-teal-600 hover:text-teal-900 dark:text-teal-400 dark:hover:text-teal-300 disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Generar QR para asistencia"
                             >
-                              QR
+                              {qrLoading && showQRForId === emp.id_persona ? '⏳' : '📱'} QR
                             </button>
                             <button
-                              disabled={geoBusy}
+                              disabled={geoBusy || submitting || qrLoading || savingFirma || savingFace}
                               onClick={() => handleAsistencia(emp.id_persona, 'entrada')}
-                              className="text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300"
+                              className="text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Registrar entrada de asistencia"
                             >
-                              Entrada
+                              {geoBusy ? '⏳' : '🟢'} Entrada
                             </button>
                             <button
-                              disabled={geoBusy}
+                              disabled={geoBusy || submitting || qrLoading || savingFirma || savingFace}
                               onClick={() => handleAsistencia(emp.id_persona, 'salida')}
-                              className="text-yellow-600 hover:text-yellow-900 dark:text-yellow-400 dark:hover:text-yellow-300"
+                              className="text-yellow-600 hover:text-yellow-900 dark:text-yellow-400 dark:hover:text-yellow-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Registrar salida de asistencia"
                             >
-                              Salida
+                              {geoBusy ? '⏳' : '🟡'} Salida
                             </button>
                           </>
                         )}
                         {canDelete && (
                           <button
                             onClick={() => deleteEmpleado(emp.id_persona)}
-                            className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                            disabled={submitting || geoBusy || qrLoading || savingFirma || savingFace}
+                            className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Desactivar empleado (no elimina la persona)"
                           >
-                            Desactivar
+                            ❌ Desactivar
                           </button>
                         )}
                       </div>

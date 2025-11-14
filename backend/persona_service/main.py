@@ -1605,16 +1605,17 @@ def asistencia_registros(desde: Optional[str] = None, hasta: Optional[str] = Non
         # Query base para obtener registros con información del empleado
         sql = '''
             SELECT 
-                a.id_asistencia,
+                a.id AS id_asistencia,
                 a.id_persona,
                 a.tipo,
                 a.timestamp,
                 a.geo_lat,
                 a.geo_lng,
                 a.nota,
-                p.nombre,
-                p.apellido_paterno,
-                p.apellido_materno
+                p.nombres_persona,
+                p.apellido_paternoPersona,
+                p.apellido_maternoPer,
+                p.id_empresa
             FROM asistencia_O a
             LEFT JOIN persona_O p ON a.id_persona = p.id_persona
         '''
@@ -1629,6 +1630,11 @@ def asistencia_registros(desde: Optional[str] = None, hasta: Optional[str] = Non
         if hasta:
             where.append('a.timestamp <= %s'); params.append(hasta)
         
+        # Scoping multi-empresa: restringir por empresa del usuario salvo superadmin
+        user_company = get_company_id_from_request(request)
+        if role != 'superadmin' and user_company is not None:
+            where.append('p.id_empresa = %s'); params.append(user_company)
+
         if where:
             sql += ' WHERE ' + ' AND '.join(where)
         
@@ -1640,7 +1646,7 @@ def asistencia_registros(desde: Optional[str] = None, hasta: Optional[str] = Non
         # Formatear resultados
         registros = []
         for r in rows:
-            nombre_completo = f"{r['nombre'] or ''} {r['apellido_paterno'] or ''} {r['apellido_materno'] or ''}".strip()
+            nombre_completo = f"{r.get('nombres_persona') or ''} {r.get('apellido_paternoPersona') or ''} {r.get('apellido_maternoPer') or ''}".strip()
             registros.append({
                 'id_asistencia': r['id_asistencia'],
                 'id_persona': r['id_persona'],

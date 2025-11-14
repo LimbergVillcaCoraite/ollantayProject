@@ -52,13 +52,16 @@ JWT_SECRET = os.getenv('JWT_SECRET', 'dev-secret-change-me')
 JWT_ALG = 'HS256'
 
 def get_company_id_from_request(request: Request) -> Optional[int]:
-    """Extrae idEmpresa del token JWT"""
+    """Extrae company_id/idEmpresa del token JWT con tolerancia"""
     try:
         token = request.cookies.get('ollantay_token')
         if not token:
             return None
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        return payload.get('idEmpresa')
+        cid = payload.get('company_id')
+        if cid is None:
+            cid = payload.get('idEmpresa')
+        return cid
     except Exception:
         return None
 

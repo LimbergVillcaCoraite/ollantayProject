@@ -39,12 +39,12 @@ export default function Dashboard({ API_ANALYTICS, userRole }){
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card title="Prestamos activos" value={stats.prestamos_activos} color="bg-blue-50" />
         <Card title="En mora" value={stats.prestamos_mora} color="bg-rose-50" />
-        <Card title="Monto vigente" value={`S/ ${stats.monto_prestamos_vigentes.toFixed(2)}`} color="bg-amber-50" />
+        <Card title="Monto vigente" value={`Bs ${stats.monto_prestamos_vigentes.toFixed(2)}`} color="bg-amber-50" />
         <Card title="Asistencias hoy" value={stats.asistencias_hoy} color="bg-emerald-50" />
         <Card title="Empleados activos" value={stats.empleados_activos} color="bg-purple-50" />
-        <Card title="Ventas hoy" value={`S/ ${stats.ventas_hoy.toFixed(2)}`} color="bg-green-50" />
-        <Card title="Compras hoy" value={`S/ ${stats.compras_hoy.toFixed(2)}`} color="bg-sky-50" />
-        <Card title="Gastos hoy" value={`S/ ${stats.gastos_hoy.toFixed(2)}`} color="bg-gray-100" />
+        <Card title="Ventas hoy" value={`Bs ${stats.ventas_hoy.toFixed(2)}`} color="bg-green-50" />
+        <Card title="Compras hoy" value={`Bs ${stats.compras_hoy.toFixed(2)}`} color="bg-sky-50" />
+        <Card title="Gastos hoy" value={`Bs ${stats.gastos_hoy.toFixed(2)}`} color="bg-gray-100" />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Trend title="Ventas 30d" data={trends?.ventas||[]} color="#10b981" />

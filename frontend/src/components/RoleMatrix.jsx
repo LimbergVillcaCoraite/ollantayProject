@@ -20,10 +20,11 @@ export default function RoleMatrix({ API, userRole }) {
   const loadCompanies = async () => {
     if(!isSuperAdmin) return
     try {
-      const res = await fetch(`${API}/empresas?limit=500`, { credentials: 'include' })
+      // Empresas viven en prestamo_service; para superadmin listamos todas
+      const res = await fetch(`${window.location.origin}/api/prestamos/empresas`, { credentials: 'include' })
       if(!res.ok) return
       const data = await res.json()
-      setCompanies(data?.items || [])
+      setCompanies(data?.items || data || [])
     } catch(e) { console.error(e) }
   }
 
