@@ -44,7 +44,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
   const [fIdProducto, setFIdProducto] = useState('');
   const [periodo, setPeriodo] = useState('');
 
-  // Cat�logos
+  // Catálogos
   const [tiposVenta, setTiposVenta] = useState([]);
   const [tiposPago, setTiposPago] = useState([]);
   // Bases de API derivadas
@@ -767,7 +767,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
       let loteInfo = null;
       
       if (loteFEFO) {
-        // Precio del lote seg�n tipo de cliente
+        // Precio del lote según tipo de cliente
         precioPaquete = esMinorista ? 
           (loteFEFO.precio_minorista || producto.precio_minorista || 0) : 
           (loteFEFO.precio_mayorista || producto.precio_mayorista || 0);
@@ -1111,9 +1111,9 @@ export default function Ventas({ API, userRole, companyFilter }) {
         alert('Las unidades deben ser mayor a 0');
         return;
       }
-      cantidadCajas = unidades / uxp; // conversi�n a cajas
+      cantidadCajas = unidades / uxp; // conversión a cajas
       // El precio unitario por unidad es: precio_paquete / unidades_por_paquete
-      // Pero el backend espera precio_unitario que es el precio por caja, as� que usamos precio_paquete
+      // Pero el backend espera precio_unitario que es el precio por caja, así que usamos precio_paquete
       precioUnitarioFinal = precioPaquete;
     } else {
       const cant = parseFloat(nuevoDetalle.cantidad_caja);
@@ -1368,14 +1368,14 @@ export default function Ventas({ API, userRole, companyFilter }) {
           <h3 className="text-xl font-bold mb-4 dark:text-white">Nueva Venta</h3>
           {(errTiposVenta || errTiposPago || errClientes || errProductos) && (
             <div className="mb-3 p-3 rounded border border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200 text-sm">
-              <div className="font-semibold mb-1">Atenci�n: algunos cat�logos no se cargaron</div>
+              <div className="font-semibold mb-1">Atención: algunos catálogos no se cargaron</div>
               <ul className="list-disc ml-5">
                 {errTiposVenta && <li>{errTiposVenta}</li>}
                 {errTiposPago && <li>{errTiposPago}</li>}
                 {errClientes && <li>{errClientes}</li>}
                 {errProductos && <li>{errProductos}</li>}
               </ul>
-              <div className="mt-1">Reintenta recargando la p�gina; si persiste, verifica tu sesi�n o conexi�n.</div>
+              <div className="mt-1">Reintenta recargando la página; si persiste, verifica tu sesión o conexión.</div>
             </div>
           )}
           
@@ -1500,7 +1500,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
             </div>
           </div>
           
-          {/* Indicador de pago para cr�dito */}
+          {/* Indicador de pago para crédito */}
           {formVenta.idTipoPago === '1' && (
             <div className="mb-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded">
               <p className="text-sm dark:text-yellow-200">
@@ -1602,7 +1602,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
                         className="w-full border dark:border-gray-600 rounded px-2 py-1 dark:bg-gray-700 dark:text-white" />
                     </div>
                     <div className="col-span-2 text-xs text-gray-500 dark:text-gray-400">
-                      Se convertir� a cajas: cajas = unidades / unid/paquete
+                      Se convierte a cajas: cajas = unidades / unid/paquete
                     </div>
                   </div>
                 )}
@@ -2079,14 +2079,14 @@ export default function Ventas({ API, userRole, companyFilter }) {
           </div>
         )}
 
-          {/* Secci�n de Entregas (Chofer) */}
+          {/* Sección de Entregas (Chofer) */}
       {showEntregas && (
         <div className="mb-4 p-6 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h3 className="text-xl font-bold dark:text-white">Entregas por Ruta</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                🚚 Los productos enviados est�n "en ruta" hasta que el cami�n retorne. El encargado solo puede vender de su stock en ruta.
+                🚚 Los productos enviados están "en ruta" hasta que el camión retorne. El encargado solo puede vender de su stock en ruta.
               </p>
             </div>
             <button
@@ -2441,14 +2441,14 @@ export default function Ventas({ API, userRole, companyFilter }) {
         </div>
       )}
 
-      {/* Modal para finalizar entrega (retorno del cami�n) */}
+      {/* Modal para finalizar entrega (retorno del camión) */}
       {finalizandoEntrega && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 dark:border-gray-700">
               <h3 className="text-xl font-bold dark:text-white">🏁 Finalizar Retorno de Entrega</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Ingrese las cantidades devueltas. Las cantidades vendidas se calcular�n autom�ticamente.
+                Ingrese las cantidades devueltas. Las cantidades vendidas se calcularán automáticamente.
               </p>
             </div>
             
@@ -2563,7 +2563,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
 
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
                 <p className="text-sm text-blue-900 dark:text-blue-200">
-                  <strong>💡 Importante:</strong> El efectivo recaudado se registrar� autom�ticamente en la caja cuando confirme la finalizaci�n.
+                  <strong>💡 Importante:</strong> El efectivo recaudado se registrará automáticamente en la caja cuando confirme la finalización.
                 </p>
               </div>
             </div>
@@ -2692,10 +2692,10 @@ export default function Ventas({ API, userRole, companyFilter }) {
         </div>
       )}
 
-      {/* Resumen y Gr�ficos */}
+      {/* Resumen y Gráficos */}
       {showSummary && !loading && !error && (
         <div className="mb-6 space-y-4">
-          {/* Per�odo r�pido */}
+          {/* Período rápido */}
           <div className="flex flex-wrap gap-2 mb-4">
             <button
               onClick={() => handlePeriodoChange('hoy')}
@@ -2729,7 +2729,7 @@ export default function Ventas({ API, userRole, companyFilter }) {
             </button>
           </div>
 
-          {/* Estad�sticas */}
+          {/* Estadísticas */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg shadow p-4 text-white">
               <div className="text-sm opacity-90">Total Ventas</div>
@@ -2749,12 +2749,12 @@ export default function Ventas({ API, userRole, companyFilter }) {
             </div>
           </div>
 
-          {/* Gr�ficos */}
+          {/* Gráficos */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Ventas por d�a */}
+            {/* Ventas por día */}
             {dataVentasPorDia.length > 0 && (
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold mb-3 dark:text-white">Ventas por D�a</h3>
+                <h3 className="text-sm font-semibold mb-3 dark:text-white">Ventas por Día</h3>
                 <ResponsiveContainer width="100%" height={isMobile ? 200 : 250}>
                   <BarChart data={dataVentasPorDia}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
