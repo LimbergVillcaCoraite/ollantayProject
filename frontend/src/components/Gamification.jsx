@@ -14,27 +14,25 @@ const Gamification = ({ dark }) => {
   const loadGamificationData = async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('token');
-      const userId = JSON.parse(atob(token.split('.')[1])).user_id;
+      const base = `${window.location.protocol}//${window.location.host}`;
+      const meRes = await fetch(`${base}/api/personas/auth/me`, { credentials: 'include' });
+      if (!meRes.ok) throw new Error('No autenticado');
+      const me = await meRes.json();
+      const userId = me?.sub || me?.id_persona;
+      if (!userId) throw new Error('ID de usuario no disponible');
 
       // Cargar stats del usuario
-      const statsRes = await fetch(`http://localhost:8016/api/gamification/user-stats/${userId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const statsRes = await fetch(`${base}/api/gamification/user-stats/${userId}`, { credentials: 'include' });
       const statsData = await statsRes.json();
       setUserStats(statsData);
 
       // Cargar rankings
-      const rankRes = await fetch('http://localhost:8016/api/gamification/rankings?limit=50', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const rankRes = await fetch(`${base}/api/gamification/rankings?limit=50`, { credentials: 'include' });
       const rankData = await rankRes.json();
       setRankings(rankData.rankings || []);
 
       // Cargar todos los badges
-      const badgesRes = await fetch('http://localhost:8016/api/gamification/badges', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const badgesRes = await fetch(`${base}/api/gamification/badges`, { credentials: 'include' });
       const badgesData = await badgesRes.json();
       setAllBadges(badgesData.badges || []);
 

@@ -69,12 +69,16 @@ export function usePermissions(loggedUser) {
    * @returns {boolean}
    */
   const canViewPage = (viewName) => {
+    // Superadmin tiene acceso a TODO sin restricciones
+    if (userRole === 'superadmin') return true
+    
     const viewPermissions = {
       'dashboard': has('analytics', 'view'),
       'tipos': has('tipos', 'view'),
       'personas': has('personas', 'view'),
       'personas_mapa': has('personas', 'view'), // Same permission as personas view
       'empleados': has('personas', 'view'), // Empleados require personas permission
+      'asistencia_reportes': has('personas', 'view'), // Asistencia reportes require personas permission
       'empresas': has('empresas', 'view'),
       'prestamos': has('prestamos', 'view'),
       'productos': has('productos', 'view'),
@@ -90,6 +94,10 @@ export function usePermissions(loggedUser) {
       'cuentas': has('cuentas', 'view'),
       'usuarios': has('roles', 'manage'),
       'roles': has('roles', 'manage'),
+      'roles_matrix': has('roles', 'manage'),
+      'gamification': true,
+      'chat': true,
+      'cameras': has('cameras', 'view'),
       'superadmin': isSuperAdmin(),
     }
 

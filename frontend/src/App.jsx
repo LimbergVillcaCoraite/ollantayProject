@@ -33,6 +33,7 @@ import MenuSection from './components/MenuSection'
 import Gamification from './components/Gamification'
 import OfflineStatus from './components/OfflineStatus'
 import AsistenciaReportes from './components/AsistenciaReportes'
+import CameraMonitor from './components/CameraMonitor'
 
 export default function App(){
   const [view, setView] = useState('dashboard')
@@ -612,6 +613,12 @@ export default function App(){
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                   Gamificación
                 </button>
+                {canViewPage('cameras') && (
+                  <button onClick={()=>{setView('cameras'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='cameras' ? 'bg-blue-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    Cámaras
+                  </button>
+                )}
                 {canViewPage('superadmin') && (
                   <button onClick={()=>{setView('superadmin'); setSidebarOpen(false)}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${view==='superadmin' ? 'bg-purple-500 text-white font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
@@ -726,6 +733,7 @@ export default function App(){
           {view === 'superadmin' && canViewPage('superadmin') && <SuperAdmin API={API_PERSONS} userRole={userRole} />}
           {view === 'chat' && canViewPage('chat') && <ChatPanel API_BASE={`${proto}//${host}/api/chat`} userRole={userRole} />}
           {view === 'gamification' && <Gamification dark={dark} />}
+          {view === 'cameras' && <CameraMonitor loggedUser={loggedUser} />}
           {view === 'admin' && has('roles','manage') && (
             <div className="space-y-6">
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">

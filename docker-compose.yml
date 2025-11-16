@@ -66,6 +66,7 @@ services:
       DATABASE_NAME: SystemaOllantay
       ALLOW_ORIGIN_REGEX: 'https?://.*'
       UPLOAD_DIR: /app/uploads
+      JWT_SECRET: dev-secret-change-me
     volumes:
       - ./backend/persona_service:/app
       - ./backend/persona_service/uploads:/app/uploads
@@ -378,7 +379,25 @@ services:
       DB_USER: root
       DB_PASSWORD: P4assw@rd
       DB_NAME: SystemaOllantay
-      JWT_SECRET: supersecretkey123
+      JWT_SECRET: dev-secret-change-me
+
+  camera_service:
+    build:
+      context: ./backend/camera_service
+      dockerfile: Dockerfile
+    container_name: camera_service
+    restart: unless-stopped
+    depends_on:
+      - mysql8032
+    ports:
+      - "8017:8017"
+    environment:
+      DB_HOST: mysql8032
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: P4assw@rd
+      DB_NAME: SystemaOllantay
+      JWT_SECRET: dev-secret-change-me
 
 volumes:
   mysql8032-data:

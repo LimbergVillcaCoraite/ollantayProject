@@ -289,7 +289,7 @@ def create_notification(payload: NotificationIn, x_user_role: str = Header(None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get('/notifications/unread/count')
+@app.get('/unread/count')
 def unread_count(x_user_role: str = Header(None), request: Request = None):
     """Retorna conteo de notificaciones no leídas."""
     try:

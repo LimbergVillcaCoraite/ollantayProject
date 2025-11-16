@@ -34,9 +34,16 @@ export default function Notifications({ API, userRole = 'admin' }) {
       if (res.ok) {
         const data = await res.json()
         setUnreadCount(data.count || 0)
+      } else if (res.status === 404) {
+        // Endpoint no implementado, contar localmente desde notificaciones
+        const unread = notifications.filter(n => !n.leida).length
+        setUnreadCount(unread)
       }
     } catch (err) {
       console.error('Error loading unread count:', err)
+      // Fallback: contar desde notificaciones cargadas
+      const unread = notifications.filter(n => !n.leida).length
+      setUnreadCount(unread)
     }
   }
 

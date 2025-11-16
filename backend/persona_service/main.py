@@ -124,6 +124,7 @@ class UserUpdateIn(BaseModel):
     password: Optional[str] = None
     id_persona: Optional[int] = None
     id_role: Optional[int] = None
+    id_empresa: Optional[int] = None
     estado: Optional[int] = Field(None, ge=0, le=1)  # 0=inactivo, 1=activo
 
 class SuperAdminUserCreateIn(BaseModel):
@@ -697,7 +698,7 @@ async def login(request: Request):
         cursor = conn.cursor(dictionary=True)
         cursor.execute('''
             SELECT u.id_user, u.username, u.password_hash, u.id_persona, u.profile_photo,
-                   u.estado, r.name AS role_name, p.id_empresa, p.fotoPersona
+                   u.estado, u.id_empresa, r.name AS role_name, p.fotoPersona
             FROM user_O u
             JOIN role_O r   ON u.id_role = r.idrole
             LEFT JOIN persona_O p ON u.id_persona = p.id_persona
@@ -772,10 +773,9 @@ def regenerate_token(request: Request):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute('''
-            SELECT u.id_user, u.username, r.name AS role_name, u.id_persona, p.id_empresa
+            SELECT u.id_user, u.username, r.name AS role_name, u.id_persona, u.id_empresa
             FROM user_O u
             JOIN role_O r ON u.id_role = r.idrole
-            LEFT JOIN persona_O p ON u.id_persona = p.id_persona
             WHERE u.id_user = %s
         ''', (user_id,))
         row = cursor.fetchone()
@@ -830,6 +830,13 @@ def register(payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), r
         # Use provided id_persona and id_role
         id_persona = payload.id_persona
         id_role = payload.id_role
+        # Determine company (admins must set explicitly or inherit from JWT)
+        id_empresa = payload.id_empresa
+        if id_empresa is None:
+            # Try from JWT for admin/editor creating within their company
+            cid = get_company_id_from_request(request)
+            if cid is not None:
+                id_empresa = cid
         
         # If no role specified, default to viewer
         if not id_role:
@@ -839,13 +846,17 @@ def register(payload: UserUpdateIn, x_user_role: Optional[str] = Header(None), r
 
         pw_hash = hash_password(payload.password)
         curu = conn.cursor()
-        curu.execute('INSERT INTO user_O (username, password_hash, id_persona, id_role) VALUES (%s,%s,%s,%s)', (payload.username, pw_hash, id_persona, id_role))
+        # Insert with id_empresa when available
+        if id_empresa is not None:
+            curu.execute('INSERT INTO user_O (username, password_hash, id_persona, id_role, id_empresa) VALUES (%s,%s,%s,%s,%s)', (payload.username, pw_hash, id_persona, id_role, id_empresa))
+        else:
+            curu.execute('INSERT INTO user_O (username, password_hash, id_persona, id_role) VALUES (%s,%s,%s,%s)', (payload.username, pw_hash, id_persona, id_role))
         conn.commit()
         new_user_id = curu.lastrowid
         curu.close()
         cursor.close()
         conn.close()
-        return {'username': payload.username, 'id_user': new_user_id, 'id_persona': id_persona, 'id_role': id_role}
+        return {'username': payload.username, 'id_user': new_user_id, 'id_persona': id_persona, 'id_role': id_role, 'id_empresa': id_empresa}
     except HTTPException:
         raise
     except Exception as e:
@@ -1081,6 +1092,22 @@ def update_empresa(id: int, payload: EmpresaIn, x_user_role: Optional[str] = Hea
         conn.close()
         return {'id_empresa': id, 'nombre_empresa': nombre, 'direccion_empresa': direccion, 'estado_empresa': int(bool(payload.estado_empresa))}
     except HTTPException:
+        # Optional: if request includes X-Assign-Admin-User header with a user id, assign that user to the new company
+        try:
+            admin_to_assign = request.headers.get('x-assign-admin-user') if request is not None else None
+            if admin_to_assign:
+                try:
+                    admin_to_assign = int(admin_to_assign)
+                except Exception:
+                    admin_to_assign = None
+            if admin_to_assign:
+                curA = conn.cursor()
+                curA.execute('UPDATE user_O SET id_empresa=%s WHERE id_user=%s', (new_id, admin_to_assign))
+                conn.commit()
+                curA.close()
+        except Exception as assign_err:
+            print(f"⚠️ Could not auto-assign admin user to empresa {new_id}: {assign_err}")
+
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1223,6 +1250,9 @@ def get_company_id_from_request(request: Request) -> Optional[int]:
         return int(cid) if cid is not None else None
     except Exception:
         return None
+
+
+ 
 
 
 def require_admin(x_user_role: Optional[str] = Header(None), request: Request = None):
@@ -3403,3 +3433,41 @@ def verificar_face(payload: FaceVerifyIn, x_user_role: Optional[str] = Header(No
         return {'match': match, 'hash_input': sha_in, 'hash_stored': row['hash_sha256']}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# ============== Assign user to company ==============
+@app.post('/empresas/{id}/assign-user', status_code=204)
+def assign_user_to_empresa(id: int, user_id: int = Body(..., embed=True), x_user_role: Optional[str] = Header(None), request: Request = None):
+    """Assign an existing user to a company by setting user_O.id_empresa.
+    - Only superadmin can assign any user to any company.
+    - Admin/editor can only assign users to their own company (id must equal JWT company).
+    """
+    role = get_role(x_user_role, request)
+    if role not in ('admin','superadmin'):
+        raise HTTPException(status_code=403, detail='Permission denied')
+    try:
+        conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+        # Validate empresa exists
+        cur.execute('SELECT id_empresa FROM empresa_O WHERE id_empresa=%s', (id,))
+        if not cur.fetchone():
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Empresa no encontrada')
+        # RBAC: admin can only assign within own company
+        if role == 'admin':
+            jwt_company = get_company_id_from_request(request)
+            if jwt_company is None or int(jwt_company) != int(id):
+                cur.close(); conn.close();
+                raise HTTPException(status_code=403, detail='Solo puede asignar usuarios a su propia empresa')
+        # Validate user exists
+        cur.execute('SELECT id_user FROM user_O WHERE id_user=%s', (user_id,))
+        if not cur.fetchone():
+            cur.close(); conn.close();
+            raise HTTPException(status_code=404, detail='Usuario no encontrado')
+        # Assign
+        cu = conn.cursor();
+        cu.execute('UPDATE user_O SET id_empresa=%s WHERE id_user=%s', (id, user_id))
+        conn.commit(); cu.close(); cur.close(); conn.close();
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

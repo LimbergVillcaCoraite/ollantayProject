@@ -39,7 +39,7 @@ except mysql.connector.Error as err:
     print(f"❌ Error creating connection pool: {err}")
     connection_pool = None
 
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey123")
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 
 def get_db():
     if connection_pool is None:
@@ -54,16 +54,34 @@ def get_db():
         if 'conn' in locals():
             conn.close()
 
-def verify_token(authorization: Optional[str] = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
-    try:
+def verify_token(request: Request, authorization: Optional[str] = Header(None)):
+    token = None
+    if authorization:
         token = authorization.replace("Bearer ", "")
+        print(f"🔐 Token from Authorization header: {token[:20]}..." if token else "No auth header")
+    # Fallback: accept JWT from httpOnly cookie set by persona_service
+    if not token:
+        try:
+            cookie_token = request.cookies.get('ollantay_token')
+            if cookie_token:
+                token = cookie_token
+                print(f"🍪 Token from cookie: {token[:20]}...")
+            else:
+                print(f"⚠️ No cookie 'ollantay_token' found. Available cookies: {list(request.cookies.keys())}")
+        except Exception as e:
+            print(f"❌ Error reading cookie: {e}")
+            token = None
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        print(f"✅ Token decoded successfully: user={payload.get('sub')}, role={payload.get('role')}")
         return payload
     except jwt.ExpiredSignatureError:
+        print("⏰ Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as e:
+        print(f"❌ Invalid token: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # =============================

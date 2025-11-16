@@ -12,7 +12,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
   const [loadingEmpresas, setLoadingEmpresas] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [editingId, setEditingId] = useState(null)
-  const [form, setForm] = useState({ username: '', password: '', id_persona: '', id_role: '', estado: 1 })
+  const [form, setForm] = useState({ username: '', password: '', id_persona: '', id_role: '', id_empresa: '', estado: 1 })
   const [submitting, setSubmitting] = useState(false)
   const [filterEmpresa, setFilterEmpresa] = useState('')
   const [filterEstado, setFilterEstado] = useState('') // '' todos, '1' activos, '0' inactivos
@@ -94,7 +94,8 @@ export default function Usuarios({ API, userRole = 'admin' }) {
       })
       if (res.ok) {
         const data = await res.json()
-        setEmpresas(Array.isArray(data) ? data : [])
+        const list = Array.isArray(data) ? data : (data.items || [])
+        setEmpresas(list)
       }
     } catch (err) {
       console.error('Error cargando empresas:', err)
@@ -178,6 +179,9 @@ export default function Usuarios({ API, userRole = 'admin' }) {
         id_persona: form.id_persona ? Number(form.id_persona) : null,
         id_role: form.id_role ? Number(form.id_role) : null
       }
+      if (userRole === 'superadmin' && form.id_empresa) {
+        payload.id_empresa = Number(form.id_empresa)
+      }
       if (userRole === 'admin' || userRole === 'superadmin') {
         payload.estado = form.estado !== undefined ? Number(form.estado) : 1
       }
@@ -211,7 +215,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
       }
 
       // Reset form and reload
-  setForm({ username: '', password: '', id_persona: '', id_role: '', estado: 1 })
+  setForm({ username: '', password: '', id_persona: '', id_role: '', id_empresa: '', estado: 1 })
       setEditingId(null)
       setShowCreate(false)
       loadUsers()
@@ -229,6 +233,7 @@ export default function Usuarios({ API, userRole = 'admin' }) {
       password: '',
       id_persona: user.id_persona || '',
   id_role: user.id_role || '',
+  id_empresa: user.company_id || user.id_empresa || '',
   estado: user.estado !== undefined ? user.estado : 1
     })
     setShowCreate(true)
@@ -545,6 +550,28 @@ export default function Usuarios({ API, userRole = 'admin' }) {
           
           <form onSubmit={handleSubmit} className="p-6">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Campo Empresa (solo superadmin) */}
+              {userRole === 'superadmin' && (
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <rect x="3" y="7" width="18" height="13" rx="2"/>
+                      <path d="M16 3v4M8 3v4"/>
+                    </svg>
+                    Empresa (para asignación)
+                  </label>
+                  <select
+                    value={form.id_empresa}
+                    onChange={e => setForm({ ...form, id_empresa: e.target.value })}
+                    className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:border-transparent dark:bg-gray-700 dark:text-gray-100 transition-all duration-200 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
+                  >
+                    <option value="">(Sin asignar)</option>
+                    {empresas.map(empresa => (
+                      <option key={empresa.id_empresa} value={empresa.id_empresa}>{empresa.nombre_empresa}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {/* Campo Usuario */}
               <div className="space-y-2">
                 <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300">

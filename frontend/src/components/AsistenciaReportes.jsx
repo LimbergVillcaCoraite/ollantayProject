@@ -7,6 +7,8 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
   const [estadisticas, setEstadisticas] = useState([]);
   const [detalles, setDetalles] = useState([]);
   const [loadingDetalles, setLoadingDetalles] = useState(false);
+  const [registrosPorDia, setRegistrosPorDia] = useState([]);
+  const [loadingPorDia, setLoadingPorDia] = useState(false);
   
   // Filtros
   const [desde, setDesde] = useState(() => {
@@ -19,10 +21,11 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
   
   // Datos adicionales
   const [empleados, setEmpleados] = useState([]);
-  const [view, setView] = useState('estadisticas'); // 'estadisticas' | 'detalles'
+  const [view, setView] = useState('pordia'); // 'pordia' | 'estadisticas' | 'detalles'
 
   useEffect(() => {
     loadEmpleados();
+    loadRegistrosPorDia(); // Auto-load por dia on mount
   }, [API, userRole]);
 
   const loadEmpleados = async () => {
@@ -75,6 +78,70 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
     }
   };
 
+  const loadRegistrosPorDia = async () => {
+    setLoadingPorDia(true);
+    try {
+      const params = new URLSearchParams();
+      if (desde) params.append('desde', desde + ' 00:00:00');
+      if (hasta) params.append('hasta', hasta + ' 23:59:59');
+      if (idPersonaFiltro) params.append('id_persona', idPersonaFiltro);
+
+      const headers = {};
+      if (userRole) headers['X-User-Role'] = userRole;
+
+      const res = await fetch(`${API}/asistencia/registros?${params.toString()}`, {
+        method: 'GET',
+        headers,
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const registros = data.items || [];
+      
+      // Agrupar por persona y día
+      const agrupado = {};
+      registros.forEach(reg => {
+        const fecha = reg.timestamp ? new Date(reg.timestamp).toLocaleDateString('es-ES') : 'Sin fecha';
+        const key = `${reg.id_persona}_${fecha}`;
+        
+        if (!agrupado[key]) {
+          agrupado[key] = {
+            id_persona: reg.id_persona,
+            nombre_empleado: reg.nombre_empleado,
+            fecha: fecha,
+            entrada: null,
+            salida: null
+          };
+        }
+        
+        if (reg.tipo === 'entrada') {
+          if (!agrupado[key].entrada || new Date(reg.timestamp) > new Date(agrupado[key].entrada.timestamp)) {
+            agrupado[key].entrada = reg;
+          }
+        } else {
+          if (!agrupado[key].salida || new Date(reg.timestamp) > new Date(agrupado[key].salida.timestamp)) {
+            agrupado[key].salida = reg;
+          }
+        }
+      });
+      
+      setRegistrosPorDia(Object.values(agrupado).sort((a, b) => {
+        const dateA = a.entrada?.timestamp || a.salida?.timestamp;
+        const dateB = b.entrada?.timestamp || b.salida?.timestamp;
+        return new Date(dateB) - new Date(dateA);
+      }));
+    } catch (err) {
+      console.error('Error loading registros por dia:', err);
+      toast.push('Error cargando registros por día: ' + err.message, 'error');
+    } finally {
+      setLoadingPorDia(false);
+    }
+  };
+
   const loadDetalles = async () => {
     setLoadingDetalles(true);
     try {
@@ -110,14 +177,41 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
 
   const exportarExcel = () => {
     // Implementación básica de export a CSV
-    const data = view === 'estadisticas' ? estadisticas : detalles;
-    if (data.length === 0) {
-      toast.push('No hay datos para exportar', 'warning');
-      return;
-    }
-
-    let csv = '';
-    if (view === 'estadisticas') {
+    let data, csv = '';
+    
+    if (view === 'pordia') {
+      data = registrosPorDia;
+      if (data.length === 0) {
+        toast.push('No hay datos para exportar', 'warning');
+        return;
+      }
+      csv = 'Fecha,Empleado,Hora Entrada,Ubicación Entrada,Hora Salida,Ubicación Salida,Horas Trabajadas\n';
+      data.forEach(item => {
+        const horaEntrada = item.entrada ? new Date(item.entrada.timestamp).toLocaleTimeString('es-ES') : '-';
+        const horaSalida = item.salida ? new Date(item.salida.timestamp).toLocaleTimeString('es-ES') : '-';
+        const latEntrada = item.entrada?.geo_lat || '';
+        const lngEntrada = item.entrada?.geo_lng || '';
+        const latSalida = item.salida?.geo_lat || '';
+        const lngSalida = item.salida?.geo_lng || '';
+        const ubicEntrada = latEntrada && lngEntrada ? `${latEntrada},${lngEntrada}` : '';
+        const ubicSalida = latSalida && lngSalida ? `${latSalida},${lngSalida}` : '';
+        
+        let horas = '-';
+        if (item.entrada?.timestamp && item.salida?.timestamp) {
+          const diff = new Date(item.salida.timestamp) - new Date(item.entrada.timestamp);
+          const h = Math.floor(diff / 3600000);
+          const m = Math.floor((diff % 3600000) / 60000);
+          horas = `${h}h ${m}m`;
+        }
+        
+        csv += `${item.fecha},"${item.nombre_empleado}",${horaEntrada},"${ubicEntrada}",${horaSalida},"${ubicSalida}",${horas}\n`;
+      });
+    } else if (view === 'estadisticas') {
+      data = estadisticas;
+      if (data.length === 0) {
+        toast.push('No hay datos para exportar', 'warning');
+        return;
+      }
       csv = 'ID Persona,Nombre,Entradas,Salidas\n';
       data.forEach(item => {
         const emp = empleados.find(e => e.id_persona === item.id_persona);
@@ -125,6 +219,11 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
         csv += `${item.id_persona},"${nombre}",${item.entradas},${item.salidas}\n`;
       });
     } else {
+      data = detalles;
+      if (data.length === 0) {
+        toast.push('No hay datos para exportar', 'warning');
+        return;
+      }
       csv = 'ID,ID Persona,Nombre,Tipo,Fecha/Hora,Latitud,Longitud,Nota\n';
       data.forEach(item => {
         const nombre = item.nombre_empleado || getEmpleadoNombre(item.id_persona);
@@ -208,11 +307,15 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
             </div>
             <div className="flex items-end gap-2">
               <button
-                onClick={() => view === 'estadisticas' ? loadEstadisticas() : loadDetalles()}
-                disabled={loading || loadingDetalles}
+                onClick={() => {
+                  if (view === 'pordia') loadRegistrosPorDia();
+                  else if (view === 'estadisticas') loadEstadisticas();
+                  else loadDetalles();
+                }}
+                disabled={loading || loadingDetalles || loadingPorDia}
                 className="flex-1 px-4 py-2 bg-gradient-to-r from-teal-500 to-teal-600 hover:from-teal-600 hover:to-teal-700 text-white rounded-lg font-medium transition-all disabled:opacity-50"
               >
-                {(loading || loadingDetalles) ? 'Cargando...' : 'Consultar'}
+                {(loading || loadingDetalles || loadingPorDia) ? 'Cargando...' : 'Consultar'}
               </button>
             </div>
           </div>
@@ -220,6 +323,16 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
 
         {/* Tabs */}
         <div className="flex gap-4 mb-6">
+          <button
+            onClick={() => setView('pordia')}
+            className={`px-6 py-3 rounded-xl font-semibold transition-all ${
+              view === 'pordia'
+                ? 'bg-gradient-to-r from-teal-500 to-teal-600 text-white shadow-lg'
+                : dark ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-white text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            📅 Por Día
+          </button>
           <button
             onClick={() => setView('estadisticas')}
             className={`px-6 py-3 rounded-xl font-semibold transition-all ${
@@ -243,6 +356,141 @@ const AsistenciaReportes = ({ API, userRole, dark }) => {
         </div>
 
         {/* Contenido */}
+        {view === 'pordia' && (
+          <div className={`${dark ? 'bg-gray-800' : 'bg-white'} rounded-2xl shadow-xl p-6`}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold">Asistencia por Día</h2>
+              {registrosPorDia.length > 0 && (
+                <button
+                  onClick={exportarExcel}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                >
+                  📥 Exportar Excel
+                </button>
+              )}
+            </div>
+
+            {loadingPorDia ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-teal-500 mx-auto"></div>
+                <p className="mt-4 text-gray-500">Cargando registros por día...</p>
+              </div>
+            ) : registrosPorDia.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                No se encontraron registros para el período seleccionado
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className={`${dark ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider rounded-tl-lg">Fecha</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Empleado</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Entrada</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Ubicación Entrada</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Salida</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Ubicación Salida</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider rounded-tr-lg">Horas Trabajadas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {registrosPorDia.map((item, idx) => {
+                      const horasTrabajadas = item.entrada?.timestamp && item.salida?.timestamp
+                        ? (() => {
+                            const diff = new Date(item.salida.timestamp) - new Date(item.entrada.timestamp);
+                            const h = Math.floor(diff / 3600000);
+                            const m = Math.floor((diff % 3600000) / 60000);
+                            return `${h}h ${m}m`;
+                          })()
+                        : '-';
+
+                      return (
+                        <tr
+                          key={idx}
+                          className={`border-b ${dark ? 'border-gray-700 hover:bg-gray-700/50' : 'border-gray-200 hover:bg-gray-50'} transition-colors`}
+                        >
+                          <td className="px-4 py-4 font-semibold">{item.fecha}</td>
+                          <td className="px-4 py-4">
+                            <div>
+                              <div className="font-semibold">{item.nombre_empleado || getEmpleadoNombre(item.id_persona)}</div>
+                              <div className="text-xs text-gray-500">ID: {item.id_persona}</div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4">
+                            {item.entrada ? (
+                              <div>
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                  🟢 {new Date(item.entrada.timestamp).toLocaleTimeString('es-ES')}
+                                </span>
+                                {item.entrada.nota && (
+                                  <div className="text-xs text-gray-500 mt-1">{item.entrada.nota}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">Sin entrada</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-4 font-mono text-xs">
+                            {item.entrada?.geo_lat && item.entrada?.geo_lng ? (
+                              <a
+                                href={`https://www.google.com/maps?q=${item.entrada.geo_lat},${item.entrada.geo_lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:text-blue-700 underline"
+                              >
+                                📍 {item.entrada.geo_lat.toFixed(6)}, {item.entrada.geo_lng.toFixed(6)}
+                              </a>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-4">
+                            {item.salida ? (
+                              <div>
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                  🔴 {new Date(item.salida.timestamp).toLocaleTimeString('es-ES')}
+                                </span>
+                                {item.salida.nota && (
+                                  <div className="text-xs text-gray-500 mt-1">{item.salida.nota}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">Sin salida</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-4 font-mono text-xs">
+                            {item.salida?.geo_lat && item.salida?.geo_lng ? (
+                              <a
+                                href={`https://www.google.com/maps?q=${item.salida.geo_lat},${item.salida.geo_lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:text-blue-700 underline"
+                              >
+                                📍 {item.salida.geo_lat.toFixed(6)}, {item.salida.geo_lng.toFixed(6)}
+                              </a>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-4">
+                            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                              horasTrabajadas !== '-'
+                                ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                                : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                            }`}>
+                              {horasTrabajadas}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {view === 'estadisticas' && (
           <div className={`${dark ? 'bg-gray-800' : 'bg-white'} rounded-2xl shadow-xl p-6`}>
             <div className="flex justify-between items-center mb-4">

@@ -1,6 +1,7 @@
 import React from 'react';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import DrawerNavigator from './DrawerNavigator';
 import { useAuth } from '../context/AuthContext';
 
 // Screens
@@ -89,7 +90,7 @@ export default function AppNavigator() {
         <Stack.Screen name="Login" component={LoginScreen} />
       ) : (
         <>
-          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <Stack.Screen name="Main" component={DrawerNavigator} />
           <Stack.Screen name="VentaDetail" component={VentaDetailScreen} />
           <Stack.Screen name="Clientes" component={ClientesScreen} />
         </>
